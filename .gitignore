@@ -16,3 +16,7 @@ Thumbs.db
 
 # Local-only connection/secret data if ever written into the repo by mistake.
 /connections.json
+
+# Local ad-hoc build/packaging output (e.g. a manually built .app/.dmg for
+# testing) — CI's own build artifacts never land in the working tree.
+/local-dist/
