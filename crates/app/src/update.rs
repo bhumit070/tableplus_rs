@@ -58,17 +58,32 @@ pub fn update(state: &mut App, message: Message) -> Task<Message> {
         Message::SaveConnection => {
             let Some(dialog) = state.dialog.take() else { return Task::none() };
             let config = dialog.to_config();
-            if let Err(e) = crate::store::secrets::set_password(&config, &dialog.password) {
-                state.status = Some(format!("Could not save password: {e}"));
+            let name = config.name.clone();
+            let mut problems = Vec::new();
+
+            // An empty password field means "leave it as-is" (e.g. editing
+            // a connection without wanting to touch its saved password),
+            // not "erase the saved password" — only write when non-empty.
+            if !dialog.password.is_empty() {
+                if let Err(e) = crate::store::secrets::set_password(&config, &dialog.password) {
+                    problems.push(format!("password: {e}"));
+                }
             }
+
             if let Some(existing) = state.connections.iter_mut().find(|c| c.id == config.id) {
                 *existing = config;
             } else {
                 state.connections.push(config);
             }
             if let Err(e) = crate::store::connections::save(&state.connections) {
-                state.status = Some(format!("Could not save connections: {e}"));
+                problems.push(format!("connection list: {e}"));
             }
+
+            state.status = Some(if problems.is_empty() {
+                format!("Saved \"{name}\"")
+            } else {
+                format!("Saved \"{name}\" with problems — {}", problems.join("; "))
+            });
             Task::none()
         }
         Message::DeleteConnection(id) => {

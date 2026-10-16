@@ -40,9 +40,10 @@ pub fn view(dialog: &ConnectionDialog) -> Element<'_, Message> {
 
     form = form.push(
         row![
-            button("Test Connection").on_press(Message::TestConnection),
-            button("Cancel").on_press(Message::CancelDialog),
-            button("Save").on_press(Message::SaveConnection),
+            button(text("Test Connection").size(13)).style(button::secondary).on_press(Message::TestConnection),
+            button(text("Cancel").size(13)).style(button::text).on_press(Message::CancelDialog),
+            iced::widget::Space::new().width(Length::Fill),
+            button(text("Save Connection").size(13)).style(button::primary).on_press(Message::SaveConnection),
         ]
         .spacing(10),
     );
