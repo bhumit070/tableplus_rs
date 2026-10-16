@@ -149,8 +149,18 @@ pub fn update(state: &mut App, message: Message) -> Task<Message> {
         Message::Connected(id, Err(e)) => {
             if let Some(session) = state.sessions.get_mut(&id) {
                 session.connecting = false;
-                session.error = Some(e);
+                session.error = Some(e.clone());
             }
+            // A failed connection used to fail silently unless the user
+            // happened to already have that connection's row expanded:
+            // auto-expand it (same as a success) and also surface the
+            // error as a status toast, so clicking a connection always
+            // visibly does *something*.
+            if !state.expanded_connections.contains(&id) {
+                state.expanded_connections.push(id);
+            }
+            let name = state.find_connection(id).map(|c| c.name.clone()).unwrap_or_default();
+            state.status = Some(format!("Couldn't connect to {name}: {e}"));
             Task::none()
         }
         Message::CatalogFetched(id, Ok(catalog)) => {
