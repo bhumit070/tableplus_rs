@@ -238,6 +238,23 @@ pub fn update(state: &mut App, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::SelectNextSuggestion(idx) => {
+            if let Some(tab) = state.tabs.get_mut(idx) {
+                if !tab.suggestions.is_empty() {
+                    tab.selected_suggestion = (tab.selected_suggestion + 1) % tab.suggestions.len();
+                }
+            }
+            Task::none()
+        }
+        Message::SelectPrevSuggestion(idx) => {
+            if let Some(tab) = state.tabs.get_mut(idx) {
+                let len = tab.suggestions.len();
+                if len > 0 {
+                    tab.selected_suggestion = (tab.selected_suggestion + len - 1) % len;
+                }
+            }
+            Task::none()
+        }
 
         Message::RunQuery(idx) => {
             let Some(tab) = state.tabs.get_mut(idx) else { return Task::none() };
