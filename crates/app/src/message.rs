@@ -40,6 +40,7 @@ pub enum Message {
     NewTab(Option<Uuid>),
     CloseTab(usize),
     SwitchTab(usize),
+    SetTabConnection(usize, Uuid),
     EditorAction(usize, text_editor::Action),
     AcceptSuggestion(usize, usize),
     DismissSuggestions(usize),

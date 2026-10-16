@@ -60,13 +60,29 @@ pub fn update(state: &mut App, message: Message) -> Task<Message> {
             let config = dialog.to_config();
             let name = config.name.clone();
             let mut problems = Vec::new();
+            let mut password_note = "no password entered, left as-is";
+
+            tracing::info!(
+                connection = %name,
+                secret_key = %config.secret_key(),
+                password_len = dialog.password.len(),
+                "SaveConnection: about to write password (if non-empty)"
+            );
 
             // An empty password field means "leave it as-is" (e.g. editing
             // a connection without wanting to touch its saved password),
             // not "erase the saved password" — only write when non-empty.
             if !dialog.password.is_empty() {
-                if let Err(e) = crate::store::secrets::set_password(&config, &dialog.password) {
-                    problems.push(format!("password: {e}"));
+                match crate::store::secrets::set_password(&config, &dialog.password) {
+                    Ok(()) => {
+                        password_note = "password saved";
+                        tracing::info!(secret_key = %config.secret_key(), "SaveConnection: set_password succeeded");
+                    }
+                    Err(e) => {
+                        password_note = "password FAILED to save";
+                        tracing::error!(secret_key = %config.secret_key(), error = %e, "SaveConnection: set_password failed");
+                        problems.push(format!("password: {e}"));
+                    }
                 }
             }
 
@@ -80,7 +96,7 @@ pub fn update(state: &mut App, message: Message) -> Task<Message> {
             }
 
             state.status = Some(if problems.is_empty() {
-                format!("Saved \"{name}\"")
+                format!("Saved \"{name}\" ({password_note})")
             } else {
                 format!("Saved \"{name}\" with problems — {}", problems.join("; "))
             });
@@ -134,7 +150,14 @@ pub fn update(state: &mut App, message: Message) -> Task<Message> {
 
         Message::Connect(id) => {
             let Some(config) = state.find_connection(id).cloned() else { return Task::none() };
-            let password = crate::store::secrets::get_password(&config).ok().flatten().unwrap_or_default();
+            let lookup = crate::store::secrets::get_password(&config);
+            tracing::info!(
+                connection = %config.name,
+                secret_key = %config.secret_key(),
+                outcome = ?lookup.as_ref().map(|p| p.as_ref().map(String::len)),
+                "Connect: looked up password in keychain"
+            );
+            let password = lookup.ok().flatten().unwrap_or_default();
             let session = state.sessions.entry(id).or_insert_with(|| Session {
                 config: config.clone(),
                 adapter: None,
@@ -225,6 +248,12 @@ pub fn update(state: &mut App, message: Message) -> Task<Message> {
         Message::SwitchTab(idx) => {
             if idx < state.tabs.len() {
                 state.active_tab = idx;
+            }
+            Task::none()
+        }
+        Message::SetTabConnection(idx, connection_id) => {
+            if let Some(tab) = state.tabs.get_mut(idx) {
+                tab.connection_id = Some(connection_id);
             }
             Task::none()
         }

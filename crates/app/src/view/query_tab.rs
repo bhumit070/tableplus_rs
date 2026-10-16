@@ -5,8 +5,9 @@ use db_core::export::ExportFormat;
 use iced::advanced::text::highlighter::Format;
 use iced::keyboard::key::Named;
 use iced::keyboard::Key;
-use iced::widget::{button, column, container, row, scrollable, text, text_editor, Space, Stack};
+use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_editor, Space, Stack};
 use iced::{Alignment, Element, Font, Length, Padding, Theme};
+use uuid::Uuid;
 
 const FONT_SIZE: f32 = 14.0;
 const LINE_HEIGHT: f32 = FONT_SIZE * 1.35;
@@ -74,22 +75,44 @@ pub fn view(state: &App) -> Element<'_, Message> {
         })
         .on_action(move |action| Message::EditorAction(active_tab, action));
 
-    let editor_area: Element<'_, Message> = if has_suggestions {
+    // Important: this `Stack` must *always* wrap the editor, never only
+    // conditionally when suggestions are showing. iced's widget tree
+    // diffing keys a widget's internal state (focus, cursor, selection)
+    // to its position/shape in the tree; switching between "editor
+    // alone" and "Stack[editor, overlay]" from one frame to the next
+    // made iced treat it as a different widget and silently reset that
+    // state — which is why focus used to jump away whenever a
+    // suggestion appeared.
+    let overlay: Element<'_, Message> = if has_suggestions {
         let cursor = tab.editor.cursor().position;
         let top = EDITOR_PADDING + (cursor.line as f32 + 1.0) * LINE_HEIGHT;
         let left = EDITOR_PADDING + cursor.column as f32 * CHAR_WIDTH;
 
-        let overlay = container(suggestion_dropdown(active_tab, tab))
+        container(suggestion_dropdown(active_tab, tab))
             .padding(Padding { top, left, ..Padding::ZERO })
             .width(Length::Fill)
-            .height(Length::Fill);
-
-        Stack::with_children(vec![editor.into(), overlay.into()]).into()
+            .height(Length::Fill)
+            .into()
     } else {
-        editor.into()
+        Space::new().width(Length::Shrink).height(Length::Shrink).into()
     };
+    let editor_area: Element<'_, Message> = Stack::with_children(vec![editor.into(), overlay]).into();
+
+    let connection_options: Vec<ConnectionOption> = state
+        .sessions
+        .values()
+        .filter(|s| s.adapter.is_some())
+        .map(|s| ConnectionOption { id: s.config.id, name: s.config.name.clone() })
+        .collect();
+    let selected_connection =
+        tab.connection_id.and_then(|cid| connection_options.iter().find(|o| o.id == cid).cloned());
 
     let toolbar = row![
+        pick_list(connection_options, selected_connection, move |option| {
+            Message::SetTabConnection(active_tab, option.id)
+        })
+        .placeholder("Not connected")
+        .text_size(12),
         button(text(if tab.running { "Running…" } else { "▶ Run" }).size(13))
             .on_press_maybe((!tab.running).then_some(Message::RunQuery(active_tab))),
         button(text("Cancel").size(13))
@@ -167,4 +190,16 @@ fn kind_glyph(kind: sql_intel::SuggestionKind) -> &'static str {
 
 fn format_for(kind: &sql_intel::TokenKind, _theme: &Theme) -> Format<Font> {
     Format { color: Some(highlighter::color_for(kind)), font: None }
+}
+
+#[derive(Clone, PartialEq)]
+struct ConnectionOption {
+    id: Uuid,
+    name: String,
+}
+
+impl std::fmt::Display for ConnectionOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
 }
