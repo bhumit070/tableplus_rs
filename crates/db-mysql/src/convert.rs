@@ -42,7 +42,13 @@ pub(crate) fn decode_value(row: &MySqlRow, idx: usize, type_name: &str) -> Resul
         row.try_get::<String, _>(idx).map(Value::Text)
     };
 
-    decoded.map_err(|e| DbError::Conversion(format!("column {idx} ({type_name}): {e}")))
+    // A single unrecognized/exotic column (a spatial type, a custom
+    // collation sqlx can't map, etc.) shouldn't abort the whole query —
+    // degrade to a readable placeholder instead of failing the row.
+    Ok(decoded.unwrap_or_else(|e| {
+        tracing::warn!(column = idx, type_name, error = %e, "could not decode column value as its reported type; showing a placeholder");
+        Value::Text(format!("<{type_name}>"))
+    }))
 }
 
 fn quote_qualified_ident(ident: &str) -> String {

@@ -8,38 +8,51 @@ use tiberius::{ColumnData, ColumnType, Row};
 /// rather than its variants directly, since new TDS type codes get added
 /// upstream over time; falling back to the server's text rendering for
 /// anything unrecognized keeps this forward-compatible.
+///
+/// Uses `try_get` (not the panicking `get`) throughout, and never fails
+/// the whole query over one column it can't decode as its reported type
+/// (a `sql_variant`, a type newer than this build knows about, etc.) —
+/// that degrades to a readable placeholder instead, same as the other
+/// two adapters.
 pub(crate) fn decode_value(row: &Row, idx: usize, column_type: ColumnType) -> Result<Value> {
     let ty = format!("{column_type:?}").to_uppercase();
 
-    let value = if ty.contains("BIT") {
-        row.get::<bool, _>(idx).map(Value::Bool)
+    let decoded = if ty.contains("BIT") {
+        row.try_get::<bool, _>(idx).map(|v| v.map(Value::Bool))
     } else if ty.contains("INT8") {
-        row.get::<i64, _>(idx).map(Value::I64)
+        row.try_get::<i64, _>(idx).map(|v| v.map(Value::I64))
     } else if ty.contains("INT1") || ty.contains("INT2") || ty.contains("INT4") {
-        row.get::<i32, _>(idx).map(|v| Value::I64(v as i64))
+        row.try_get::<i32, _>(idx).map(|v| v.map(|v| Value::I64(v as i64)))
     } else if ty.contains("FLOAT4") {
-        row.get::<f32, _>(idx).map(|v| Value::F64(v as f64))
+        row.try_get::<f32, _>(idx).map(|v| v.map(|v| Value::F64(v as f64)))
     } else if ty.contains("FLOAT8") || ty.contains("MONEY") {
-        row.get::<f64, _>(idx).map(Value::F64)
+        row.try_get::<f64, _>(idx).map(|v| v.map(Value::F64))
     } else if ty.contains("NUMERIC") || ty.contains("DECIMAL") {
-        row.get::<rust_decimal::Decimal, _>(idx).map(Value::Decimal)
+        row.try_get::<rust_decimal::Decimal, _>(idx).map(|v| v.map(Value::Decimal))
     } else if ty.contains("GUID") {
-        row.get::<uuid::Uuid, _>(idx).map(Value::Uuid)
+        row.try_get::<uuid::Uuid, _>(idx).map(|v| v.map(Value::Uuid))
     } else if ty.contains("DATETIMEOFFSET") {
-        row.get::<chrono::DateTime<chrono::Utc>, _>(idx).map(Value::TimestampTz)
+        row.try_get::<chrono::DateTime<chrono::Utc>, _>(idx).map(|v| v.map(Value::TimestampTz))
     } else if ty.contains("DATETIME") {
-        row.get::<chrono::NaiveDateTime, _>(idx).map(Value::DateTime)
+        row.try_get::<chrono::NaiveDateTime, _>(idx).map(|v| v.map(Value::DateTime))
     } else if ty.contains("DATEN") || ty == "DATE" {
-        row.get::<chrono::NaiveDate, _>(idx).map(Value::Date)
+        row.try_get::<chrono::NaiveDate, _>(idx).map(|v| v.map(Value::Date))
     } else if ty.contains("TIME") {
-        row.get::<chrono::NaiveTime, _>(idx).map(Value::Time)
+        row.try_get::<chrono::NaiveTime, _>(idx).map(|v| v.map(Value::Time))
     } else if ty.contains("BINARY") || ty.contains("IMAGE") {
-        row.get::<&[u8], _>(idx).map(|b| Value::Bytes(b.to_vec()))
+        row.try_get::<&[u8], _>(idx).map(|v| v.map(|b| Value::Bytes(b.to_vec())))
     } else {
-        row.get::<&str, _>(idx).map(|s| Value::Text(s.to_string()))
+        row.try_get::<&str, _>(idx).map(|v| v.map(|s| Value::Text(s.to_string())))
     };
 
-    Ok(value.unwrap_or(Value::Null))
+    Ok(match decoded {
+        Ok(Some(value)) => value,
+        Ok(None) => Value::Null,
+        Err(e) => {
+            tracing::warn!(column = idx, type_name = %ty, error = %e, "could not decode column value as its reported type; showing a placeholder");
+            Value::Text(format!("<{ty}>"))
+        }
+    })
 }
 
 fn quote_qualified_ident(ident: &str) -> String {

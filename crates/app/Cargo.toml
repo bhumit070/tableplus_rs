@@ -24,7 +24,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
-keyring = "3"
+keyring = "4"
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 directories = "5"
 tracing = { workspace = true }
