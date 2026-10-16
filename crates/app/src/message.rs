@@ -43,6 +43,8 @@ pub enum Message {
     EditorAction(usize, text_editor::Action),
     AcceptSuggestion(usize, usize),
     DismissSuggestions(usize),
+    SelectNextSuggestion(usize),
+    SelectPrevSuggestion(usize),
 
     // --- Query execution ---
     RunQuery(usize),
