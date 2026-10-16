@@ -7,10 +7,17 @@ use sqlx::{Row as _, ValueRef as _};
 /// the Postgres type name (`INT4`, `TEXT`, `NUMERIC`, ...) reported by
 /// sqlx to pick the right Rust type to decode through.
 ///
-/// Types without a specific arm fall back to Postgres's text
-/// representation, which sqlx/postgres can decode for virtually every
-/// type (enums, ranges, custom domains, etc.) even though we don't give
-/// it a dedicated [`Value`] variant.
+/// A real-world schema inevitably has columns this doesn't have a
+/// dedicated arm for — custom enums, arrays of types we don't special-case,
+/// `inet`/`macaddr`/`money`/PostGIS geometry, domains over non-text base
+/// types, and so on. sqlx's `Decode` rejects those as a Rust `String`
+/// outright (it checks OID compatibility before even looking at the
+/// bytes), so the old fallback — "try to decode as text, and propagate
+/// the error if that fails" — meant a single exotic column aborted the
+/// *entire* query. That's unacceptable for a general-purpose SQL client:
+/// one unrecognized column shouldn't make `SELECT *` unusable. This never
+/// returns an error for a type-decode failure; it degrades to a readable
+/// placeholder and logs a warning instead.
 pub(crate) fn decode_value(row: &PgRow, idx: usize, type_name: &str) -> Result<Value> {
     let raw = row
         .try_get_raw(idx)
@@ -49,14 +56,20 @@ pub(crate) fn decode_value(row: &PgRow, idx: usize, type_name: &str) -> Result<V
             .try_get::<Vec<i64>, _>(idx)
             .map(|items| Value::Array(items.into_iter().map(Value::I64).collect())),
         _ => {
-            // Fall back to the text representation, which Postgres can
-            // produce for essentially any type (enums, ranges, domains,
-            // composite types we don't otherwise model).
+            // Most unrecognized scalar types (enums, domains over text,
+            // `inet`/`macaddr`, etc.) still decode fine as Rust `String`
+            // since Postgres can render them as text; this just isn't
+            // true for *every* OID (arrays we don't special-case, binary
+            // domains, composite/range types) — the `unwrap_or_else`
+            // below is what keeps those from aborting the whole query.
             row.try_get::<String, _>(idx).map(Value::Text)
         }
     };
 
-    decoded.map_err(|e| DbError::Conversion(format!("column {idx} ({type_name}): {e}")))
+    Ok(decoded.unwrap_or_else(|e| {
+        tracing::warn!(column = idx, type_name, error = %e, "could not decode column value as its reported type; showing a placeholder");
+        Value::Text(format!("<{type_name}>"))
+    }))
 }
 
 fn quote_qualified_ident(ident: &str) -> String {
