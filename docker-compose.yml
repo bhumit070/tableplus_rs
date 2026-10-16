@@ -1,0 +1,91 @@
+# Spins up one container per supported database, pre-loaded with the same
+# sample `shop` schema (customers/orders), so the adapter integration
+# tests in crates/db-postgres, crates/db-mysql, and crates/db-mssql have
+# something real to talk to.
+#
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f mssql-init   # wait for "mssql sample schema ready"
+#   cargo test --workspace
+#
+# See DEVELOPMENT.md for the connection strings each adapter's tests
+# expect (via TABLEPLUS_RS_POSTGRES_URL / _MYSQL_URL / _MSSQL_URL).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tableplus_rs_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tableplus
+      POSTGRES_PASSWORD: tableplus
+      POSTGRES_DB: tableplus_rs_sample
+    ports:
+      - "55432:5432"
+    volumes:
+      - ./docker/init/postgres:/docker-entrypoint-initdb.d:ro
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tableplus -d tableplus_rs_sample"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mysql:
+    image: mysql:8.4
+    container_name: tableplus_rs_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: tableplus
+      MYSQL_USER: tableplus
+      MYSQL_PASSWORD: tableplus
+      MYSQL_DATABASE: tableplus_rs_sample
+    ports:
+      - "53306:3306"
+    volumes:
+      - ./docker/init/mysql:/docker-entrypoint-initdb.d:ro
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: tableplus_rs_mssql
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "TablePlus_rs1"
+      MSSQL_PID: "Developer"
+    ports:
+      - "51433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # The mssql image doesn't support init scripts natively, so this
+  # one-shot sidecar applies docker/init/mssql/*.sql once the server is
+  # healthy, then exits.
+  mssql-init:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: tableplus_rs_mssql_init
+    depends_on:
+      mssql:
+        condition: service_healthy
+    environment:
+      MSSQL_SA_PASSWORD: "TablePlus_rs1"
+    volumes:
+      - ./docker/init/mssql:/init:ro
+    entrypoint: ["/bin/bash", "/init/run-init.sh"]
+    restart: "no"
+
+volumes:
+  postgres-data:
+  mysql-data:
+  mssql-data:

@@ -1,0 +1,32 @@
+[package]
+name = "tableplus-rs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "tableplus-rs"
+path = "src/main.rs"
+
+[dependencies]
+db-core = { workspace = true }
+db-postgres = { workspace = true }
+db-mysql = { workspace = true }
+db-mssql = { workspace = true }
+sql-intel = { workspace = true }
+
+iced = { version = "0.14", features = ["tokio", "advanced"] }
+sqlparser = "0.63"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+keyring = "3"
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+directories = "5"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

@@ -1,0 +1,18 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+
+# Local-only Claude Code tooling config, not part of the project itself.
+/.claude/
+/.agents/
+/skills-lock.json
+
+# Local-only connection/secret data if ever written into the repo by mistake.
+/connections.json

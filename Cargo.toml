@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/db-core",
+    "crates/db-postgres",
+    "crates/db-mysql",
+    "crates/db-mssql",
+    "crates/sql-intel",
+    "crates/app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+license = "MIT"
+authors = ["TablePlus-rs contributors"]
+repository = "https://github.com/your-org/tableplus-rs"
+
+[workspace.dependencies]
+db-core = { path = "crates/db-core" }
+db-postgres = { path = "crates/db-postgres" }
+db-mysql = { path = "crates/db-mysql" }
+db-mssql = { path = "crates/db-mssql" }
+sql-intel = { path = "crates/sql-intel" }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+rust_decimal = { version = "1", features = ["serde-with-str"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+csv = "1"
+anyhow = "1"
+
+[workspace.lints.clippy]
+redundant_clone = "warn"
+needless_collect = "warn"
+large_enum_variant = "warn"
+
+[profile.dev]
+# Keep debug builds reasonably fast to link/iterate on.
+debug = 1
+split-debuginfo = "unpacked"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -1,0 +1,28 @@
+[package]
+name = "db-mssql"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+db-core = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+tiberius = { version = "0.12", default-features = false, features = [
+    "tds73",
+    "rustls",
+    "chrono",
+    "rust_decimal",
+] }
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
+uuid = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
+uuid = { workspace = true }
