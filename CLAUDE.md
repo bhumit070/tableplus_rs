@@ -7,6 +7,7 @@ Instructions for Claude Code when working in this repository.
 - Never commit directly to `main`. Every task (feature, fix, refactor, docs change — anything) starts by creating a new branch off `main`.
 - Name branches descriptively, e.g. `feat/autocomplete-popup`, `fix/mssql-cancel`, `docs/update-readme`.
 - Land changes on `main` only by merging that branch (open a PR and merge it, or merge locally if the user asked for that explicitly) — never `git push origin <branch>:main` or an equivalent direct push.
+- Always **squash and merge** (`gh pr merge --squash --delete-branch`, or the "Squash and merge" button on GitHub) — never a regular merge commit or rebase-merge. `main`'s history should be one commit per PR.
 - The one exception is `.github/workflows/release.yml`'s own `version` job: it pushes a `vX.Y.Z` *tag* (not a commit, and not to `main`) after a push lands on `main`, purely to drive the release build. That's CI bookkeeping, not a code change, and isn't subject to this rule.
 
 ## Releases
