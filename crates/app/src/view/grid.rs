@@ -9,6 +9,7 @@
 
 use crate::message::Message;
 use db_core::result::QueryResult;
+use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::{column, container, row, scrollable, text};
 use iced::{Element, Length};
 
@@ -45,5 +46,13 @@ pub fn view(result: &QueryResult) -> Element<'_, Message> {
         body = body.push(cells);
     }
 
-    scrollable(body).width(Length::Fill).height(Length::Fill).into()
+    // `scrollable`'s default direction is vertical-only — a result with
+    // more columns than fit the window (a plain `SELECT *` on any table
+    // with a dozen-plus columns) would just get clipped on the right with
+    // no way to reach the rest. `Both` gives it a horizontal scrollbar too.
+    scrollable(body)
+        .direction(Direction::Both { horizontal: Scrollbar::default(), vertical: Scrollbar::default() })
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
