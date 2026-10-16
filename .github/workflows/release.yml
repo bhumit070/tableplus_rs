@@ -1,0 +1,197 @@
+# Builds TablePlus-rs for macOS, Windows, and Linux and publishes a
+# GitHub Release every time a (merged) change lands on `main`.
+#
+# Versioning: the release version is tracked purely via git tags
+# (`v0.0.1`, `v0.0.2`, ...), independent of the `version` in the root
+# Cargo.toml. This job never commits back to `main` — it only reads the
+# latest `vX.Y.Z` tag, bumps the patch number (starting at `0.0.1` if no
+# tag exists yet), and pushes the new tag. That keeps `main` protected
+# (see CLAUDE.md: changes land on `main` only via merge) while still
+# giving every push-to-main its own incrementing release.
+#
+# Bump the `version` in Cargo.toml yourself, in a normal PR, whenever you
+# want the compiled-in crate version to move — it's intentionally
+# decoupled from the release tag.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next version from the latest tag
+        id: bump
+        run: |
+          set -euo pipefail
+          git fetch --tags --quiet
+          latest="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          if [ -z "$latest" ]; then
+            next="0.0.1"
+          else
+            ver="${latest#v}"
+            major="$(cut -d. -f1 <<< "$ver")"
+            minor="$(cut -d. -f2 <<< "$ver")"
+            patch="$(cut -d. -f3 <<< "$ver")"
+            next="${major}.${minor}.$((patch + 1))"
+          fi
+          echo "version=${next}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${next}" >> "$GITHUB_OUTPUT"
+
+      - name: Tag this commit
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.bump.outputs.tag }}"
+          git push origin "${{ steps.bump.outputs.tag }}"
+
+  build-macos:
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (x86_64)
+        run: cargo build --release -p tableplus-rs --target x86_64-apple-darwin
+      - name: Build (aarch64)
+        run: cargo build --release -p tableplus-rs --target aarch64-apple-darwin
+
+      - name: Bundle universal .app and .dmg
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          APP="dist/TablePlus-rs.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+
+          lipo -create -output "$APP/Contents/MacOS/tableplus-rs" \
+            target/x86_64-apple-darwin/release/tableplus-rs \
+            target/aarch64-apple-darwin/release/tableplus-rs
+          chmod +x "$APP/Contents/MacOS/tableplus-rs"
+
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>TablePlus-rs</string>
+            <key>CFBundleDisplayName</key><string>TablePlus-rs</string>
+            <key>CFBundleIdentifier</key><string>rs.tableplus-rs.app</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleExecutable</key><string>tableplus-rs</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+
+          # Not code-signed or notarized: unsigned builds will show
+          # Gatekeeper's "unidentified developer" warning on first launch
+          # (right-click -> Open bypasses it). Signing needs an Apple
+          # Developer account's certificate, which this repo doesn't have
+          # configured — see DEVELOPMENT.md's roadmap.
+          hdiutil create -volname "TablePlus-rs" -srcfolder "$APP" -ov -format UDZO \
+            "dist/tableplus-rs-${TAG}-macos.dmg"
+          rm -rf "$APP"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tableplus-rs-macos
+          path: dist/*.dmg
+
+  build-windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release -p tableplus-rs
+
+      - name: Package
+        shell: pwsh
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/tableplus-rs.exe "dist/tableplus-rs-$env:TAG-windows.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tableplus-rs-windows
+          path: dist/*.exe
+
+  build-linux:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install native GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libwayland-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libx11-dev libgl1-mesa-dev pkg-config
+
+      - name: Build
+        run: cargo build --release -p tableplus-rs
+
+      - name: Package
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/tableplus-rs dist/tableplus-rs
+          tar -C dist -czf "dist/tableplus-rs-${TAG}-linux-x86_64.tar.gz" tableplus-rs
+          rm dist/tableplus-rs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tableplus-rs-linux
+          path: dist/*.tar.gz
+
+  release:
+    needs: [version, build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: TablePlus-rs ${{ needs.version.outputs.version }}
+          generate_release_notes: true
+          files: dist/**/*

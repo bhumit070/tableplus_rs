@@ -905,7 +905,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "db-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -919,7 +919,7 @@ dependencies = [
 
 [[package]]
 name = "db-mssql"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -935,7 +935,7 @@ dependencies = [
 
 [[package]]
 name = "db-mysql"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -950,7 +950,7 @@ dependencies = [
 
 [[package]]
 name = "db-postgres"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4082,7 +4082,7 @@ dependencies = [
 
 [[package]]
 name = "sql-intel"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "db-core",
  "sqlparser",
@@ -4408,7 +4408,7 @@ dependencies = [
 
 [[package]]
 name = "tableplus-rs"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "chrono",
