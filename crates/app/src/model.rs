@@ -135,7 +135,7 @@ impl App {
     }
 
     pub fn theme(&self) -> iced::Theme {
-        iced::Theme::Dark
+        crate::theme::theme()
     }
 
     pub fn find_connection(&self, id: Uuid) -> Option<&ConnectionConfig> {

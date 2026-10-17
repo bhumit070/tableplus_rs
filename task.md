@@ -1,25 +1,21 @@
-# Task tracker — UI/UX and functional fixes
+# Task tracker — visual design pass
 
-Started: 2026-10-16 23:00
+Started: 2026-10-17 00:05
 
-Each task starts `[ ]` pending. I only flip it to `[x] done (timestamp)` once I've actually made the change and re-verified it (build/test or a manual check) — not before.
+The functional bugs (keychain, editor focus, type decoding, grid scrolling) are fixed and merged. This pass is purely about making the app look and feel like a considered product instead of default-widget-soup. Each task flips to `[x] done (timestamp)` only once built, linted, and smoke-run.
 
-## Diagnosis
+## Plan
 
-- [x] done (2026-10-16 23:10) — Root-cause why the SQL editor appears broken/not working: `query_tab::view`'s outer `column![...]` (and the `editor_area` wrapper column inside it) had no explicit `.height(...)`, defaulting to `Length::Shrink`. The editor and results grid were set to `Length::FillPortion(n)`, but `FillPortion` only does anything when the *parent* is itself sized `Fill`/`FillPortion` — under a `Shrink` parent it collapses toward zero height. Confirmed by reading `iced_widget`'s row/column layout code: a `Fill` parent does not make its children `Fill` automatically, each child only stretches if it individually requests `Fill`/`FillPortion`.
-- [x] done (2026-10-16 23:10) — Root-cause why no tables show up in the sidebar: not a broken state/fetch bug (connect → fetch-catalog → render chain was logically correct and auto-expands on connect) — it's a *visibility/crowding* bug. The old connection row crammed a name-toggle button plus 4 action buttons into a fixed 280px-wide column, which pushed/wrapped content so badly the schema tree underneath was effectively unreadable even once populated. No catalog-fetch logic bug found.
+- [x] done (2026-10-17 09:10) — Custom color palette/theme (`crates/app/src/theme.rs`): deep charcoal background (`#1B1D22`), blue accent (`#4C8BF5`), proper success/warning/danger colors, via `iced::Theme::custom` so every default button/container/input style derives from it automatically instead of the stock `Theme::Dark`.
+- [x] done (2026-10-17 09:20) — Shared styled components (`crates/app/src/view/components.rs`): per-driver color badge (Postgres blue / MySQL orange / SQL Server red), status dot, card/card-active container styles, an error banner style, a muted section-header helper — so the sidebar, query tab, and dialog all reuse the same visual language instead of each inventing its own.
+- [x] done (2026-10-17 09:25) — Sidebar: connection rows now show a colored driver badge + name + driver label + status dot instead of a plain unicode glyph; the expanded/active connection gets an accent-colored card border; a real "CONNECTIONS" section header; errors render in a proper tinted banner instead of plain text.
+- [x] done (2026-10-17 09:35) — Query tab: active tab is now a bordered "chip" instead of a plain button; toolbar grouped (Run/Cancel/connection picker, then an "Export:" label + CSV/JSON/SQL); the editor and results both sit in a bordered card; error text uses the shared error-banner style; empty-result state is muted instead of full-brightness text.
+- [x] done (2026-10-17 09:40) — Results grid: styled header row (muted text on a raised surface), zebra-striped rows (3% white overlay on alternating rows), `NULL` cells rendered in muted gray instead of looking like real data.
+- [x] done (2026-10-17 09:50) — Connection dialog: real card styling (border + drop shadow + radius), muted field labels, Host/Port side-by-side instead of stacked, colored test-connection result (green on success, red on failure).
+- [x] done (2026-10-17 09:55) — Verification: `cargo build --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` (29 tests) all clean; smoke-ran the binary (starts without panicking). I still can't screenshot/drive the native window myself in this session, so the actual visual result needs your eyes — please look and tell me what still misses the mark.
 
-## Fixes
+## Known still-rough edges (not attempted in this pass)
 
-- [x] done (2026-10-16 23:25) — Fixed the layout: `query_tab::view`'s root column and the editor/results containers now carry explicit `Length::Fill`/`FillPortion`, so the editor and results grid actually get real estate and resize with the window. Verified via `cargo build` + reading the generated layout chain top to bottom.
-- [x] done (2026-10-16 23:45) — Redesigned the sidebar: each connection is now a compact one-line row (status dot + name + driver label) that connects/expands on click; the Query/Edit/Disconnect/Delete actions only appear, as small low-emphasis buttons, when that connection is expanded. Cards have breathing room (`rounded_box` style, consistent padding) instead of one dense wrapped row.
-- [x] done (2026-10-17 00:05) — Rebuilt autocomplete as a floating dropdown: an `iced::widget::Stack` overlays a bordered suggestion card on top of the editor, offset from the editor's top-left corner by an estimate of the cursor's pixel position (line × line-height, column × monospace char-width — the editor font is now explicitly `Font::MONOSPACE` so that estimate is accurate), instead of a row of small buttons pinned to the bottom of the whole pane.
-- [x] done (2026-10-17 00:05) — Wired real keyboard navigation: Up/Down now move `tab.selected_suggestion` (new `SelectNextSuggestion`/`SelectPrevSuggestion` messages), Tab/Enter accept the highlighted suggestion, Escape dismisses the dropdown — all via a `key_binding` closure that only intercepts those keys while suggestions are showing, falling back to normal typing/auto-pair behavior otherwise.
-- [x] done (2026-10-17 00:15) — Spacing/typography pass: consistent small-caps-style section header in the sidebar, status dot instead of a text suffix, toolbar buttons given consistent sizing (13px primary actions, 12px secondary), results area shows an explicit empty state ("Run a query to see results here.") instead of blank space.
-- [x] done (2026-10-17 00:30) — Resizing: every pane in the layout now resolves to `Length::Fill`/`FillPortion` end-to-end (sidebar, tab bar, editor, results), so resizing the window redistributes space instead of leaving fixed-size gaps. I can't drag-resize the window myself in this session (no screen/GUI automation available to me here) — flagging this so you know it's reasoned from the layout code + a headless build/run check, not an eyeballed screenshot. Please resize the window and tell me if anything still looks wrong.
-
-## Verification
-
-- [x] done (2026-10-17 00:32) — `cargo build --workspace`, `cargo test --workspace` (28 tests), `cargo clippy --workspace --all-targets -- -D warnings` all clean.
-- [x] done (2026-10-17 00:33) — Smoke-ran the binary (`./target/debug/tableplus-rs`) in the background for several seconds: starts cleanly, no panics/errors in stdout/stderr, stays alive.
-- [ ] Manual smoke test with a real connection (connect → see tables → type a query → see autocomplete → run → see results) — this needs your eyes on the actual window; I don't have a way to drive or screenshot a native GUI window in this session. **Please try it and tell me what you see** — if the sidebar/editor/autocomplete still don't look right, send me specifics (ideally a screenshot) and I'll keep iterating.
+- No light theme / theme switching.
+- Table icons (▤/◫/◧) and suggestion-kind glyphs (𝐊/▥/ƒ) are still Unicode symbols, not real icons — a proper icon font or SVG set would look more polished but is a larger, separate effort (font embedding + icon sourcing).
+- No sticky/pinned header on horizontal scroll in the results grid — the header scrolls with the data (noted in `grid.rs`); a genuinely sticky header needs a different widget arrangement.
