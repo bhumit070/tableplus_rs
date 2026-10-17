@@ -1,3 +1,4 @@
+mod components;
 mod connection_dialog;
 mod grid;
 mod query_tab;
@@ -32,8 +33,20 @@ pub fn view(state: &App) -> Element<'_, Message> {
 }
 
 fn status_bar(status: &str) -> Element<'_, Message> {
-    container(row![text(status.to_string()), Space::new().width(Length::Fill), iced::widget::button("Dismiss").on_press(Message::StatusDismissed)].spacing(10))
-        .padding(8)
+    let content = row![
+        text(status.to_string()).size(13),
+        Space::new().width(Length::Fill),
+        iced::widget::button(text("Dismiss").size(12)).style(iced::widget::button::text).on_press(Message::StatusDismissed),
+    ]
+    .spacing(10)
+    .align_y(iced::Alignment::Center);
+
+    container(content)
+        .padding([8, 14])
         .width(Length::Fill)
+        .style(|_theme| container::Style {
+            background: Some(crate::theme::SURFACE_RAISED.into()),
+            ..container::Style::default()
+        })
         .into()
 }

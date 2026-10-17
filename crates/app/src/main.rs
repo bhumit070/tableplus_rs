@@ -3,6 +3,7 @@ mod editor;
 mod message;
 mod model;
 mod store;
+mod theme;
 mod update;
 mod view;
 
