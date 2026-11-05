@@ -324,10 +324,27 @@ impl Connection {
 
     /// Every (table, column) in the current database, for autocomplete.
     /// Only SQL backends have a fixed schema; the others return nothing.
-    pub async fn all_columns(&self) -> Result<Vec<(String, String)>> {
+    pub async fn all_columns(&self) -> Result<Vec<(String, String, String)>> {
         match self {
             Connection::Sql(c) => c.all_columns().await,
             Connection::Redis(_) | Connection::Mongo(_) => Ok(vec![]),
+        }
+    }
+
+    /// The Postgres schema chosen with `set_schema`, if any.
+    pub fn current_schema(&self) -> Option<String> {
+        match self {
+            Connection::Sql(c) => c.current_schema(),
+            _ => None,
+        }
+    }
+
+    /// Postgres: make `schema` the default for unqualified names (None =
+    /// server default). No-op for other databases.
+    pub async fn set_schema(&mut self, schema: Option<String>) -> Result<()> {
+        match self {
+            Connection::Sql(c) => c.set_schema(schema).await,
+            _ => Ok(()),
         }
     }
 

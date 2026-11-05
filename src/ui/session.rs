@@ -24,8 +24,8 @@ use gpui_kit_assets::IconName;
 use super::completion::Schema;
 use super::query_tab::QueryTab;
 use super::table_tab::TableTab;
-use super::{Shared, tag_color};
-use crate::db::{DbObject, ObjectKind};
+use super::{SearchList, Shared, search_list, tag_color};
+use crate::db::{DbObject, Driver, ObjectKind};
 use crate::runtime;
 
 enum TabItem {
@@ -40,7 +40,14 @@ pub struct Session {
     /// As reported by the connection; the dropdown widget isn't a reliable
     /// source for this (see GitHub #11).
     current_db: String,
-    db_select: Entity<SelectState<Vec<String>>>,
+    db_select: Entity<SelectState<SearchList>>,
+    /// Postgres schemas in this database (empty for other drivers).
+    schemas: Vec<String>,
+    /// Shown schema; `None` = all.
+    schema: Option<String>,
+    schema_select: Entity<SelectState<SearchList>>,
+    /// (schema, table, column), for autocomplete.
+    columns: Vec<(String, String, String)>,
     search: Entity<InputState>,
     tree: Entity<TreeState>,
     tabs: Vec<TabItem>,
@@ -55,9 +62,22 @@ impl Session {
     pub fn new(shared: Rc<Shared>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search tables…"));
         let db_select =
-            cx.new(|cx| SelectState::new(Vec::<String>::new(), None, window, cx).searchable(true));
+            cx.new(|cx| SelectState::new(search_list(vec![]), None, window, cx).searchable(true));
         let tree = cx.new(|cx| TreeState::new(cx));
+        let schema_select =
+            cx.new(|cx| SelectState::new(search_list(vec![]), None, window, cx).searchable(true));
         let subs = vec![
+            cx.subscribe_in(
+                &schema_select,
+                window,
+                |this, _, ev: &SelectEvent<SearchList>, window, cx| {
+                    let SelectEvent::Confirm(Some(name)) = ev else {
+                        return;
+                    };
+                    let schema = (name != ALL_SCHEMAS).then(|| name.clone());
+                    this.choose_schema(schema, window, cx);
+                },
+            ),
             cx.subscribe_in(&search, window, |this, _, ev: &InputEvent, _, cx| {
                 if let InputEvent::Change = ev {
                     this.rebuild_tree(cx);
@@ -66,7 +86,7 @@ impl Session {
             cx.subscribe_in(
                 &db_select,
                 window,
-                |this, _, ev: &SelectEvent<Vec<String>>, window, cx| {
+                |this, _, ev: &SelectEvent<SearchList>, window, cx| {
                     let SelectEvent::Confirm(Some(name)) = ev else {
                         return;
                     };
@@ -80,6 +100,10 @@ impl Session {
             databases: Vec::new(),
             current_db: String::new(),
             db_select,
+            schemas: Vec::new(),
+            schema: None,
+            schema_select,
+            columns: Vec::new(),
             search,
             tree,
             tabs: Vec::new(),
@@ -102,22 +126,45 @@ impl Session {
             let dbs = c.databases().await.unwrap_or_default();
             // Autocomplete still works (minus columns) if this fails.
             let columns = c.all_columns().await.unwrap_or_default();
-            Ok((objects, dbs, c.current_database(), columns))
+            Ok((
+                objects,
+                dbs,
+                c.current_database(),
+                columns,
+                c.current_schema(),
+            ))
         });
         cx.spawn_in(window, async move |this, cx| {
             let res = task.await;
             this.update_in(cx, |this, window, cx| {
                 this.loading = false;
                 match res {
-                    Ok((objects, dbs, current, columns)) => {
-                        let names = objects.iter().map(|o| o.name.clone()).collect();
-                        *this.shared.schema.borrow_mut() = Schema::new(names, columns);
+                    Ok((objects, dbs, current, columns, schema)) => {
+                        this.schemas = if this.shared.cfg.driver == Driver::Postgres {
+                            schemas_of(&objects)
+                        } else {
+                            vec![]
+                        };
+                        this.schema = schema;
                         this.objects = objects;
+                        this.columns = columns;
+                        this.refresh_completion();
+                        let mut choices = vec![ALL_SCHEMAS.to_string()];
+                        choices.extend(this.schemas.iter().cloned());
+                        let picked = this
+                            .schema
+                            .as_ref()
+                            .and_then(|s| choices.iter().position(|c| c == s))
+                            .unwrap_or(0);
+                        this.schema_select.update(cx, |s, cx| {
+                            s.set_items(search_list(choices), window, cx);
+                            s.set_selected_index(Some(IndexPath::new(picked)), window, cx);
+                        });
                         let sel = dbs.iter().position(|d| *d == current).map(IndexPath::new);
                         this.databases = dbs.clone();
                         this.current_db = current.clone();
                         this.db_select.update(cx, |s, cx| {
-                            s.set_items(dbs, window, cx);
+                            s.set_items(search_list(dbs), window, cx);
                             s.set_selected_index(sel, window, cx);
                         });
                         this.rebuild_tree(cx);
@@ -163,36 +210,64 @@ impl Session {
     }
 
     fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
-        let q = self.search.read(cx).value().to_lowercase();
-        let matches = |o: &DbObject| q.is_empty() || o.title().to_lowercase().contains(&q);
-        let group = |kind: ObjectKind, id: &str, label: &str| -> Option<TreeItem> {
-            let children: Vec<TreeItem> = self
-                .objects
-                .iter()
-                .enumerate()
-                .filter(|(_, o)| o.kind == kind && matches(o))
-                .map(|(i, o)| TreeItem::new(format!("o:{i}"), o.title()))
-                .collect();
-            if children.is_empty() {
-                return None;
-            }
-            Some(
-                TreeItem::new(id.to_string(), format!("{label} ({})", children.len()))
-                    .expanded(true)
-                    .children(children),
-            )
-        };
-        let items: Vec<TreeItem> = [
-            group(ObjectKind::Table, "g:tables", "Tables"),
-            group(ObjectKind::View, "g:views", "Views"),
-            group(ObjectKind::Collection, "g:collections", "Collections"),
-            group(ObjectKind::Keys, "g:keys", "Keys"),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        let q = self.search.read(cx).value().to_string();
+        let items = build_tree(
+            &self.objects,
+            &q,
+            self.schema.as_deref(),
+            self.schemas.len() > 1,
+        );
         self.tree.update(cx, |t, cx| t.set_items(items, cx));
         cx.notify();
+    }
+
+    /// Autocomplete follows the selected schema (all schemas when none is).
+    fn refresh_completion(&mut self) {
+        let schema = self.schema.as_deref();
+        let in_schema = |s: Option<&str>| schema.is_none() || s == schema;
+        let names = self
+            .objects
+            .iter()
+            .filter(|o| in_schema(o.schema.as_deref()))
+            .map(|o| o.name.clone())
+            .collect();
+        let cols = self
+            .columns
+            .iter()
+            .filter(|(s, _, _)| in_schema(Some(s)))
+            .map(|(_, t, c)| (t.clone(), c.clone()))
+            .collect();
+        *self.shared.schema.borrow_mut() = Schema::new(names, cols);
+    }
+
+    /// Show one schema (or all, with `None`) and make it the default for
+    /// unqualified names in queries (Postgres `search_path`).
+    fn choose_schema(
+        &mut self,
+        schema: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if schema == self.schema {
+            return;
+        }
+        self.schema = schema.clone();
+        self.rebuild_tree(cx);
+        self.refresh_completion();
+        let conn = self.shared.conn.clone();
+        let task = runtime::spawn(async move { conn.write().await.set_schema(schema).await });
+        cx.spawn_in(window, async move |_, cx| {
+            if let Err(e) = task.await {
+                cx.update(|window, cx| {
+                    window.push_notification(
+                        Notification::error(format!("{e:#}")).title("Couldn't switch schema"),
+                        cx,
+                    )
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     pub fn open_object(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -442,6 +517,13 @@ impl Session {
                     .gap_1()
                     .p_2()
                     .child(Select::new(&self.db_select).small().placeholder("Database"))
+                    .when(self.schemas.len() > 1, |d| {
+                        d.child(
+                            Select::new(&self.schema_select)
+                                .small()
+                                .placeholder("Schema"),
+                        )
+                    })
                     .child(
                         Input::new(&self.search)
                             .small()
@@ -639,5 +721,136 @@ impl Render for Session {
                         ),
                     ),
             )
+    }
+}
+
+const ALL_SCHEMAS: &str = "All schemas";
+
+/// Distinct schemas, `public` first, then alphabetical.
+fn schemas_of(objects: &[DbObject]) -> Vec<String> {
+    let mut v: Vec<String> = objects.iter().filter_map(|o| o.schema.clone()).collect();
+    v.sort_by_key(|s| (s != "public", s.clone()));
+    v.dedup();
+    v
+}
+
+/// Sidebar tree. With several schemas and none selected, objects are
+/// grouped under a folder per schema; otherwise Tables / Views / … only.
+fn build_tree(
+    objects: &[DbObject],
+    query: &str,
+    schema: Option<&str>,
+    many_schemas: bool,
+) -> Vec<TreeItem> {
+    let q = query.to_lowercase();
+    let shown = |o: &DbObject| {
+        (schema.is_none() || o.schema.as_deref() == schema)
+            && (q.is_empty() || o.name.to_lowercase().contains(&q))
+    };
+    // Within a schema folder the schema prefix is redundant.
+    let label = |o: &DbObject| {
+        if many_schemas {
+            o.name.clone()
+        } else {
+            o.title()
+        }
+    };
+    let groups = |in_schema: Option<&str>, prefix: &str| -> Vec<TreeItem> {
+        [
+            (ObjectKind::Table, "tables", "Tables"),
+            (ObjectKind::View, "views", "Views"),
+            (ObjectKind::Collection, "collections", "Collections"),
+            (ObjectKind::Keys, "keys", "Keys"),
+        ]
+        .into_iter()
+        .filter_map(|(kind, id, name)| {
+            let children: Vec<TreeItem> = objects
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| o.kind == kind && shown(o))
+                .filter(|(_, o)| in_schema.is_none() || o.schema.as_deref() == in_schema)
+                .map(|(i, o)| TreeItem::new(format!("o:{i}"), label(o)))
+                .collect();
+            (!children.is_empty()).then(|| {
+                TreeItem::new(
+                    format!("g:{prefix}{id}"),
+                    format!("{name} ({})", children.len()),
+                )
+                .expanded(true)
+                .children(children)
+            })
+        })
+        .collect()
+    };
+    if !many_schemas || schema.is_some() {
+        return groups(None, "");
+    }
+    schemas_of(objects)
+        .into_iter()
+        .filter_map(|s| {
+            let children = groups(Some(&s), &format!("{s}:"));
+            let count: usize = children.iter().map(|g| g.children.len()).sum();
+            (count > 0).then(|| {
+                TreeItem::new(format!("s:{s}"), format!("{s} ({count})"))
+                    .expanded(s == "public")
+                    .children(children)
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn obj(schema: &str, name: &str, kind: ObjectKind) -> DbObject {
+        DbObject {
+            schema: Some(schema.into()),
+            name: name.into(),
+            kind,
+        }
+    }
+
+    fn labels(items: &[TreeItem]) -> Vec<String> {
+        items.iter().map(|i| i.label.to_string()).collect()
+    }
+
+    fn objects() -> Vec<DbObject> {
+        vec![
+            obj("sales", "orders", ObjectKind::Table),
+            obj("public", "users", ObjectKind::Table),
+            obj("public", "active_users", ObjectKind::View),
+            obj("audit", "log", ObjectKind::Table),
+        ]
+    }
+
+    #[test]
+    fn schemas_listed_public_first() {
+        assert_eq!(schemas_of(&objects()), ["public", "audit", "sales"]);
+    }
+
+    #[test]
+    fn groups_by_schema_when_none_selected() {
+        let tree = build_tree(&objects(), "", None, true);
+        assert_eq!(labels(&tree), ["public (2)", "audit (1)", "sales (1)"]);
+        assert_eq!(labels(&tree[0].children), ["Tables (1)", "Views (1)"]);
+        // Inside a schema folder, names aren't prefixed with the schema.
+        assert_eq!(labels(&tree[2].children[0].children), ["orders"]);
+        assert!(tree[0].is_expanded() && !tree[1].is_expanded());
+    }
+
+    #[test]
+    fn selected_schema_shows_only_its_objects() {
+        let tree = build_tree(&objects(), "", Some("sales"), true);
+        assert_eq!(labels(&tree), ["Tables (1)"]);
+        assert_eq!(labels(&tree[0].children), ["orders"]);
+    }
+
+    #[test]
+    fn search_hides_empty_schemas_and_single_schema_stays_flat() {
+        let tree = build_tree(&objects(), "user", None, true);
+        assert_eq!(labels(&tree), ["public (2)"]);
+        let flat = build_tree(&objects()[1..3], "", None, false);
+        assert_eq!(labels(&flat), ["Tables (1)", "Views (1)"]);
     }
 }

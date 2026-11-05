@@ -31,6 +31,12 @@ pub struct SqlConn {
     cfg: ConnectionConfig,
     pool: Pool,
     database: String,
+    /// Postgres schema put first on `search_path`; `None` = server default.
+    schema: Option<String>,
+}
+
+fn pg_ident(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\""))
 }
 
 // ---- row decoding ---------------------------------------------------------
@@ -157,11 +163,12 @@ macro_rules! run_tx {
 
 impl SqlConn {
     pub async fn connect(cfg: &ConnectionConfig) -> Result<Self> {
-        let pool = Self::open(cfg, &cfg.database).await?;
+        let pool = Self::open(cfg, &cfg.database, None).await?;
         let mut conn = SqlConn {
             cfg: cfg.clone(),
             pool,
             database: cfg.database.clone(),
+            schema: None,
         };
         let cur = match conn.cfg.driver {
             Driver::Postgres => "select current_database()",
@@ -178,7 +185,7 @@ impl SqlConn {
         Ok(conn)
     }
 
-    async fn open(cfg: &ConnectionConfig, database: &str) -> Result<Pool> {
+    async fn open(cfg: &ConnectionConfig, database: &str, schema: Option<&str>) -> Result<Pool> {
         let timeout = Duration::from_secs(10);
         Ok(match cfg.driver {
             Driver::Postgres => {
@@ -196,13 +203,24 @@ impl SqlConn {
                 if !database.is_empty() {
                     o = o.database(database);
                 }
-                Pool::Pg(
-                    PgPoolOptions::new()
-                        .max_connections(4)
-                        .acquire_timeout(timeout)
-                        .connect_with(o)
-                        .await?,
-                )
+                let mut pool = PgPoolOptions::new()
+                    .max_connections(4)
+                    .acquire_timeout(timeout);
+                if let Some(schema) = schema {
+                    // Every pooled connection resolves unqualified names in
+                    // the chosen schema first; `public` keeps extensions working.
+                    let sql = format!("set search_path to {}, public", pg_ident(schema));
+                    pool = pool.after_connect(move |conn, _| {
+                        let sql = sql.clone();
+                        Box::pin(async move {
+                            sqlx::raw_sql(AssertSqlSafe(sql))
+                                .execute(&mut *conn)
+                                .await
+                                .map(|_| ())
+                        })
+                    });
+                }
+                Pool::Pg(pool.connect_with(o).await?)
             }
             Driver::MySql => {
                 let mut o = MySqlConnectOptions::new()
@@ -299,27 +317,45 @@ impl SqlConn {
         if self.cfg.driver == Driver::Sqlite {
             return Ok(());
         }
-        let pool = Self::open(&self.cfg, name).await?;
+        let pool = Self::open(&self.cfg, name, None).await?;
         self.close().await;
         self.pool = pool;
         self.database = name.to_string();
+        self.schema = None;
         Ok(())
     }
 
-    pub async fn all_columns(&self) -> Result<Vec<(String, String)>> {
+    pub fn current_schema(&self) -> Option<String> {
+        self.schema.clone()
+    }
+
+    /// Postgres only: reconnects so unqualified names resolve in `schema`.
+    pub async fn set_schema(&mut self, schema: Option<String>) -> Result<()> {
+        if self.cfg.driver != Driver::Postgres {
+            return Ok(());
+        }
+        let pool = Self::open(&self.cfg, &self.database, schema.as_deref()).await?;
+        self.close().await;
+        self.pool = pool;
+        self.schema = schema;
+        Ok(())
+    }
+
+    /// (schema, table, column) for every column, for autocomplete.
+    pub async fn all_columns(&self) -> Result<Vec<(String, String, String)>> {
         // Capped so a huge schema can't stall the editor.
         let sql = match self.cfg.driver {
             Driver::Postgres => {
-                "select table_name, column_name from information_schema.columns \
+                "select table_schema, table_name, column_name from information_schema.columns \
                  where table_schema not in ('pg_catalog', 'information_schema') \
                  order by table_name, ordinal_position limit 50000"
             }
             Driver::MySql => {
-                "select table_name, column_name from information_schema.columns \
+                "select table_schema, table_name, column_name from information_schema.columns \
                  where table_schema = database() order by table_name, ordinal_position limit 50000"
             }
             _ => {
-                "select m.name, p.name from sqlite_master m join pragma_table_info(m.name) p \
+                "select 'main', m.name, p.name from sqlite_master m join pragma_table_info(m.name) p \
                  where m.type in ('table', 'view') and m.name not like 'sqlite_%' order by m.name, p.cid"
             }
         };
@@ -328,7 +364,7 @@ impl SqlConn {
             .await?
             .rows
             .into_iter()
-            .filter_map(|r| Some((r[0].clone()?, r[1].clone()?)))
+            .filter_map(|r| Some((r[0].clone()?, r[1].clone()?, r[2].clone()?)))
             .collect())
     }
 

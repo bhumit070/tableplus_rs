@@ -53,6 +53,14 @@ pub struct Shared {
     pub schema: Rc<RefCell<completion::Schema>>,
 }
 
+/// Items for a searchable dropdown. A plain `Vec` also works as a dropdown
+/// list, but its search does nothing (GitHub #12); `SearchableVec` filters.
+pub type SearchList = gpui_component::select::SearchableVec<String>;
+
+pub fn search_list(items: Vec<String>) -> SearchList {
+    gpui_component::select::SearchableVec::new(items)
+}
+
 pub fn tag_color(cfg: &ConnectionConfig) -> Hsla {
     rgb(cfg.tag.color()).into()
 }
@@ -240,5 +248,23 @@ mod tests {
             &in_editor
         )));
         assert!(is::<NewQuery>(resolve(editor(), sec!("t"), &in_editor)));
+    }
+
+    /// GitHub #12: dropdown search must actually filter.
+    #[gpui::test]
+    fn dropdown_search_filters(cx: &mut gpui::TestAppContext) {
+        use gpui_component::searchable_list::SearchableListDelegate as _;
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            let mut list = search_list(vec![
+                "postgres".into(),
+                "app_dev".into(),
+                "analytics".into(),
+            ]);
+            let _ = list.perform_search("app", window, cx);
+            assert_eq!(list.items_count(0), 1);
+            let _ = list.perform_search("", window, cx);
+            assert_eq!(list.items_count(0), 3);
+        });
     }
 }

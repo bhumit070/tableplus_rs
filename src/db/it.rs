@@ -74,7 +74,7 @@ async fn sql_scenario(driver: Driver) {
     let t = obj(&objects, "it_people");
     let cols = c.all_columns().await.unwrap();
     assert!(
-        cols.contains(&("it_people".into(), "name".into())),
+        cols.iter().any(|(_, t, c)| t == "it_people" && c == "name"),
         "{cols:?}"
     );
     let st = c.structure(&t).await.unwrap();
@@ -243,6 +243,51 @@ async fn postgres_end_to_end() {
     if it_enabled() {
         sql_scenario(Driver::Postgres).await;
     }
+}
+
+/// GitHub #13: choosing a schema makes unqualified names resolve in it,
+/// on every pooled connection; `None` goes back to the default.
+#[tokio::test]
+async fn postgres_schema_switch() {
+    if !it_enabled() {
+        return;
+    }
+    let mut c = Connection::connect(&cfg(Driver::Postgres)).await.unwrap();
+    c.execute(
+        "drop schema if exists it_sales cascade; create schema it_sales; \
+         create table it_sales.it_orders (id int); insert into it_sales.it_orders values (7)",
+    )
+    .await
+    .unwrap();
+    assert!(
+        c.execute("select id from it_orders").await.is_err(),
+        "not on the default path"
+    );
+    assert!(
+        c.list_objects()
+            .await
+            .unwrap()
+            .iter()
+            .any(|o| o.schema.as_deref() == Some("it_sales"))
+    );
+
+    c.set_schema(Some("it_sales".into())).await.unwrap();
+    assert_eq!(c.current_schema().as_deref(), Some("it_sales"));
+    // Several runs so more than one pooled connection is exercised.
+    for _ in 0..6 {
+        let r = c.execute("select id from it_orders").await.unwrap();
+        assert_eq!(r[0].rows[0][0].as_deref(), Some("7"));
+    }
+    // `public` stays on the path.
+    assert!(
+        c.execute("select count(*) from pg_catalog.pg_tables")
+            .await
+            .is_ok()
+    );
+
+    c.set_schema(None).await.unwrap();
+    assert!(c.execute("select id from it_orders").await.is_err());
+    c.execute("drop schema it_sales cascade").await.unwrap();
 }
 
 #[tokio::test]

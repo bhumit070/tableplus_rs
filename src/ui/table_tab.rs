@@ -20,14 +20,17 @@ use gpui_component::{
 use gpui_kit_assets::IconName;
 
 use super::grid::{Grid, data_table};
-use super::{AddRow, Commit, CopyCell, DeleteRows, Discard, SetNull, Shared, ToggleFilter};
+use super::{
+    AddRow, Commit, CopyCell, DeleteRows, Discard, SearchList, SetNull, Shared, ToggleFilter,
+    search_list,
+};
 use crate::db::{DbObject, EnvTag, Filter, FilterOp, QueryResult, Structure, TableQuery};
 use crate::runtime;
 
 const PAGE_SIZES: [usize; 4] = [100, 300, 1000, 5000];
 
 struct FilterRow {
-    column: Entity<SelectState<Vec<String>>>,
+    column: Entity<SelectState<SearchList>>,
     op: Entity<SelectState<Vec<&'static str>>>,
     value: Entity<InputState>,
 }
@@ -471,7 +474,8 @@ impl TableTab {
     fn add_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let columns: Vec<String> = self.table.read(cx).delegate().columns.clone();
         let column = cx.new(|cx| {
-            SelectState::new(columns, Some(IndexPath::new(0)), window, cx).searchable(true)
+            SelectState::new(search_list(columns), Some(IndexPath::new(0)), window, cx)
+                .searchable(true)
         });
         let ops: Vec<&'static str> = FilterOp::ALL.iter().map(|o| o.label()).collect();
         let op = cx.new(|cx| SelectState::new(ops, Some(IndexPath::new(0)), window, cx));

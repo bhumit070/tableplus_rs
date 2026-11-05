@@ -31,6 +31,9 @@ connections as you like: each one gets an icon in the left rail.
   autocomplete for tables, columns (including aliases), keywords and
   functions.
 - **Database switcher (⌘K):** jump between databases on the same connection.
+- **Schemas (PostgreSQL):** the sidebar groups tables by schema, and the
+  Schema dropdown shows one schema and makes it the default for queries
+  (`search_path`), so `SELECT * FROM orders` finds `sales.orders`.
 - **Settings (⌘,):** interface and editor font sizes, light/dark theme.
 
 ## Keyboard shortcuts
