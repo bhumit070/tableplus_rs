@@ -51,13 +51,12 @@ impl DbPicker {
             let sub = cx.subscribe_in(
                 &query,
                 window,
-                |this: &mut Self, _, ev: &InputEvent, window, cx| match ev {
-                    InputEvent::Change => {
+                // Enter is handled by the dialog's `on_ok` below, not here.
+                |this: &mut Self, _, ev: &InputEvent, _, cx| {
+                    if let InputEvent::Change = ev {
                         this.highlighted = 0;
                         cx.notify();
                     }
-                    InputEvent::PressEnter { .. } => this.pick(this.highlighted, window, cx),
-                    _ => {}
                 },
             );
             // Start on the current database so Enter is a no-op by default.
@@ -79,10 +78,18 @@ impl DbPicker {
             if first.replace(false) {
                 query.update(cx, |q, cx| q.focus(window, cx));
             }
+            // Enter in the search box bubbles up to the dialog as "OK", whose
+            // default just closes it, dropping the picker before it can act
+            // (GitHub #11). So "OK" is what picks the highlighted database.
+            let p = picker.clone();
             dialog
                 .title("Switch Database")
                 .w(px(420.))
                 .child(picker.clone())
+                .on_ok(move |_, window, cx| {
+                    p.update(cx, |p, cx| p.choose(p.highlighted, window, cx));
+                    true
+                })
         });
     }
 
@@ -90,11 +97,16 @@ impl DbPicker {
         filter(&self.all, &self.query.read(cx).value())
     }
 
-    fn pick(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(name) = self.matches(cx).get(ix).cloned() else {
+    /// Switches to match `ix` (clamped) unless it's already current. The
+    /// caller closes the dialog.
+    fn choose(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let matches = self.matches(cx);
+        let Some(name) = matches
+            .get(ix.min(matches.len().saturating_sub(1)))
+            .cloned()
+        else {
             return;
         };
-        window.close_dialog(cx);
         if name != self.current {
             (self.on_pick)(name, window, cx);
         }
@@ -157,9 +169,10 @@ impl Render for DbPicker {
                             .when(is_current, |d| {
                                 d.child(Icon::new(IconName::Check).text_color(theme.primary))
                             })
-                            .on_click(
-                                cx.listener(move |this, _, window, cx| this.pick(i, window, cx)),
-                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.choose(i, window, cx);
+                                window.close_dialog(cx);
+                            }))
                     })),
             )
     }
