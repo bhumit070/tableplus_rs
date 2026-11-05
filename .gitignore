@@ -1,0 +1,6 @@
+/target
+
+# TablePlus exports contain database passwords
+*.tableplusconnection
+
+.DS_Store
