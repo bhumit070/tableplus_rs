@@ -1193,3 +1193,31 @@ async fn frozen_server_times_out_and_recovers() {
     assert!(format!("{e:#}").contains("Lost the connection"), "{e:#}");
     assert!(c.fetch_table(&q).await.is_ok());
 }
+
+/// A new key with a TTL gets it; a key someone else already took is
+/// reported and keeps its own TTL / value.
+#[tokio::test]
+async fn redis_insert_with_ttl() {
+    if !it_enabled() {
+        return;
+    }
+    let mut c = Connection::connect(&cfg(Driver::Redis)).await.unwrap();
+    c.use_database("6").await.unwrap();
+    c.execute("FLUSHDB").await.unwrap();
+    let keys = c.list_objects().await.unwrap().remove(0);
+    let st = c.structure(&keys).await.unwrap().columns;
+    let ins = |k: &str| Change::Insert {
+        values: kv(&[("key", Some(k)), ("ttl", Some("100")), ("value", Some("ours"))]),
+    };
+    c.commit(&keys, &st, &[ins("it:fresh")]).await.unwrap();
+    let r = c.execute("TTL it:fresh").await.unwrap();
+    let shown = format!("{:?}", r[0].rows);
+    assert!(shown.contains("100") || shown.contains("99"), "{shown}");
+    // Someone else's key: refused, and left exactly as it was.
+    c.execute("SET it:taken theirs").await.unwrap();
+    let e = c.commit(&keys, &st, &[ins("it:taken")]).await.unwrap_err();
+    assert!(format!("{e:#}").contains("already exists"), "{e:#}");
+    let r = c.execute("TTL it:taken").await.unwrap();
+    assert!(format!("{:?}", r[0].rows).contains("-1"), "no TTL added");
+    c.execute("FLUSHDB").await.unwrap();
+}

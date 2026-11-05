@@ -87,12 +87,20 @@ pub fn update(cx: &mut App, f: impl FnOnce(&mut Settings)) {
     if let Err(e) = s.save() {
         // Applied for now, but it won't survive a restart: say so.
         let msg = format!("Settings couldn't be saved: {e:#}");
-        if let Some(w) = cx.windows().first().copied() {
-            let _ = w.update(cx, |_, window, cx| {
-                use gpui_component::WindowExt as _;
-                window.push_notification(gpui_component::notification::Notification::warning(msg), cx);
-            });
-        }
+        eprintln!("{msg}");
+        // Deferred: this often runs inside a window's event handling, where
+        // that window can't be updated again.
+        cx.defer(move |cx| {
+            if let Some(w) = cx.windows().first().copied() {
+                let _ = w.update(cx, |_, window, cx| {
+                    use gpui_component::WindowExt as _;
+                    window.push_notification(
+                        gpui_component::notification::Notification::warning(msg),
+                        cx,
+                    );
+                });
+            }
+        });
     }
     cx.set_global(s);
     apply_theme(cx);

@@ -541,19 +541,21 @@ impl RedisConn {
                         bail!("new rows need a key")
                     };
                     ensure_free(&k, &mut con).await?;
-                    pipe.cmd("SET")
+                    // TTL in the same SET: a separate EXPIRE would also hit
+                    // the key if someone else created it first.
+                    let cmd = pipe
+                        .cmd("SET")
                         .arg(&k)
                         .arg(get("value").unwrap_or_default())
                         .arg("NX");
-                    nx.push((n, k.clone()));
-                    n += 1;
                     if let Some(secs) = get("ttl")
                         .and_then(|s| s.parse::<i64>().ok())
                         .filter(|s| *s > 0)
                     {
-                        pipe.cmd("EXPIRE").arg(&k).arg(secs);
-                        n += 1;
+                        cmd.arg("EX").arg(secs);
                     }
+                    nx.push((n, k.clone()));
+                    n += 1;
                 }
                 Change::Delete { key } => {
                     pipe.cmd("DEL").arg(key_of(key));

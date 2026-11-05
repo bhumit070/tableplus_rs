@@ -144,14 +144,21 @@ impl Home {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Err(e) = store::load_secrets(&mut cfg) {
-            window.push_notification(
-                Notification::error(format!("{e:#}"))
-                    .title(format!("Couldn't connect to {}", cfg.display_name())),
-                cx,
-            );
-            return;
-        }
+        // A keychain that can't be read (locked, no Secret Service on
+        // Linux) mustn't block connections that need no password: try
+        // without it, and say so.
+        let keychain_failed = match store::load_secrets(&mut cfg) {
+            Ok(()) => false,
+            Err(e) => {
+                window.push_notification(
+                    Notification::warning(format!(
+                        "{e:#}. Connecting without the saved password."
+                    )),
+                    cx,
+                );
+                true
+            }
+        };
         self.connecting.insert(cfg.id.clone());
         cx.notify();
         let home = cx.entity().downgrade();
@@ -162,7 +169,13 @@ impl Home {
                     home.update(cx, |h, cx| {
                         h.connecting.remove(&retry.id);
                         // Imported connections have no password yet: let the user add it.
-                        if !ok && retry.password.is_empty() && retry.driver != Driver::Sqlite {
+                        // (Not when the keychain failed: saving that form
+                        // would replace the stored password with a blank.)
+                        if !ok
+                            && !keychain_failed
+                            && retry.password.is_empty()
+                            && retry.driver != Driver::Sqlite
+                        {
                             h.open_form(Some(retry), window, cx);
                         }
                         cx.notify();

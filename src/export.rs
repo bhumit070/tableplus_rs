@@ -118,13 +118,22 @@ fn delimited_line(cells: &[Option<String>], sep: char) -> String {
 /// JSON keys for `columns`: a repeated name (`select a.id, b.id`) gets a
 /// suffix (`id_2`) instead of overwriting the first one's value.
 fn json_keys(columns: &[String]) -> Vec<String> {
-    let mut seen = std::collections::HashMap::<&str, usize>::new();
+    // Real names first, so a suffix never takes one (`id`, `id`, `id_2`).
+    let mut used: std::collections::HashSet<String> = columns.iter().cloned().collect();
+    let mut first = std::collections::HashSet::new();
     columns
         .iter()
         .map(|c| {
-            let n = seen.entry(c).or_insert(0);
-            *n += 1;
-            if *n == 1 { c.clone() } else { format!("{c}_{n}") }
+            if first.insert(c.clone()) {
+                return c.clone();
+            }
+            let mut n = 2;
+            while used.contains(&format!("{c}_{n}")) {
+                n += 1;
+            }
+            let key = format!("{c}_{n}");
+            used.insert(key.clone());
+            key
         })
         .collect()
 }
@@ -394,6 +403,8 @@ mod tests {
         let cols = vec!["id".to_string(), "id".to_string()];
         let j = render(Format::JsonLines, &cols, &[vec![Some("1".into()), Some("2".into())]], &pg());
         assert_eq!(j.trim(), r#"{"id":"1","id_2":"2"}"#);
+        let cols: Vec<String> = ["id", "id", "id_2"].map(String::from).to_vec();
+        assert_eq!(json_keys(&cols), ["id", "id_3", "id_2"]);
     }
 
     #[test]

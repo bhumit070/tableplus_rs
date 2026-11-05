@@ -124,6 +124,10 @@ fn ssh_account(id: &str) -> String {
 /// Fills in a connection's secrets (database password, SSH password or
 /// passphrase) from the keychain, where they aren't set already.
 pub fn load_secrets(cfg: &mut ConnectionConfig) -> Result<()> {
+    // SQLite files have no password: don't depend on the keychain at all.
+    if cfg.driver == crate::db::Driver::Sqlite {
+        return Ok(());
+    }
     if cfg.password.is_empty() {
         cfg.password = password(&cfg.id)?;
     }
