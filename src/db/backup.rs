@@ -72,7 +72,9 @@ fn tool(names: &[&str], install: &str) -> Result<PathBuf> {
 }
 
 fn pg_env(cmd: &mut Command, t: &Target) {
-    cmd.env("PGPASSWORD", &t.cfg.password).env(
+    cmd.env("PGPASSWORD", &t.cfg.password)
+        .env("PGCONNECT_TIMEOUT", "15")
+        .env(
         "PGSSLMODE",
         match (t.cfg.ssl, t.cfg.ssl_verify) {
             (true, true) => "verify-full",
@@ -119,7 +121,8 @@ fn my_args(cmd: &mut Command, t: &Target, opts: &MyOptions) {
         .arg(format!("--host={}", t.host))
         .arg(format!("--port={}", t.port))
         .arg(format!("--user={}", t.cfg.user))
-        .arg("--protocol=TCP");
+        .arg("--protocol=TCP")
+        .arg("--connect-timeout=15");
     if t.cfg.ssl {
         cmd.arg(if t.cfg.ssl_verify {
             "--ssl-mode=VERIFY_IDENTITY"
@@ -202,14 +205,20 @@ pub async fn dump(t: &Target, scope: Scope, file: &Path) -> Result<()> {
             if scope != Scope::Everything {
                 bail!("SQLite backups copy the whole file");
             }
-            if file.exists() {
-                std::fs::remove_file(file)?;
-            }
+            // Into a temp file first: a failed backup mustn't cost the
+            // previous one at the same path.
+            let tmp = file.with_extension(format!("tmp-{}", uuid::Uuid::new_v4().simple()));
             let c = super::Connection::connect(&t.cfg).await?;
-            let lit = format!("'{}'", file.to_string_lossy().replace('\'', "''"));
-            c.execute_cancellable(&format!("vacuum into {lit}"), &Default::default())
-                .await?;
+            let lit = format!("'{}'", tmp.to_string_lossy().replace('\'', "''"));
+            let res = c
+                .execute_cancellable(&format!("vacuum into {lit}"), &Default::default())
+                .await;
             c.close().await;
+            if let Err(e) = res {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e);
+            }
+            std::fs::rename(&tmp, file)?;
             Ok(())
         }
         _ => bail!("backups aren't available for {}", t.cfg.driver.label()),

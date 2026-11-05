@@ -244,7 +244,7 @@ impl Session {
     fn switch_database(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
         let conn = self.shared.conn.clone();
         let n = name.clone();
-        let task = runtime::spawn(async move { conn.write().await.use_database(&n).await });
+        let task = runtime::spawn(async move { exclusive(&conn).await?.use_database(&n).await });
         cx.spawn_in(window, async move |this, cx| {
             let res = task.await;
             this.update_in(cx, |this, window, cx| match res {
@@ -314,7 +314,7 @@ impl Session {
         // so the two can't disagree if the reconnect fails.
         let conn = self.shared.conn.clone();
         let s = schema.clone();
-        let task = runtime::spawn(async move { conn.write().await.set_schema(s).await });
+        let task = runtime::spawn(async move { exclusive(&conn).await?.set_schema(s).await });
         cx.spawn_in(window, async move |this, cx| {
             let res = task.await;
             this.update_in(cx, |this, window, cx| match res {
@@ -1743,6 +1743,21 @@ mod tests {
         let flat = build_tree(&objects()[1..3], "", None, false);
         assert_eq!(labels(&flat), ["Tables (1)", "Views (1)"]);
     }
+}
+
+/// The connection for a change that needs it to itself (switching
+/// database / schema). Waiting indefinitely behind a long query would also
+/// stall every other read queued after us, so give up after a few seconds.
+async fn exclusive(
+    conn: &std::sync::Arc<tokio::sync::RwLock<crate::db::Connection>>,
+) -> anyhow::Result<tokio::sync::RwLockWriteGuard<'_, crate::db::Connection>> {
+    tokio::time::timeout(std::time::Duration::from_secs(3), conn.write())
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Something is still running on this connection (a query?). Stop it with ⌘. and try again."
+            )
+        })
 }
 
 /// Today as YYYY-MM-DD (UTC), for default file names.

@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 /// The error message of a cancelled run.
 pub const CANCELLED: &str = "Query cancelled";
 
-type ServerCancel = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>;
+type ServerCancel = Box<dyn FnOnce() -> BoxFuture<'static, Result<(), String>> + Send>;
 
 #[derive(Default)]
 pub struct Cancel {
@@ -23,12 +23,23 @@ pub struct Cancel {
     done: AtomicBool,
     notify: Notify,
     server: Mutex<Option<ServerCancel>>,
+    /// Why the server-side cancel didn't go through, if it didn't.
+    server_error: Mutex<Option<String>>,
 }
 
 impl Cancel {
     /// Registers how to cancel the statement running now, server-side.
     pub fn on_server_cancel(&self, f: ServerCancel) {
-        *self.server.lock().unwrap() = Some(f);
+        *self.server.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+    }
+
+    /// The message for a cancelled run: says when the server may still be
+    /// running the statement.
+    pub fn message(&self) -> String {
+        match self.server_error.lock().unwrap_or_else(|e| e.into_inner()).as_deref() {
+            Some(e) => format!("{CANCELLED}. The server may still be running it ({e}); see Processes (⌘⇧P)."),
+            None => CANCELLED.to_string(),
+        }
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -41,9 +52,14 @@ impl Cancel {
         if self.flag.swap(true, Ordering::SeqCst) {
             return;
         }
-        let server = self.server.lock().unwrap().take();
+        let server = self.server.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(f) = server {
-            let _ = tokio::time::timeout(Duration::from_secs(5), f()).await;
+            let err = match tokio::time::timeout(Duration::from_secs(5), f()).await {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(e),
+                Err(_) => Some("the server didn't answer the cancel request".into()),
+            };
+            *self.server_error.lock().unwrap_or_else(|e| e.into_inner()) = err;
         }
         self.done.store(true, Ordering::SeqCst);
         self.notify.notify_waiters();
@@ -72,7 +88,10 @@ mod tests {
         let hit = Arc::new(AtomicBool::new(false));
         let h = hit.clone();
         c.on_server_cancel(Box::new(move || {
-            Box::pin(async move { h.store(true, Ordering::SeqCst) })
+            Box::pin(async move {
+                h.store(true, Ordering::SeqCst);
+                Ok(())
+            })
         }));
         let waiter = tokio::spawn({
             let c = c.clone();

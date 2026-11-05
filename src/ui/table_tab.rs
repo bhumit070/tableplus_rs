@@ -1351,6 +1351,14 @@ impl Render for TableTab {
                             cx.notify();
                         })),
                 )
+                .children(self.structure.iter().flat_map(|s| s.warnings.clone()).map(|w| {
+                    div()
+                        .px_2()
+                        .py_1()
+                        .text_xs()
+                        .bg(cx.theme().warning.opacity(0.15))
+                        .child(format!("Couldn't load {w}"))
+                }))
                 .child(div().flex_1().min_h_0().child(content))
                 .into_any_element()
         } else {

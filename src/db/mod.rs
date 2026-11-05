@@ -23,6 +23,39 @@ use serde::{Deserialize, Serialize};
 
 pub use cancel::Cancel;
 
+/// Background reads (sidebar, table pages, structure) give up after this;
+/// editor queries may run longer, and are stopped with Cancel instead.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+impl Connection {
+    /// Adds what the user needs to know to a failure: the connection was
+    /// lost, or the SSH tunnel it ran through has closed.
+    fn explain(&self, e: anyhow::Error) -> anyhow::Error {
+        let e = sql::explain_lost(e);
+        match &self._tunnel {
+            Some(t) if t.closed() => e.context(format!(
+                "The SSH tunnel through {} has closed. Close this connection and open it again",
+                t.host
+            )),
+            _ => e,
+        }
+    }
+
+    async fn bounded<T>(
+        &self,
+        what: &str,
+        f: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<T> {
+        match tokio::time::timeout(READ_TIMEOUT, f).await {
+            Err(_) => Err(self.explain(anyhow::anyhow!(
+                "{what}: the server didn't answer within {} s. It may be down, or busy.",
+                READ_TIMEOUT.as_secs()
+            ))),
+            Ok(r) => r.map_err(|e| self.explain(e).context(what.to_string())),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Driver {
     Postgres,
@@ -288,6 +321,8 @@ pub struct Structure {
     pub foreign_keys: Vec<ForeignKey>,
     /// `CREATE TABLE …` (plus indexes where the server keeps them apart).
     pub ddl: String,
+    /// Parts that couldn't be loaded (permissions, lost connection…).
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -429,20 +464,26 @@ impl Connection {
     }
 
     pub async fn list_objects(&self) -> Result<Vec<DbObject>> {
-        match &self.inner {
-            Conn::Sql(c) => c.list_objects().await,
-            Conn::Redis(c) => c.list_objects().await,
-            Conn::Mongo(c) => c.list_objects().await,
-        }
+        self.bounded("Listing tables", async {
+            match &self.inner {
+                Conn::Sql(c) => c.list_objects().await,
+                Conn::Redis(c) => c.list_objects().await,
+                Conn::Mongo(c) => c.list_objects().await,
+            }
+        })
+        .await
     }
 
     /// Every (table, column) in the current database, for autocomplete.
     /// Only SQL backends have a fixed schema; the others return nothing.
     pub async fn all_columns(&self) -> Result<Vec<(String, String, String)>> {
-        match &self.inner {
-            Conn::Sql(c) => c.all_columns().await,
-            Conn::Redis(_) | Conn::Mongo(_) => Ok(vec![]),
-        }
+        self.bounded("Loading column names", async {
+            match &self.inner {
+                Conn::Sql(c) => c.all_columns().await,
+                Conn::Redis(_) | Conn::Mongo(_) => Ok(vec![]),
+            }
+        })
+        .await
     }
 
     /// The Postgres schema chosen with `set_schema`, if any.
@@ -463,11 +504,14 @@ impl Connection {
     }
 
     pub async fn databases(&self) -> Result<Vec<String>> {
-        match &self.inner {
-            Conn::Sql(c) => c.databases().await,
-            Conn::Redis(c) => c.databases().await,
-            Conn::Mongo(c) => c.databases().await,
-        }
+        self.bounded("Listing databases", async {
+            match &self.inner {
+                Conn::Sql(c) => c.databases().await,
+                Conn::Redis(c) => c.databases().await,
+                Conn::Mongo(c) => c.databases().await,
+            }
+        })
+        .await
     }
 
     /// Switch the active database / schema (like ⌘K in TablePlus).
@@ -488,21 +532,27 @@ impl Connection {
     }
 
     pub async fn structure(&self, obj: &DbObject) -> Result<Structure> {
-        match &self.inner {
-            Conn::Sql(c) => c.structure(obj).await,
-            Conn::Redis(c) => c.structure(obj),
-            Conn::Mongo(c) => c.structure(obj).await,
-        }
+        self.bounded("Loading the structure", async {
+            match &self.inner {
+                Conn::Sql(c) => c.structure(obj).await,
+                Conn::Redis(c) => c.structure(obj),
+                Conn::Mongo(c) => c.structure(obj).await,
+            }
+        })
+        .await
     }
 
     /// Returns the page of rows plus the total row count (for the pager).
     pub async fn fetch_table(&self, q: &TableQuery) -> Result<(QueryResult, Option<u64>)> {
         let start = Instant::now();
-        let (mut res, total) = match &self.inner {
-            Conn::Sql(c) => c.fetch_table(q).await?,
-            Conn::Redis(c) => c.fetch_table(q).await?,
-            Conn::Mongo(c) => c.fetch_table(q).await?,
-        };
+        let (mut res, total) = self.bounded("Loading rows", async {
+            Ok(match &self.inner {
+                Conn::Sql(c) => c.fetch_table(q).await?,
+                Conn::Redis(c) => c.fetch_table(q).await?,
+                Conn::Mongo(c) => c.fetch_table(q).await?,
+            })
+        })
+        .await?;
         res.elapsed_ms = start.elapsed().as_millis();
         Ok((res, total))
     }
@@ -528,8 +578,8 @@ impl Connection {
         };
         // SQL batches watch `cancel` themselves, to clean up the connection.
         tokio::select! {
-            r = run => r,
-            _ = cancel.cancelled() => Err(anyhow::anyhow!(cancel::CANCELLED)),
+            r = run => r.map_err(|e| self.explain(e)),
+            _ = cancel.cancelled() => Err(anyhow::anyhow!(cancel.message())),
         }
     }
 
@@ -554,6 +604,7 @@ impl Connection {
             Conn::Redis(c) => c.commit(changes).await,
             Conn::Mongo(c) => c.commit(obj, changes).await,
         }
+        .map_err(|e| self.explain(e))
     }
 
     /// Whether `commit` is all-or-nothing. MongoDB (standalone) isn't: a
@@ -564,11 +615,14 @@ impl Connection {
 
     /// Server sessions (first column = id), for the process list.
     pub async fn processes(&self) -> Result<QueryResult> {
-        match &self.inner {
-            Conn::Sql(c) => c.processes().await,
-            Conn::Redis(c) => c.processes().await,
-            Conn::Mongo(_) => anyhow::bail!("not available for MongoDB yet"),
-        }
+        self.bounded("Listing processes", async {
+            match &self.inner {
+                Conn::Sql(c) => c.processes().await,
+                Conn::Redis(c) => c.processes().await,
+                Conn::Mongo(_) => anyhow::bail!("not available for MongoDB yet"),
+            }
+        })
+        .await
     }
 
     /// Cancels a session's statement, or with `whole` ends the session.

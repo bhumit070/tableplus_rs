@@ -636,7 +636,7 @@ async fn cancel_scenario(driver: Driver, sleep: &str, still_running: &str) {
         .expect("cancel returns promptly")
         .unwrap()
         .unwrap_err();
-    assert_eq!(err.root_cause().to_string(), cancel::CANCELLED, "{err:#}");
+    assert!(err.root_cause().to_string().starts_with(cancel::CANCELLED), "{err:#}");
     assert!(start.elapsed().as_secs() < 5);
     // The server isn't still sleeping on our behalf.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -692,7 +692,7 @@ async fn sqlite_cancel() {
         )
         .await
         .unwrap_err();
-    assert_eq!(err.root_cause().to_string(), cancel::CANCELLED);
+    assert!(err.root_cause().to_string().starts_with(cancel::CANCELLED));
 }
 
 /// Structure view extras: foreign keys (with composite keys and actions)
@@ -1161,25 +1161,35 @@ async fn postgres_create_drop_database() {
     assert!(!c.databases().await.unwrap().contains(&name));
 }
 
+/// Connecting to nothing fails fast with the address and the real reason,
+/// not "pool timed out".
 #[tokio::test]
-#[ignore]
-async fn tmp_server_down_probe() {
+async fn unreachable_server_says_why() {
     for d in [Driver::Postgres, Driver::MySql, Driver::Redis, Driver::Mongo] {
-        let name = match d { Driver::Postgres => "tabula-test-pg", Driver::MySql => "tabula-test-mysql", Driver::Redis => "tabula-test-redis", _ => "tabula-test-mongo" };
-        let c = Connection::connect(&cfg(d)).await.unwrap();
-        let q = match d { Driver::Redis => "PING", Driver::Mongo => "{\"ping\": 1}", _ => "select 1" };
-        std::process::Command::new("docker").args(["pause", name]).status().unwrap();
-        let t = Instant::now();
-        let r = tokio::time::timeout(std::time::Duration::from_secs(40), c.execute(q)).await;
-        println!("PROBE {d:?} paused: after {:?}: {}", t.elapsed(), match &r { Err(_) => "STILL HANGING at 40s".into(), Ok(Ok(_)) => "ok?".into(), Ok(Err(e)) => format!("err: {e:#}") });
-        std::process::Command::new("docker").args(["unpause", name]).status().unwrap();
-        let t = Instant::now();
-        let r = tokio::time::timeout(std::time::Duration::from_secs(40), c.execute(q)).await;
-        println!("PROBE {d:?} after unpause: {:?} {}", t.elapsed(), match &r { Err(_) => "HANG".into(), Ok(Ok(_)) => "ok".into(), Ok(Err(e)) => format!("err: {e:#}") });
-        std::process::Command::new("docker").args(["restart", name]).status().unwrap();
-        tokio::time::sleep(std::time::Duration::from_secs(8)).await;
-        let t = Instant::now();
-        let r = tokio::time::timeout(std::time::Duration::from_secs(40), c.execute(q)).await;
-        println!("PROBE {d:?} after restart: {:?} {}", t.elapsed(), match &r { Err(_) => "HANG".into(), Ok(Ok(_)) => "ok".into(), Ok(Err(e)) => format!("err: {e:#}") });
+        let mut c = cfg(d);
+        c.port = 1; // nothing listens there
+        let start = Instant::now();
+        let e = Connection::connect(&c).await.err().expect("fails");
+        let msg = format!("{e:#}");
+        assert!(msg.contains("127.0.0.1:1"), "{d:?}: {msg}");
+        assert!(!msg.contains("pool timed out"), "{d:?}: {msg}");
+        assert!(start.elapsed().as_secs() < 20, "{d:?} took {:?}", start.elapsed());
     }
+}
+
+/// A server that stops answering: background reads give up with a clear
+/// message instead of hanging, and work again once it's back.
+#[tokio::test]
+async fn frozen_server_times_out_and_recovers() {
+    if !it_enabled() || std::env::var("TABULA_IT_PAUSE").is_err() {
+        return;
+    }
+    let c = Connection::connect(&cfg(Driver::Redis)).await.unwrap();
+    let keys = c.list_objects().await.unwrap().remove(0);
+    let q = TableQuery { object: keys, filters: vec![], order: None, limit: 5, offset: 0 };
+    std::process::Command::new("docker").args(["pause", "tabula-test-redis"]).status().unwrap();
+    let e = c.fetch_table(&q).await.unwrap_err();
+    std::process::Command::new("docker").args(["unpause", "tabula-test-redis"]).status().unwrap();
+    assert!(format!("{e:#}").contains("Lost the connection"), "{e:#}");
+    assert!(c.fetch_table(&q).await.is_ok());
 }

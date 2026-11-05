@@ -150,7 +150,17 @@ impl client::Handler for Client {
 /// An open tunnel; dropping it closes the listener and the SSH session.
 pub struct Tunnel {
     pub port: u16,
+    pub host: String,
     task: tokio::task::JoinHandle<()>,
+    session: Arc<client::Handle<Client>>,
+}
+
+impl Tunnel {
+    /// The SSH session ended (server gone, network dropped, keepalive
+    /// failed): nothing goes through any more.
+    pub fn closed(&self) -> bool {
+        self.session.is_closed() || self.task.is_finished()
+    }
 }
 
 impl Drop for Tunnel {
@@ -198,11 +208,16 @@ impl Tunnel {
                 });
             }
         };
-        authenticate(&mut session, ssh).await?;
+        // An agent waiting for a hardware-key touch, or a stalled server,
+        // mustn't hang the connect forever.
+        tokio::time::timeout(Duration::from_secs(60), authenticate(&mut session, ssh))
+            .await
+            .map_err(|_| anyhow::anyhow!("SSH: login to {} didn't finish within 60 s", ssh.host))??;
 
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let local_port = listener.local_addr()?.port();
         let session = Arc::new(session);
+        let kept = session.clone();
         let target = target_host.to_string();
         let task = tokio::spawn(async move {
             // Owned here, so aborting the task also stops every forward.
@@ -218,11 +233,14 @@ impl Tunnel {
                             from.port() as u32,
                         )
                         .await;
-                    // A failed open just closes this socket; the driver
-                    // reports the connection error.
-                    if let Ok(channel) = channel {
-                        let mut stream = channel.into_stream();
-                        let _ = tokio::io::copy_bidirectional(&mut socket, &mut stream).await;
+                    match channel {
+                        Ok(channel) => {
+                            let mut stream = channel.into_stream();
+                            let _ = tokio::io::copy_bidirectional(&mut socket, &mut stream).await;
+                        }
+                        // Closing the socket makes the driver fail; the log
+                        // says it was the tunnel (the driver can't know).
+                        Err(e) => eprintln!("SSH tunnel: couldn't open a channel to the database: {e}"),
                     }
                 });
                 // Reap finished forwards so the set doesn't grow forever.
@@ -231,7 +249,9 @@ impl Tunnel {
         });
         Ok(Tunnel {
             port: local_port,
+            host: ssh.host.clone(),
             task,
+            session: kept,
         })
     }
 }

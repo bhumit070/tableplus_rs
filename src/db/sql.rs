@@ -55,6 +55,42 @@ fn my_ssl_mode(cfg: &ConnectionConfig) -> MySqlSslMode {
     }
 }
 
+/// How long a server may take to accept a connection.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Opens (and closes) one connection, so failures carry the server's own
+/// reason — refused, bad password, unknown database, TLS — with the address.
+async fn probe<C: sqlx::Connection>(
+    cfg: &ConnectionConfig,
+    connect: impl std::future::Future<Output = std::result::Result<C, sqlx::Error>>,
+) -> Result<()> {
+    let at = format!("{}:{}", cfg.host, cfg.port);
+    match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
+        Err(_) => bail!("no answer from {at} within {} s", CONNECT_TIMEOUT.as_secs()),
+        Ok(Err(e)) => Err(anyhow::Error::new(e).context(format!("couldn't connect to {at}"))),
+        Ok(Ok(c)) => {
+            let _ = c.close().await;
+            Ok(())
+        }
+    }
+}
+
+/// A pool that can't get a connection says only "pool timed out": say
+/// what that means for the user.
+pub(super) fn explain_lost(e: anyhow::Error) -> anyhow::Error {
+    let lost = e
+        .downcast_ref::<sqlx::Error>()
+        .is_some_and(|e| matches!(e, sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed | sqlx::Error::Io(_)))
+        || e.downcast_ref::<redis::RedisError>().is_some_and(|e| {
+            e.is_timeout() || e.is_io_error() || e.is_connection_dropped() || e.is_connection_refusal()
+        });
+    if lost {
+        e.context("Lost the connection to the server (it may be down or unreachable). Try again or reconnect")
+    } else {
+        e
+    }
+}
+
 fn pg_ident(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
 }
@@ -234,7 +270,11 @@ macro_rules! run_batch {
                 let (pool, sql) = ($pool.clone(), kill.replace("{}", &id.to_string()));
                 cancel.on_server_cancel(Box::new(move || {
                     Box::pin(async move {
-                        let _ = sqlx::raw_sql(AssertSqlSafe(sql)).execute(&pool).await;
+                        sqlx::raw_sql(AssertSqlSafe(sql))
+                            .execute(&pool)
+                            .await
+                            .map(|_| ())
+                            .map_err(|e| e.to_string())
                     })
                 }));
             }
@@ -293,6 +333,7 @@ macro_rules! run_batch {
                 String::new()
             };
             if cancel.is_cancelled() {
+                let e = anyhow::anyhow!(cancel.message());
                 if n == 1 && !rolled_back {
                     return Err(e);
                 }
@@ -395,6 +436,9 @@ impl SqlConn {
                         })
                     });
                 }
+                // One direct connection first: the pool would retry quietly
+                // and only report "pool timed out", hiding the real cause.
+                probe(cfg, sqlx::PgConnection::connect_with(&o)).await?;
                 Pool::Pg(pool.connect_with(o).await?)
             }
             Driver::MySql => {
@@ -420,6 +464,7 @@ impl SqlConn {
                         })
                     });
                 }
+                probe(cfg, sqlx::MySqlConnection::connect_with(&o)).await?;
                 Pool::My(pool.connect_with(o).await?)
             }
             Driver::Sqlite => {
@@ -640,16 +685,28 @@ impl SqlConn {
                 is_pk: r[4].as_deref() == Some("true"),
             })
             .collect();
-        let indexes = self.raw(idx_sql).await.unwrap_or_default();
-        // Extras: a server that hides them (permissions, old versions)
-        // still shows columns and indexes.
-        let foreign_keys = self.foreign_keys(obj).await.unwrap_or_default();
-        let ddl = self.ddl(obj, &columns).await.unwrap_or_default();
+        // Extras: when one can't be read (permissions, old servers…) the
+        // rest still shows, with a note saying what's missing.
+        let mut warnings = vec![];
+        let mut part = |what: &str, e: anyhow::Error| warnings.push(format!("{what}: {e:#}"));
+        let indexes = self.raw(idx_sql).await.unwrap_or_else(|e| {
+            part("Indexes", e);
+            Default::default()
+        });
+        let foreign_keys = self.foreign_keys(obj).await.unwrap_or_else(|e| {
+            part("Foreign keys", e);
+            Default::default()
+        });
+        let ddl = self.ddl(obj, &columns).await.unwrap_or_else(|e| {
+            part("SQL", e);
+            Default::default()
+        });
         Ok(Structure {
             columns,
             indexes,
             foreign_keys,
             ddl,
+            warnings,
         })
     }
 

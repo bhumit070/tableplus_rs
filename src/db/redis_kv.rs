@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use anyhow::{Result, bail};
 use redis::Value;
-use redis::aio::MultiplexedConnection;
+use redis::aio::ConnectionManager;
 
 use super::{
     Change, ColumnInfo, ConnectionConfig, DbObject, FilterOp, ObjectKind, QueryResult, Structure,
@@ -17,7 +17,8 @@ const SCAN_CAP: usize = 10_000;
 
 pub struct RedisConn {
     cfg: ConnectionConfig,
-    con: MultiplexedConnection,
+    /// Reconnects by itself after the server restarts or the network drops.
+    con: ConnectionManager,
     db: String,
 }
 
@@ -32,7 +33,7 @@ fn pct(s: &str) -> String {
         .collect()
 }
 
-async fn open(cfg: &ConnectionConfig, db: &str) -> Result<MultiplexedConnection> {
+async fn open(cfg: &ConnectionConfig, db: &str) -> Result<ConnectionManager> {
     let scheme = if cfg.ssl { "rediss" } else { "redis" };
     let auth = match (cfg.user.is_empty(), cfg.password.is_empty()) {
         (true, true) => String::new(),
@@ -41,15 +42,46 @@ async fn open(cfg: &ConnectionConfig, db: &str) -> Result<MultiplexedConnection>
     };
     let db = if db.is_empty() { "0" } else { db };
     let url = format!("{scheme}://{auth}{}:{}/{db}", cfg.host, cfg.port);
-    // RESP3 returns hashes as maps; servers older than Redis 6 only speak RESP2.
-    let resp3 = redis::Client::open(format!("{url}?protocol=resp3"))?;
-    match resp3.get_multiplexed_async_connection().await {
-        Ok(con) => Ok(con),
-        Err(_) => Ok(redis::Client::open(url)?
-            .get_multiplexed_async_connection()
-            .await?),
+    let at = format!("{}:{}", cfg.host, cfg.port);
+    let fail = |e: redis::RedisError| anyhow::Error::new(e).context(format!("couldn't connect to {at}"));
+    // RESP3 returns hashes as maps; servers older than Redis 6 only speak
+    // RESP2 and reject the HELLO handshake.
+    let mut client = redis::Client::open(format!("{url}?protocol=resp3"))?;
+    // One plain connection first, so a down server or bad password fails
+    // fast with its own reason (the manager retries quietly for minutes).
+    let probe_cfg = || {
+        redis::AsyncConnectionConfig::new()
+            .set_connection_timeout(std::time::Duration::from_secs(15))
+            .set_response_timeout(std::time::Duration::from_secs(15))
+    };
+    if let Err(e) = client.get_multiplexed_async_connection_with_config(&probe_cfg()).await {
+        let old_server = e.kind() == redis::ErrorKind::ResponseError || e.to_string().contains("HELLO");
+        if !old_server {
+            return Err(fail(e));
+        }
+        client = redis::Client::open(url)?;
+        client
+            .get_multiplexed_async_connection_with_config(&probe_cfg())
+            .await
+            .map_err(fail)?;
     }
+    let config = redis::aio::ConnectionManagerConfig::new()
+        .set_connection_timeout(std::time::Duration::from_secs(15))
+        // Nothing waits forever on a server that stopped answering.
+        .set_response_timeout(std::time::Duration::from_secs(30))
+        .set_number_of_retries(2);
+    ConnectionManager::new_with_config(client, config)
+        .await
+        .map_err(fail)
 }
+
+/// Commands that block or turn the connection into a subscriber: on the
+/// shared connection they would freeze every other view.
+const BLOCKING: &[&str] = &[
+    "BLPOP", "BRPOP", "BLMOVE", "BRPOPLPUSH", "BZPOPMIN", "BZPOPMAX", "BLMPOP", "BZMPOP",
+    "XREAD", "XREADGROUP", "WAIT", "WAITAOF", "SUBSCRIBE", "PSUBSCRIBE", "SSUBSCRIBE", "MONITOR",
+    "SYNC", "PSYNC",
+];
 
 pub fn render(v: &Value) -> Option<String> {
     Some(match v {
@@ -350,7 +382,13 @@ impl RedisConn {
                 }
                 _ => {}
             }
-            let v: Value = c.query_async(&mut con).await.unwrap_or(Value::Nil);
+            let v: Value = match c.query_async(&mut con).await {
+                Ok(v) => v,
+                // The key changed type or vanished between SCAN and here.
+                Err(e) if e.kind() == redis::ErrorKind::TypeError
+                    || e.code() == Some("WRONGTYPE") => Value::Nil,
+                Err(e) => return Err(e.into()),
+            };
             let value = if ty == "stream" {
                 render(&v).map(|n| format!("stream ({n} entries)"))
             } else {
@@ -378,6 +416,12 @@ impl RedisConn {
             let Some((name, args)) = w.split_first() else {
                 continue;
             };
+            if BLOCKING.contains(&name.to_ascii_uppercase().as_str()) {
+                bail!(
+                    "{} blocks the connection, which every view here shares; use redis-cli for it",
+                    name.to_ascii_uppercase()
+                );
+            }
             let start = Instant::now();
             let mut c = redis::cmd(name);
             for a in args {
@@ -425,9 +469,13 @@ impl RedisConn {
         };
         let mut pipe = redis::pipe();
         pipe.atomic();
+        // Position of each NX command in the reply, and its key: a 0 / nil
+        // there means the name was taken between our check and EXEC.
+        let mut nx: Vec<(usize, String)> = vec![];
+        let mut n = 0usize;
         // Keys this commit will create, so two changes can't claim one name.
         let mut claimed = std::collections::HashSet::new();
-        let mut ensure_free = async |k: &str, con: &mut MultiplexedConnection| -> Result<()> {
+        let mut ensure_free = async |k: &str, con: &mut ConnectionManager| -> Result<()> {
             if k.is_empty() {
                 bail!("keys can't be empty");
             }
@@ -458,13 +506,16 @@ impl RedisConn {
                                     .arg(&k)
                                     .arg(v.clone().unwrap_or_default())
                                     .arg("KEEPTTL");
+                                n += 1;
                             }
                             "ttl" => match v.as_deref().and_then(|s| s.parse::<i64>().ok()) {
-                                Some(n) if n > 0 => {
-                                    pipe.cmd("EXPIRE").arg(&k).arg(n);
+                                Some(secs) if secs > 0 => {
+                                    pipe.cmd("EXPIRE").arg(&k).arg(secs);
+                                    n += 1;
                                 }
                                 _ => {
                                     pipe.cmd("PERSIST").arg(&k);
+                                    n += 1;
                                 }
                             },
                             "key" => rename_to = Some(v.clone().unwrap_or_default()),
@@ -475,6 +526,8 @@ impl RedisConn {
                         ensure_free(&new, &mut con).await?;
                         // NX: never overwrite, even if the key appeared just now.
                         pipe.cmd("RENAMENX").arg(&k).arg(&new);
+                        nx.push((n, new));
+                        n += 1;
                     }
                 }
                 Change::Insert { values } => {
@@ -492,19 +545,34 @@ impl RedisConn {
                         .arg(&k)
                         .arg(get("value").unwrap_or_default())
                         .arg("NX");
-                    if let Some(n) = get("ttl")
+                    nx.push((n, k.clone()));
+                    n += 1;
+                    if let Some(secs) = get("ttl")
                         .and_then(|s| s.parse::<i64>().ok())
-                        .filter(|n| *n > 0)
+                        .filter(|s| *s > 0)
                     {
-                        pipe.cmd("EXPIRE").arg(&k).arg(n);
+                        pipe.cmd("EXPIRE").arg(&k).arg(secs);
+                        n += 1;
                     }
                 }
                 Change::Delete { key } => {
                     pipe.cmd("DEL").arg(key_of(key));
+                    n += 1;
                 }
             }
         }
-        pipe.query_async::<Value>(&mut con).await?;
+        let replies: Vec<Value> = pipe.query_async(&mut con).await?;
+        let lost: Vec<&str> = nx
+            .iter()
+            .filter(|(i, _)| matches!(replies.get(*i), Some(Value::Nil) | Some(Value::Int(0))))
+            .map(|(_, k)| k.as_str())
+            .collect();
+        if !lost.is_empty() {
+            bail!(
+                "these keys were created by someone else meanwhile, so they weren't written: {}. The other changes were applied.",
+                lost.join(", ")
+            );
+        }
         Ok(())
     }
 }

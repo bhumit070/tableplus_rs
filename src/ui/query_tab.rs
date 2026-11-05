@@ -435,7 +435,7 @@ impl QueryTab {
                     }
                     Err(e) => {
                         this.error = Some(format!("{e:#}"));
-                        let cancelled = e.root_cause().to_string() == crate::db::cancel::CANCELLED;
+                        let cancelled = e.root_cause().to_string().starts_with(crate::db::cancel::CANCELLED);
                         if !cancelled {
                             window.push_notification(Notification::error("Query failed"), cx);
                         }

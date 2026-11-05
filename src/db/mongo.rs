@@ -178,16 +178,33 @@ impl MongoConn {
                 format!("{}:{}@", urlencode(&cfg.user), urlencode(&cfg.password))
             };
             let tls = if cfg.ssl { "&tls=true" } else { "" };
+            // Through a tunnel, talk to that one server: replica-set
+            // discovery would chase member addresses the tunnel doesn't reach.
+            let direct = if cfg.ssh.is_some() { "&directConnection=true" } else { "" };
             format!(
-                "mongodb://{auth}{}:{}/?serverSelectionTimeoutMS=8000&authSource=admin{tls}",
+                "mongodb://{auth}{}:{}/?authSource=admin{tls}{direct}",
                 cfg.host, cfg.port
             )
         };
-        let client = Client::with_uri_str(&uri).await?;
+        let mut opts = mongodb::options::ClientOptions::parse(&uri)
+            .await
+            .map_err(|e| anyhow::Error::new(e).context("reading the MongoDB address"))?;
+        // Fail in seconds, not the driver's default 30 s, unless the URI says otherwise.
+        opts.server_selection_timeout
+            .get_or_insert(std::time::Duration::from_secs(8));
+        opts.connect_timeout.get_or_insert(std::time::Duration::from_secs(10));
+        let at = opts
+            .hosts
+            .iter()
+            .map(|h| h.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let client = Client::with_options(opts)?;
         client
             .database("admin")
             .run_command(doc! {"ping": 1})
-            .await?;
+            .await
+            .map_err(|e| anyhow::Error::new(e).context(format!("couldn't connect to {at}")))?;
         let name = if !cfg.database.is_empty() {
             cfg.database.clone()
         } else {
