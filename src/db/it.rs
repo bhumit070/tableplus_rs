@@ -938,3 +938,56 @@ async fn mysql_ddl() {
         ddl_scenario(Driver::MySql).await;
     }
 }
+
+/// Backup with pg_dump, then restore with psql into another database.
+#[tokio::test]
+async fn postgres_backup_restore() {
+    if !it_enabled() || backup::find_tool(&["pg_dump"]).is_none() {
+        return;
+    }
+    let c = Connection::connect(&cfg(Driver::Postgres)).await.unwrap();
+    c.execute("drop table if exists it_backup; create table it_backup (id int primary key, note text); insert into it_backup values (1, 'it''s'), (2, null)")
+        .await
+        .unwrap();
+    let (host, port) = c.endpoint();
+    let t = backup::Target {
+        cfg: cfg(Driver::Postgres),
+        host,
+        port,
+        database: "postgres".into(),
+    };
+    let file = std::env::temp_dir().join(format!("tabula-it-{}.sql", uuid::Uuid::new_v4()));
+    backup::dump(&t, backup::Scope::Everything, &file).await.unwrap();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("CREATE TABLE public.it_backup"), "schema dumped");
+
+    // Restore into the spare database.
+    let mut other = cfg(Driver::Postgres);
+    other.database = "tabula_it_other".into();
+    let o = Connection::connect(&other).await.unwrap();
+    o.execute("drop table if exists it_backup").await.unwrap();
+    let t2 = backup::Target { cfg: other.clone(), database: "tabula_it_other".into(), ..t.clone() };
+    backup::restore(&t2, &file).await.unwrap();
+    let r = o.execute("select note from it_backup order by id").await.unwrap();
+    assert_eq!(r[0].rows, vec![vec![Some("it's".to_string())], vec![None]]);
+    // A second restore fails (table exists) and, being one transaction, changes nothing.
+    assert!(backup::restore(&t2, &file).await.is_err());
+    o.execute("drop table it_backup").await.unwrap();
+    c.execute("drop table it_backup").await.unwrap();
+    let _ = std::fs::remove_file(file);
+}
+
+#[tokio::test]
+async fn sqlite_backup() {
+    let c = cfg(Driver::Sqlite);
+    let conn = Connection::connect(&c).await.unwrap();
+    conn.execute("create table t (a int); insert into t values (7)").await.unwrap();
+    let t = backup::Target { cfg: c.clone(), host: String::new(), port: 0, database: "main".into() };
+    let file = std::env::temp_dir().join(format!("tabula-it-{}.sqlite", uuid::Uuid::new_v4()));
+    backup::dump(&t, backup::Scope::Everything, &file).await.unwrap();
+    let mut copy = ConnectionConfig::new(Driver::Sqlite);
+    copy.file = file.to_string_lossy().into();
+    let b = Connection::connect(&copy).await.unwrap();
+    assert_eq!(b.execute("select a from t").await.unwrap()[0].rows[0][0].as_deref(), Some("7"));
+    let _ = std::fs::remove_file(file);
+}

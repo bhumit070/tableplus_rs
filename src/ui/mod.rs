@@ -35,6 +35,8 @@ gpui::actions!(
         SaveQuery,
         SavedQueries,
         ShowProcesses,
+        BackupDatabase,
+        RestoreDatabase,
         EditCell,
         CancelCellEdit,
         NextCell,

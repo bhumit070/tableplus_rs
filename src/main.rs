@@ -42,6 +42,9 @@ fn menus() -> Vec<Menu> {
                 I::separator(),
                 I::action("Refresh", ui::Refresh),
                 I::action("Processes…", ui::ShowProcesses),
+                I::separator(),
+                I::action("Backup…", ui::BackupDatabase),
+                I::action("Restore…", ui::RestoreDatabase),
             ],
         ),
         menu(

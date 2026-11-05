@@ -820,6 +820,161 @@ impl Session {
         ))
     }
 
+    fn backup_target(&self) -> Option<crate::db::backup::Target> {
+        let c = self.shared.conn.try_read().ok()?;
+        let (host, port) = c.endpoint();
+        Some(crate::db::backup::Target {
+            cfg: self.shared.cfg.clone(),
+            host,
+            port,
+            database: c.current_database(),
+        })
+    }
+
+    /// Backup…: pick what to include, then where to save the dump.
+    pub fn backup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::db::backup::Scope;
+        if !self.is_sql() {
+            window.push_notification("Backups are available for Postgres, MySQL and SQLite", cx);
+            return;
+        }
+        let Some(target) = self.backup_target() else {
+            window.push_notification("The connection is busy; try again in a moment", cx);
+            return;
+        };
+        let sqlite = self.shared.cfg.driver == Driver::Sqlite;
+        let start = move |scope: Scope, window: &mut Window, cx: &mut App| {
+            let ext = if sqlite { "sqlite" } else { "sql" };
+            let date = chrono_like_date();
+            let name = format!("{}-{date}.{ext}", target.database);
+            let dir = dirs::download_dir().or_else(dirs::home_dir).unwrap_or_default();
+            let path = cx.prompt_for_new_path(&dir, Some(&name));
+            let target = target.clone();
+            window
+                .spawn(cx, async move |cx| {
+                    let Ok(Ok(Some(path))) = path.await else {
+                        return;
+                    };
+                    cx.update(|w, cx| w.push_notification("Backing up…", cx)).ok();
+                    let p2 = path.clone();
+                    let res = runtime::spawn(async move {
+                        crate::db::backup::dump(&target, scope, &p2).await
+                    })
+                    .await;
+                    cx.update(|w, cx| match res {
+                        Ok(()) => {
+                            w.push_notification(
+                                Notification::success(format!("Backup saved to {}", path.display())),
+                                cx,
+                            );
+                            cx.reveal_path(&path);
+                        }
+                        Err(e) => w.push_notification(
+                            Notification::error(format!("{e:#}")).title("Backup failed"),
+                            cx,
+                        ),
+                    })
+                    .ok();
+                })
+                .detach();
+        };
+        if sqlite {
+            start(Scope::Everything, window, cx);
+            return;
+        }
+        let items = Scope::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, s)| PickItem::new(i.to_string(), s.label()))
+            .collect();
+        let on_pick: OnPick = Rc::new(move |id, window, cx| {
+            if let Some(scope) = id.parse::<usize>().ok().and_then(|i| Scope::ALL.get(i)) {
+                start(*scope, window, cx);
+            }
+        });
+        Picker::open("Backup", "What to include…", IconName::HardDrive, items, on_pick, window, cx);
+    }
+
+    /// Restore…: runs a SQL dump file against the current database.
+    pub fn restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.shared.cfg.driver, Driver::Postgres | Driver::MySql) {
+            window.push_notification("Restore is available for Postgres and MySQL", cx);
+            return;
+        }
+        if let crate::db::safety::Gate::Block(why) = crate::db::safety::gate_write(&self.shared.cfg) {
+            window.push_notification(Notification::warning(why), cx);
+            return;
+        }
+        let Some(target) = self.backup_target() else {
+            return;
+        };
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Restore".into()),
+        });
+        let me = cx.entity().downgrade();
+        cx.spawn_in(window, async move |_, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            cx.update(|window, cx| {
+                let desc = format!(
+                    "Runs every statement in {} against {} ({}). {}",
+                    path.display(),
+                    target.database,
+                    target.cfg.display_name(),
+                    if target.cfg.driver == Driver::Postgres {
+                        "It runs in one transaction: if anything fails, nothing changes."
+                    } else {
+                        "It stops at the first error; statements before it stay applied."
+                    }
+                );
+                let (target, me) = (target.clone(), me.clone());
+                window.open_alert_dialog(cx, move |d, _, _| {
+                    let (target, path, me) = (target.clone(), path.clone(), me.clone());
+                    d.title("Restore into this database?")
+                        .description(desc.clone())
+                        .show_cancel(true)
+                        .on_ok(move |_, window, cx| {
+                            let (target, path, me) = (target.clone(), path.clone(), me.clone());
+                            window.push_notification("Restoring…", cx);
+                            window
+                                .spawn(cx, async move |cx| {
+                                    let res = runtime::spawn(async move {
+                                        crate::db::backup::restore(&target, &path).await
+                                    })
+                                    .await;
+                                    cx.update(|w, cx| {
+                                        match res {
+                                            Ok(()) => w.push_notification(
+                                                Notification::success("Restore finished"),
+                                                cx,
+                                            ),
+                                            Err(e) => w.push_notification(
+                                                Notification::error(format!("{e:#}"))
+                                                    .title("Restore failed"),
+                                                cx,
+                                            ),
+                                        }
+                                        me.update(cx, |s, cx| s.load_objects(w, cx)).ok();
+                                    })
+                                    .ok();
+                                })
+                                .detach();
+                            true
+                        })
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn is_sql(&self) -> bool {
         !matches!(self.shared.cfg.driver, Driver::Redis | Driver::Mongo)
     }
@@ -1332,5 +1487,34 @@ mod tests {
         assert_eq!(labels(&tree), ["public (2)"]);
         let flat = build_tree(&objects()[1..3], "", None, false);
         assert_eq!(labels(&flat), ["Tables (1)", "Views (1)"]);
+    }
+}
+
+/// Today as YYYY-MM-DD (UTC), for default file names.
+fn chrono_like_date() -> String {
+    date_from_days(crate::history::now() / 86_400)
+}
+
+fn date_from_days(days: i64) -> String {
+    // Civil-from-days (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+#[cfg(test)]
+mod date_tests {
+    #[test]
+    fn civil_date() {
+        assert_eq!(super::date_from_days(0), "1970-01-01");
+        assert_eq!(super::date_from_days(20762), "2026-11-05");
+        assert_eq!(super::date_from_days(19782), "2024-02-29");
     }
 }

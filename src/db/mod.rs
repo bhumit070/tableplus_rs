@@ -1,6 +1,7 @@
 //! Database layer: one `Connection` enum that hides the five drivers behind a
 //! common, string-based API the UI can render directly.
 
+pub mod backup;
 pub mod cancel;
 pub mod ddl;
 pub mod format;
@@ -389,6 +390,8 @@ enum Conn {
 pub struct Connection {
     inner: Conn,
     _tunnel: Option<ssh::Tunnel>,
+    /// Host and port the drivers connect to (the tunnel's, over SSH).
+    endpoint: (String, u16),
 }
 
 impl Connection {
@@ -415,7 +418,13 @@ impl Connection {
         Ok(Connection {
             inner,
             _tunnel: tunnel,
+            endpoint: (cfg.host.clone(), cfg.port),
         })
+    }
+
+    /// Where the server is reachable from this machine right now.
+    pub fn endpoint(&self) -> (String, u16) {
+        self.endpoint.clone()
     }
 
     pub async fn list_objects(&self) -> Result<Vec<DbObject>> {
