@@ -15,12 +15,14 @@ use gpui_component::notification::Notification;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::table::{TableEvent, TableState};
 use gpui_component::{
-    ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, resizable_panel, v_flex, v_resizable,
+    ActiveTheme as _, Selectable as _, Sizable as _, WindowExt as _, h_flex, resizable_panel,
+    v_flex, v_resizable,
 };
 use gpui_kit_assets::IconName;
 
 use super::cell_edit::{self, EditStart};
 use super::copy;
+use super::row_panel;
 use super::grid::{Grid, data_table};
 use super::{RunQuery, Shared};
 use crate::db::{Cancel, ColumnInfo, DbObject, Driver, EnvTag, ObjectKind, QueryResult};
@@ -48,6 +50,8 @@ pub struct QueryTab {
     /// Bumped per shown result; drops stale table lookups.
     edit_gen: u64,
     edit_sub: Option<Subscription>,
+    /// Row detail panel beside the results.
+    pub show_detail: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -152,8 +156,13 @@ impl QueryTab {
         });
         let subs = vec![
             cx.subscribe_in(&grid, window, |this, _, ev: &TableEvent, window, cx| {
-                if let TableEvent::DoubleClickedCell(r, c) = ev {
-                    cell_edit::start_edit(this, *r, *c, EditStart::Keep, window, cx);
+                match ev {
+                    TableEvent::DoubleClickedCell(r, c) => {
+                        cell_edit::start_edit(this, *r, *c, EditStart::Keep, window, cx)
+                    }
+                    // The row detail panel follows the selection.
+                    TableEvent::SelectRow(_) | TableEvent::SelectCell(..) => cx.notify(),
+                    _ => {}
                 }
             }),
         ];
@@ -166,6 +175,7 @@ impl QueryTab {
             grid,
             running: false,
             cancel: None,
+            show_detail: false,
             error: None,
             elapsed: 0,
             focus: cx.focus_handle(),
@@ -535,7 +545,25 @@ impl QueryTab {
                 .child(summary.clone())
                 .into_any_element()
         } else {
-            cell_edit::editable(data_table(&self.grid, cx), cx).into_any_element()
+            let grid = cell_edit::editable(data_table(&self.grid, cx), cx);
+            if self.show_detail {
+                let types: Vec<Option<String>> = {
+                    let cols = &self.grid.read(cx).delegate().columns;
+                    cols.iter()
+                        .map(|c| {
+                            let t = self.target.as_ref()?;
+                            t.columns.iter().find(|i| &i.name == c).map(|i| i.data_type.clone())
+                        })
+                        .collect()
+                };
+                h_flex()
+                    .size_full()
+                    .child(div().flex_1().min_w_0().h_full().child(grid))
+                    .child(row_panel::render(self, &types, cx))
+                    .into_any_element()
+            } else {
+                grid.into_any_element()
+            }
         };
         v_flex()
             .size_full()
@@ -579,6 +607,16 @@ impl QueryTab {
                     .text_color(theme.muted_foreground)
                     .child(summary)
                     .child(div().flex_1())
+                    .child(Button::new("toggle-detail")
+                    .icon(IconName::PanelRight)
+                    .ghost()
+                    .xsmall()
+                    .selected(self.show_detail)
+                    .tooltip("Row detail (⌘⇧I)")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.show_detail = !this.show_detail;
+                        cx.notify();
+                    })))
                     .map(|bar| {
                         let pending = self.grid.read(cx).delegate().change_count();
                         if pending > 0 {

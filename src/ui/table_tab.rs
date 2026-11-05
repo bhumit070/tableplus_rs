@@ -22,6 +22,7 @@ use gpui_kit_assets::IconName;
 
 use super::cell_edit::{self, EditStart};
 use super::copy;
+use super::row_panel;
 use super::grid::{Grid, data_table};
 use super::{
     AddRow, Commit, CopyCell, DeleteRows, Discard, SearchList, SetNull, Shared, ToggleFilter,
@@ -60,6 +61,8 @@ pub struct TableTab {
     struct_idx: Entity<TableState<Grid>>,
     struct_fks: Entity<TableState<Grid>>,
     show_structure: bool,
+    /// Row detail panel beside the data grid.
+    pub show_detail: bool,
     /// Structure view section: columns, indexes, foreign keys, SQL.
     struct_section: usize,
     /// Filters this tab was opened with (following a foreign key); shown as
@@ -166,8 +169,13 @@ impl TableTab {
 
         let subs = vec![
             cx.subscribe_in(&table, window, |this, _, ev: &TableEvent, window, cx| {
-                if let TableEvent::DoubleClickedCell(r, c) = ev {
-                    cell_edit::start_edit(this, *r, *c, EditStart::Keep, window, cx);
+                match ev {
+                    TableEvent::DoubleClickedCell(r, c) => {
+                        cell_edit::start_edit(this, *r, *c, EditStart::Keep, window, cx)
+                    }
+                    // The row detail panel follows the selection.
+                    TableEvent::SelectRow(_) | TableEvent::SelectCell(..) => cx.notify(),
+                    _ => {}
                 }
             }),
         ];
@@ -181,6 +189,7 @@ impl TableTab {
             struct_idx,
             struct_fks,
             show_structure: false,
+            show_detail: false,
             struct_section: 0,
             fixed,
             filters: Vec::new(),
@@ -841,6 +850,16 @@ impl TableTab {
                     })),
             )
             .child(div().w(px(8.)))
+            .when(!self.show_structure, |f| f.child(Button::new("toggle-detail")
+                    .icon(IconName::PanelRight)
+                    .ghost()
+                    .small()
+                    .selected(self.show_detail)
+                    .tooltip("Row detail (⌘⇧I)")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.show_detail = !this.show_detail;
+                        cx.notify();
+                    }))))
             .when(!self.show_structure, |f| {
                 f.child(
                     Button::new("add-row")
@@ -1097,7 +1116,29 @@ impl Render for TableTab {
                 .child(div().flex_1().min_h_0().child(content))
                 .into_any_element()
         } else {
-            cell_edit::editable(data_table(&self.table, cx), cx).into_any_element()
+            let grid = cell_edit::editable(data_table(&self.table, cx), cx);
+            if self.show_detail {
+                let types: Vec<Option<String>> = {
+                    let cols = &self.table.read(cx).delegate().columns;
+                    cols.iter()
+                        .map(|c| {
+                            self.structure
+                                .as_ref()?
+                                .columns
+                                .iter()
+                                .find(|i| &i.name == c)
+                                .map(|i| i.data_type.clone())
+                        })
+                        .collect()
+                };
+                h_flex()
+                    .size_full()
+                    .child(div().flex_1().min_w_0().h_full().child(grid))
+                    .child(row_panel::render(self, &types, cx))
+                    .into_any_element()
+            } else {
+                grid.into_any_element()
+            }
         };
         v_flex()
             .size_full()

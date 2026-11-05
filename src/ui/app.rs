@@ -27,7 +27,7 @@ use super::table_tab::TableTab;
 use super::{
     AddRow, CloseTab, Commit, Connection1, Connection2, Connection3, Connection4, Connection5,
     Connection6, Connection7, Connection8, Connection9, DeleteRows, Discard, GoHome, NewQuery,
-    CancelQuery, ExportData, NextTab, QueryHistory, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
+    CancelQuery, ExportData, ToggleRowDetail, NextTab, QueryHistory, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
     ToggleFilter, ToggleTheme, tag_color,
 };
 use crate::db::ssh::UnknownHostKey;
@@ -580,6 +580,21 @@ pub fn register_actions(cx: &mut App) {
     });
 
     cx.on_action(|_: &QueryHistory, cx| with_session(cx, |s, w, cx| s.open_history(w, cx)));
+    cx.on_action(|_: &ToggleRowDetail, cx| {
+        with_session(cx, |s, _, cx| {
+            if let Some(t) = s.active_table() {
+                t.update(cx, |t, cx| {
+                    t.show_detail = !t.show_detail;
+                    cx.notify();
+                });
+            } else if let Some(q) = s.active_query() {
+                q.update(cx, |q, cx| {
+                    q.show_detail = !q.show_detail;
+                    cx.notify();
+                });
+            }
+        })
+    });
     cx.on_action(|_: &ExportData, cx| {
         with_session(cx, |s, w, cx| {
             if let Some(t) = s.active_table() {
@@ -1168,6 +1183,64 @@ mod tests {
         wait_until(&mut cx, "all authors", |cx| {
             author.read_with(cx, |t, cx| t.loaded_rows(cx) == 3)
         });
+        let _ = std::fs::remove_file(file);
+    }
+
+    /// ⌘⇧I shows the selected row's fields; a field's pencil edits it.
+    #[gpui::test]
+    fn row_detail_panel(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-detail-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        futures::executor::block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute(
+                "create table t (id integer primary key, doc text); \
+                 insert into t (doc) values ('{\"a\":1}'), ('plain')",
+            )
+            .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("t").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let i = s.object_index("t").unwrap();
+            s.open_object(i, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "rows", |cx| tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 2));
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(1, 0, w, cx));
+        cx.simulate_keystrokes("cmd-shift-i");
+        cx.run_until_parked();
+        assert!(tab.read_with(&cx, |t, _| t.show_detail));
+        assert!(cx.debug_bounds("row-detail").is_some(), "panel shown");
+
+        let edit = cx.debug_bounds("detail-edit-1").expect("doc is editable");
+        cx.simulate_click(edit.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(tab.read_with(&cx, |t, cx| t.editing_cell(cx)), Some((1, 1)));
+        cx.simulate_input("changed");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(
+            tab.read_with(&cx, |t, cx| t.staged(1, 1, cx)),
+            Some(Some("changed".into()))
+        );
+        cx.simulate_keystrokes("cmd-shift-i");
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("row-detail").is_none(), "panel hidden");
         let _ = std::fs::remove_file(file);
     }
 

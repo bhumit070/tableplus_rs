@@ -7,6 +7,7 @@ pub mod grid;
 pub mod home;
 pub mod picker;
 pub mod query_tab;
+pub mod row_panel;
 pub mod session;
 pub mod settings_view;
 pub mod table_tab;
@@ -27,6 +28,7 @@ gpui::actions!(
         CancelQuery,
         QueryHistory,
         ExportData,
+        ToggleRowDetail,
         EditCell,
         CancelCellEdit,
         NextCell,
@@ -107,6 +109,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new(sec!("."), CancelQuery, None),
         KeyBinding::new(sec!("y"), QueryHistory, None),
         KeyBinding::new(sec!("shift-e"), ExportData, None),
+        KeyBinding::new(sec!("shift-i"), ToggleRowDetail, None),
         KeyBinding::new(sec!("k"), SwitchDatabase, None),
         KeyBinding::new(sec!("s"), Commit, None),
         KeyBinding::new(sec!("shift-backspace"), Discard, None),
@@ -198,6 +201,7 @@ mod tests {
             (sec!("."), is::<CancelQuery>),
             (sec!("y"), is::<QueryHistory>),
             (sec!("shift-e"), is::<ExportData>),
+            (sec!("shift-i"), is::<ToggleRowDetail>),
             (sec!("f"), is::<ToggleFilter>),
         ] {
             assert!(ok(resolve(vec![], key, &["Root"])), "{key} with no focus");
