@@ -16,9 +16,11 @@ use sqlx::{
     ValueRef,
 };
 
+use super::cancel::{CANCELLED, Cancel};
 use super::split::split_statements;
 use super::{
-    Change, ColumnInfo, ConnectionConfig, DbObject, Driver, FilterOp, ObjectKind, QueryResult,
+    Change, ColumnInfo, ConnectionConfig, DbObject, Driver, FilterOp, ForeignKey, ObjectKind,
+    QueryResult,
     Structure, TableQuery, sql_literal,
 };
 
@@ -55,6 +57,19 @@ fn my_ssl_mode(cfg: &ConnectionConfig) -> MySqlSslMode {
 
 fn pg_ident(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+/// Postgres stores FK actions as one letter; MySQL / SQLite spell them out.
+fn fk_action(code: &str) -> String {
+    match code {
+        "a" => "NO ACTION",
+        "r" => "RESTRICT",
+        "c" => "CASCADE",
+        "n" => "SET NULL",
+        "d" => "SET DEFAULT",
+        other => other,
+    }
+    .to_string()
 }
 
 // ---- row decoding ---------------------------------------------------------
@@ -202,17 +217,45 @@ impl SessionEffects {
 /// connection whose session changed or errored is closed rather than
 /// returned to the pool, where it would leak that state into later reads.
 macro_rules! run_batch {
-    ($pool:expr, $stmts:expr, $decode:ident) => {{
+    ($pool:expr, $stmts:expr, $decode:ident, $cancel:expr, $server:expr) => {{
         let stmts: Vec<String> = $stmts;
+        let cancel: &Cancel = $cancel;
         let n = stmts.len();
         let mut conn = $pool.acquire().await?;
+        // How to cancel this connection's statement from another one:
+        // (query for its id, cancel statement with `{}` for the id).
+        let server: Option<(&str, &str)> = $server;
+        if let Some((id_sql, kill)) = server {
+            let id = async { Ok::<_, anyhow::Error>(run_raw!(&mut *conn, id_sql.to_string(), $decode)) }
+                .await
+                .ok()
+                .and_then(|r| r.rows.first()?.first()?.as_deref()?.parse::<u64>().ok());
+            if let Some(id) = id {
+                let (pool, sql) = ($pool.clone(), kill.replace("{}", &id.to_string()));
+                cancel.on_server_cancel(Box::new(move || {
+                    Box::pin(async move {
+                        let _ = sqlx::raw_sql(AssertSqlSafe(sql)).execute(&pool).await;
+                    })
+                }));
+            }
+        }
         let mut effects = SessionEffects::default();
         let mut out = Vec::new();
         let mut failed: Option<(usize, anyhow::Error)> = None;
         for (i, stmt) in stmts.into_iter().enumerate() {
             effects.observe(&stmt);
             let start = Instant::now();
-            let res: Result<QueryResult> = async { Ok(run_raw!(&mut *conn, stmt, $decode)) }.await;
+            let res: Result<QueryResult> = if cancel.is_cancelled() {
+                Err(anyhow::anyhow!(CANCELLED))
+            } else {
+                tokio::select! {
+                    r = async { Ok(run_raw!(&mut *conn, stmt, $decode)) } => r,
+                    _ = cancel.cancelled() => Err(anyhow::anyhow!(CANCELLED)),
+                }
+            };
+            // The server-side cancel makes the statement fail with its own
+            // error; report it as cancelled.
+            let res = res.map_err(|e| if cancel.is_cancelled() { anyhow::anyhow!(CANCELLED) } else { e });
             match res {
                 Ok(mut r) => {
                     r.elapsed_ms = start.elapsed().as_millis();
@@ -225,11 +268,17 @@ macro_rules! run_batch {
             }
         }
         let rolled_back = effects.tx_open;
-        if rolled_back {
-            let _ = sqlx::raw_sql("rollback").execute(&mut *conn).await;
-        }
-        if effects.dirty || rolled_back || failed.is_some() {
-            let _ = conn.detach().close().await;
+        if cancel.is_cancelled() {
+            // The connection may be mid-statement: drop it (closing the
+            // socket also rolls back an open transaction server-side).
+            drop(conn.detach());
+        } else {
+            if rolled_back {
+                let _ = sqlx::raw_sql("rollback").execute(&mut *conn).await;
+            }
+            if effects.dirty || rolled_back || failed.is_some() {
+                let _ = conn.detach().close().await;
+            }
         }
         let note = if rolled_back { " The open transaction was rolled back." } else { "" };
         if let Some((i, e)) = failed {
@@ -549,7 +598,7 @@ impl SqlConn {
                 ),
             ),
         };
-        let columns = self
+        let columns: Vec<ColumnInfo> = self
             .raw(cols_sql)
             .await?
             .rows
@@ -563,7 +612,161 @@ impl SqlConn {
             })
             .collect();
         let indexes = self.raw(idx_sql).await.unwrap_or_default();
-        Ok(Structure { columns, indexes })
+        // Extras: a server that hides them (permissions, old versions)
+        // still shows columns and indexes.
+        let foreign_keys = self.foreign_keys(obj).await.unwrap_or_default();
+        let ddl = self.ddl(obj, &columns).await.unwrap_or_default();
+        Ok(Structure {
+            columns,
+            indexes,
+            foreign_keys,
+            ddl,
+        })
+    }
+
+    async fn foreign_keys(&self, obj: &DbObject) -> Result<Vec<ForeignKey>> {
+        // One row per (constraint, column position): name, column, ref
+        // schema, ref table, ref column, on update, on delete.
+        let sql = match self.cfg.driver {
+            Driver::Postgres => format!(
+                "select c.conname, a.attname, rn.nspname, rc.relname, ra.attname, \
+                 c.confupdtype::text, c.confdeltype::text \
+                 from pg_constraint c \
+                 cross join lateral unnest(c.conkey, c.confkey) with ordinality as k(col, refcol, pos) \
+                 join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.col \
+                 join pg_class rc on rc.oid = c.confrelid \
+                 join pg_namespace rn on rn.oid = rc.relnamespace \
+                 join pg_attribute ra on ra.attrelid = c.confrelid and ra.attnum = k.refcol \
+                 where c.contype = 'f' and c.conrelid = to_regclass({}) \
+                 order by c.conname, k.pos",
+                self.lit(&self.full_name(obj))
+            ),
+            Driver::MySql => format!(
+                "select k.constraint_name, k.column_name, k.referenced_table_schema, \
+                 k.referenced_table_name, k.referenced_column_name, r.update_rule, r.delete_rule \
+                 from information_schema.key_column_usage k \
+                 join information_schema.referential_constraints r \
+                   on r.constraint_schema = k.constraint_schema and r.constraint_name = k.constraint_name \
+                   and r.table_name = k.table_name \
+                 where k.table_schema = database() and k.table_name = {} \
+                   and k.referenced_table_name is not null \
+                 order by k.constraint_name, k.ordinal_position",
+                self.lit(&obj.name)
+            ),
+            _ => format!(
+                "select 'fk_' || id, \"from\", null, \"table\", \"to\", on_update, on_delete \
+                 from pragma_foreign_key_list({}) order by id, seq",
+                self.lit(&obj.name)
+            ),
+        };
+        let rows = self.raw(sql).await?.rows;
+        let mut out: Vec<ForeignKey> = vec![];
+        for r in rows {
+            let get = |i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+            if out.last().is_none_or(|f| f.name != get(0)) {
+                out.push(ForeignKey {
+                    name: get(0),
+                    ref_schema: r.get(2).cloned().flatten(),
+                    ref_table: get(3),
+                    on_update: fk_action(&get(5)),
+                    on_delete: fk_action(&get(6)),
+                    ..Default::default()
+                });
+            }
+            let fk = out.last_mut().unwrap();
+            fk.columns.push(get(1));
+            fk.ref_columns.push(get(4));
+        }
+        // SQLite: a reference without columns means the parent's primary key.
+        for fk in &mut out {
+            if fk.ref_columns.iter().any(|c| c.is_empty()) {
+                let pk = self
+                    .raw(format!(
+                        "select name from pragma_table_info({}) where pk > 0 order by pk",
+                        self.lit(&fk.ref_table)
+                    ))
+                    .await?;
+                fk.ref_columns = pk.rows.into_iter().filter_map(|r| r[0].clone()).collect();
+            }
+        }
+        Ok(out)
+    }
+
+    async fn ddl(&self, obj: &DbObject, columns: &[ColumnInfo]) -> Result<String> {
+        let first = |r: QueryResult, col: usize| {
+            r.rows
+                .into_iter()
+                .filter_map(|r| r.get(col).cloned().flatten())
+                .collect::<Vec<_>>()
+        };
+        Ok(match self.cfg.driver {
+            Driver::MySql => {
+                let r = self.raw(format!("show create table {}", self.q(&obj.name))).await?;
+                format!("{};\n", first(r, 1).join("\n"))
+            }
+            Driver::Sqlite => {
+                let r = self
+                    .raw(format!(
+                        "select sql from sqlite_master where tbl_name = {} and sql is not null \
+                         order by type = 'table' desc, name",
+                        self.lit(&obj.name)
+                    ))
+                    .await?;
+                first(r, 0).iter().map(|s| format!("{s};\n")).collect()
+            }
+            _ => {
+                // Postgres has no SHOW CREATE TABLE: rebuild it from the
+                // catalog (columns, constraints, then other indexes).
+                let name = self.full_name(obj);
+                if obj.kind == ObjectKind::View {
+                    let r = self
+                        .raw(format!("select pg_get_viewdef(to_regclass({}), true)", self.lit(&name)))
+                        .await?;
+                    return Ok(format!(
+                        "CREATE VIEW {name} AS\n{}\n",
+                        first(r, 0).join("").trim_end()
+                    ));
+                }
+                let mut lines: Vec<String> = columns
+                    .iter()
+                    .map(|c| {
+                        let mut l = format!("  {} {}", pg_ident(&c.name), c.data_type);
+                        if let Some(d) = &c.default {
+                            l.push_str(&format!(" DEFAULT {d}"));
+                        }
+                        if !c.nullable {
+                            l.push_str(" NOT NULL");
+                        }
+                        l
+                    })
+                    .collect();
+                let cons = self
+                    .raw(format!(
+                        "select conname, pg_get_constraintdef(oid, true) from pg_constraint \
+                         where conrelid = to_regclass({}) order by contype = 'p' desc, conname",
+                        self.lit(&name)
+                    ))
+                    .await?;
+                for r in cons.rows {
+                    if let (Some(n), Some(d)) = (&r[0], &r[1]) {
+                        lines.push(format!("  CONSTRAINT {} {d}", pg_ident(n)));
+                    }
+                }
+                let mut out = format!("CREATE TABLE {name} (\n{}\n);\n", lines.join(",\n"));
+                let idx = self
+                    .raw(format!(
+                        "select pg_get_indexdef(i.indexrelid) from pg_index i \
+                         where i.indrelid = to_regclass({}) and not exists \
+                         (select 1 from pg_constraint c where c.conindid = i.indexrelid) order by 1",
+                        self.lit(&name)
+                    ))
+                    .await?;
+                for d in first(idx, 0) {
+                    out.push_str(&format!("{d};\n"));
+                }
+                out
+            }
+        })
     }
 
     fn where_clause(&self, q: &TableQuery) -> String {
@@ -631,12 +834,25 @@ impl SqlConn {
         Ok((res, total))
     }
 
-    pub async fn execute(&self, text: &str) -> Result<Vec<QueryResult>> {
+    pub async fn execute(&self, text: &str, cancel: &Cancel) -> Result<Vec<QueryResult>> {
         let stmts = split_statements(text, self.cfg.driver == Driver::MySql);
         Ok(match &self.pool {
-            Pool::Pg(p) => run_batch!(p, stmts, pg_row),
-            Pool::My(p) => run_batch!(p, stmts, my_row),
-            Pool::Lite(p) => run_batch!(p, stmts, lite_row),
+            Pool::Pg(p) => run_batch!(
+                p,
+                stmts,
+                pg_row,
+                cancel,
+                Some(("select pg_backend_pid()", "select pg_cancel_backend({})"))
+            ),
+            Pool::My(p) => run_batch!(
+                p,
+                stmts,
+                my_row,
+                cancel,
+                Some(("select connection_id()", "kill query {}"))
+            ),
+            // SQLite runs in-process: abandoning the batch is enough.
+            Pool::Lite(p) => run_batch!(p, stmts, lite_row, cancel, None),
         })
     }
 

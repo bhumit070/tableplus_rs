@@ -2,6 +2,7 @@ pub mod app;
 pub mod cell_edit;
 pub mod completion;
 pub mod conn_form;
+pub mod copy;
 pub mod grid;
 pub mod home;
 pub mod picker;
@@ -23,6 +24,9 @@ gpui::actions!(
     tabula,
     [
         RunQuery,
+        CancelQuery,
+        QueryHistory,
+        ExportData,
         EditCell,
         CancelCellEdit,
         NextCell,
@@ -100,6 +104,9 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // Beats the editor's own ⌘↵, which would insert a newline.
         KeyBinding::new(sec!("enter"), RunQuery, Some("QueryTab > Input")),
         KeyBinding::new(sec!("enter"), RunQuery, None),
+        KeyBinding::new(sec!("."), CancelQuery, None),
+        KeyBinding::new(sec!("y"), QueryHistory, None),
+        KeyBinding::new(sec!("shift-e"), ExportData, None),
         KeyBinding::new(sec!("k"), SwitchDatabase, None),
         KeyBinding::new(sec!("s"), Commit, None),
         KeyBinding::new(sec!("shift-backspace"), Discard, None),
@@ -188,6 +195,9 @@ mod tests {
             (sec!("r"), is::<Refresh>),
             (sec!("s"), is::<Commit>),
             (sec!("enter"), is::<RunQuery>),
+            (sec!("."), is::<CancelQuery>),
+            (sec!("y"), is::<QueryHistory>),
+            (sec!("shift-e"), is::<ExportData>),
             (sec!("f"), is::<ToggleFilter>),
         ] {
             assert!(ok(resolve(vec![], key, &["Root"])), "{key} with no focus");

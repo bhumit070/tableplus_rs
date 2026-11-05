@@ -26,7 +26,7 @@ use super::table_tab::TableTab;
 use super::{
     AddRow, CloseTab, Commit, Connection1, Connection2, Connection3, Connection4, Connection5,
     Connection6, Connection7, Connection8, Connection9, DeleteRows, Discard, GoHome, NewQuery,
-    NextTab, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
+    CancelQuery, ExportData, NextTab, QueryHistory, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
     ToggleFilter, ToggleTheme, tag_color,
 };
 use crate::db::{Connection, ConnectionConfig};
@@ -523,6 +523,24 @@ pub fn register_actions(cx: &mut App) {
         })
     });
 
+    cx.on_action(|_: &QueryHistory, cx| with_session(cx, |s, w, cx| s.open_history(w, cx)));
+    cx.on_action(|_: &ExportData, cx| {
+        with_session(cx, |s, w, cx| {
+            if let Some(t) = s.active_table() {
+                t.update(cx, |t, cx| super::copy::open_export(t, w, cx));
+            } else if let Some(q) = s.active_query() {
+                q.update(cx, |q, cx| super::copy::open_export(q, w, cx));
+            }
+        })
+    });
+    cx.on_action(|_: &CancelQuery, cx| {
+        with_session(cx, |s, _, cx| {
+            if let Some(q) = s.active_query() {
+                q.update(cx, |q, cx| q.cancel(cx));
+            }
+        })
+    });
+
     // ⌘S / ⌘⇧⌫ act on the active table, or on an editable query result.
     cx.on_action(|_: &Commit, cx| {
         with_session(cx, |s, w, cx| {
@@ -967,6 +985,133 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(saved.as_deref(), Some("z"), "written to the database");
+        let _ = std::fs::remove_file(file);
+    }
+
+    /// Runs are saved; ⌘Y lists them (searchable) and Enter reopens one in
+    /// a new query tab. ⌘. stops a running query.
+    #[gpui::test]
+    fn query_history_and_cancel(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-history-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        session.update_in(&mut cx, |s, w, cx| s.new_query_for_test(w, cx));
+        let q = session.read_with(&cx, |s, _| s.active_query().unwrap());
+        for sql in ["select 'apple' as fruit", "select 'banana' as fruit"] {
+            q.update_in(&mut cx, |q, w, cx| q.run_for_test(sql, w, cx));
+            wait_until(&mut cx, "query", |cx| q.read_with(cx, |q, _| !q.running()));
+        }
+
+        // ⌘. while a slow query runs stops it.
+        q.update_in(&mut cx, |q, w, cx| {
+            q.run_for_test(
+                "with recursive n(x) as (select 1 union all select x + 1 from n \
+                 where x < 1000000000) select count(*) from n",
+                w,
+                cx,
+            )
+        });
+        assert!(q.read_with(&cx, |q, _| q.running()));
+        cx.simulate_keystrokes("cmd-.");
+        wait_until(&mut cx, "cancelled", |cx| q.read_with(cx, |q, _| !q.running()));
+
+        let tabs = session.read_with(&cx, |s, _| s.tab_count());
+        cx.simulate_keystrokes("cmd-y");
+        wait_until(&mut cx, "history picker", |cx| {
+            cx.update(|w, cx| w.has_active_dialog(cx))
+        });
+        cx.simulate_input("apple");
+        cx.simulate_keystrokes("enter");
+        wait_until(&mut cx, "reopened", |cx| {
+            session.read_with(cx, |s, _| s.tab_count() == tabs + 1)
+        });
+        let reopened = session.read_with(&cx, |s, _| s.active_query().unwrap());
+        assert_eq!(
+            reopened.read_with(&cx, |q, cx| q.text(cx)),
+            "select 'apple' as fruit"
+        );
+        assert!(!cx.update(|w, cx| w.has_active_dialog(cx)));
+        let _ = std::fs::remove_file(file);
+    }
+
+    /// A foreign-key cell's → opens the parent table filtered to that row;
+    /// the chip's ✕ shows every row again.
+    #[gpui::test]
+    fn follow_foreign_key(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-fk-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        futures::executor::block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute(
+                "create table author (id integer primary key, name text); \
+                 create table book (id integer primary key, title text, \
+                   author_id int references author (id)); \
+                 insert into author (name) values ('Ada'), ('Grace'), ('Linus'); \
+                 insert into book (title, author_id) values ('Notes', 1), ('COBOL', 2), ('Anon', null)",
+            )
+            .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("book").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let i = s.object_index("book").unwrap();
+            s.open_object(i, w, cx)
+        });
+        let book = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "rows", |cx| {
+            book.read_with(cx, |t, cx| t.loaded_rows(cx) == 3)
+        });
+        assert_eq!(book.read_with(&cx, |t, cx| t.links(cx)), [false, false, true]);
+
+        // Click the → in book row 2 ("COBOL", author 2).
+        cx.run_until_parked();
+        let link = cx
+            .debug_bounds("fk-link-1-2")
+            .expect("link drawn on a non-NULL foreign-key cell");
+        assert!(cx.debug_bounds("fk-link-2-2").is_none(), "no link on NULL");
+        cx.simulate_click(link.center(), gpui::Modifiers::none());
+        wait_until(&mut cx, "author tab", |cx| {
+            session.read_with(cx, |s, cx| {
+                s.active_table()
+                    .is_some_and(|t| t.read(cx).object.name == "author")
+            })
+        });
+        let author = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "filtered", |cx| {
+            author.read_with(cx, |t, cx| t.loaded_rows(cx) == 1)
+        });
+        assert_eq!(author.read_with(&cx, |t, cx| t.cell(0, 1, cx)).as_deref(), Some("Grace"));
+
+        // The chip's ✕ clears the reference filter.
+        cx.run_until_parked();
+        let clear = cx.debug_bounds("clear-fixed").expect("chip shown");
+        cx.simulate_click(clear.center(), gpui::Modifiers::none());
+        wait_until(&mut cx, "all authors", |cx| {
+            author.read_with(cx, |t, cx| t.loaded_rows(cx) == 3)
+        });
         let _ = std::fs::remove_file(file);
     }
 

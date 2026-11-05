@@ -200,6 +200,7 @@ impl RedisConn {
                 col("value", "any", false),
             ],
             indexes: QueryResult::default(),
+            ..Default::default()
         })
     }
 

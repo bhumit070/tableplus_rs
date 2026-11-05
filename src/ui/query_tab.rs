@@ -2,6 +2,7 @@
 //! whole editor when nothing is selected. Each statement gets a result tab.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
     App, ClipboardItem, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement,
@@ -19,10 +20,11 @@ use gpui_component::{
 use gpui_kit_assets::IconName;
 
 use super::cell_edit::{self, EditStart};
+use super::copy;
 use super::grid::{Grid, data_table};
 use super::{RunQuery, Shared};
-use crate::db::{ColumnInfo, DbObject, Driver, EnvTag, ObjectKind, QueryResult};
-use crate::runtime;
+use crate::db::{Cancel, ColumnInfo, DbObject, Driver, EnvTag, ObjectKind, QueryResult};
+use crate::{history, runtime};
 
 pub struct QueryTab {
     shared: Rc<Shared>,
@@ -32,6 +34,8 @@ pub struct QueryTab {
     active: usize,
     grid: Entity<TableState<Grid>>,
     running: bool,
+    /// Stops the running batch; `Some` while running.
+    cancel: Option<Arc<Cancel>>,
     error: Option<String>,
     elapsed: u128,
     focus: FocusHandle,
@@ -124,27 +128,20 @@ impl QueryTab {
         let mut grid = Grid::default();
         grid.on_menu = Some(Rc::new(move |row, menu, _, _| {
             let w = weak.clone();
-            let w2 = weak.clone();
             menu.item(
-                PopupMenuItem::new("Copy Row as JSON").on_click(move |_, window, cx| {
+                PopupMenuItem::new("Copy Cell").on_click(move |_, window, cx| {
                     w.update(cx, |t, cx| {
-                        let json = t.grid.read(cx).delegate().row_json(row);
-                        cx.write_to_clipboard(ClipboardItem::new_string(json));
-                        window.push_notification("Row copied as JSON", cx);
+                        let g = t.grid.read(cx);
+                        let col = g.selected_cell().map(|(_, c)| c).unwrap_or(0);
+                        let v = g.delegate().cell_string(row, col).unwrap_or_default();
+                        cx.write_to_clipboard(ClipboardItem::new_string(v));
+                        window.push_notification("Copied", cx);
                     })
                     .ok();
                 }),
             )
-            .item(
-                PopupMenuItem::new("Copy Result as CSV").on_click(move |_, window, cx| {
-                    w2.update(cx, |t, cx| {
-                        let csv = t.grid.read(cx).delegate().to_csv();
-                        cx.write_to_clipboard(ClipboardItem::new_string(csv));
-                        window.push_notification("Result copied as CSV", cx);
-                    })
-                    .ok();
-                }),
-            )
+            .separator()
+            .map(|menu| copy::copy_items(menu, weak.clone(), row))
         }));
         let grid = cx.new(|cx| {
             TableState::new(grid, window, cx)
@@ -168,6 +165,7 @@ impl QueryTab {
             active: 0,
             grid,
             running: false,
+            cancel: None,
             error: None,
             elapsed: 0,
             focus: cx.focus_handle(),
@@ -230,11 +228,40 @@ impl QueryTab {
         cx.notify();
         let conn = self.shared.conn.clone();
         let start = std::time::Instant::now();
-        let task = runtime::spawn(async move { conn.read().await.execute(&text).await });
+        let cancel = Arc::new(Cancel::default());
+        self.cancel = Some(cancel.clone());
+        let conn_id = self.shared.cfg.id.clone();
+        let task = runtime::spawn(async move {
+            let c = conn.read().await;
+            let ran_at = history::now();
+            let res = c.execute_cancellable(&text, &cancel).await;
+            let entry = history::Entry {
+                conn_id,
+                database: c.current_database(),
+                sql: text.trim().to_string(),
+                ran_at,
+                elapsed_ms: start.elapsed().as_millis() as i64,
+                rows: res.as_ref().ok().and_then(|r| r.last()).map(|r| {
+                    if r.columns.is_empty() {
+                        r.affected.unwrap_or(0) as i64
+                    } else {
+                        r.rows.len() as i64
+                    }
+                }),
+                error: res.as_ref().err().map(|e| format!("{e:#}")),
+            };
+            drop(c);
+            // History is a convenience: never fail the run over it.
+            if let Err(e) = history::record(entry).await {
+                eprintln!("query history: {e:#}");
+            }
+            res
+        });
         cx.spawn_in(window, async move |this, cx| {
             let res = task.await;
             this.update_in(cx, |this, window, cx| {
                 this.running = false;
+                this.cancel = None;
                 this.elapsed = start.elapsed().as_millis();
                 match res {
                     Ok(results) => {
@@ -248,7 +275,10 @@ impl QueryTab {
                     }
                     Err(e) => {
                         this.error = Some(format!("{e:#}"));
-                        window.push_notification(Notification::error("Query failed"), cx);
+                        let cancelled = e.root_cause().to_string() == crate::db::cancel::CANCELLED;
+                        if !cancelled {
+                            window.push_notification(Notification::error("Query failed"), cx);
+                        }
                     }
                 }
                 cx.notify();
@@ -256,6 +286,16 @@ impl QueryTab {
             .ok();
         })
         .detach();
+    }
+
+    /// ⌘. / Stop: cancels the running batch.
+    pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        let Some(cancel) = self.cancel.clone() else {
+            return;
+        };
+        // The batch then ends with "Query cancelled".
+        runtime::spawn_detached(async move { cancel.cancel().await });
+        cx.notify();
     }
 
     fn show_active(&mut self, cx: &mut Context<Self>) {
@@ -358,6 +398,12 @@ impl QueryTab {
         self.grid.update(cx, |t, cx| t.set_selected_cell(r, c, cx));
         let fh = self.grid.focus_handle(cx);
         window.focus(&fh, cx);
+    }
+
+    #[cfg(test)]
+    #[cfg(test)]
+    pub fn text(&self, cx: &App) -> String {
+        self.editor.read(cx).value().to_string()
     }
 
     #[cfg(test)]
@@ -576,6 +622,36 @@ impl QueryTab {
     }
 }
 
+impl copy::ExportHost for QueryTab {
+    fn export_grid(&self) -> &Entity<TableState<Grid>> {
+        &self.grid
+    }
+
+    /// Editable results write back to their table; others to a placeholder.
+    fn sql_target(&self, _cx: &App) -> crate::export::SqlTarget {
+        let (schema, table) = match &self.target {
+            Some(t) => (t.obj.schema.clone(), t.obj.name.clone()),
+            None => (None, "query_result".into()),
+        };
+        crate::export::SqlTarget {
+            driver: self.shared.cfg.driver,
+            schema,
+            table,
+        }
+    }
+
+    fn export_name(&self) -> String {
+        match &self.target {
+            Some(t) => t.obj.name.clone(),
+            None => "query_result".into(),
+        }
+    }
+
+    fn export_source(&self, _cx: &App) -> copy::Source {
+        copy::Source::Loaded
+    }
+}
+
 impl cell_edit::CellEditHost for QueryTab {
     fn grid(&self) -> &Entity<TableState<Grid>> {
         &self.grid
@@ -601,16 +677,23 @@ impl Render for QueryTab {
             .gap_1()
             .border_b_1()
             .border_color(theme.border)
-            .child(
+            .child(if self.running {
+                Button::new("stop")
+                    .icon(IconName::Square)
+                    .label("Stop")
+                    .danger()
+                    .small()
+                    .tooltip("Cancel the running query (⌘.)")
+                    .on_click(cx.listener(|this, _, _, cx| this.cancel(cx)))
+            } else {
                 Button::new("run")
                     .icon(IconName::Play)
                     .label("Run")
                     .primary()
                     .small()
-                    .loading(self.running)
                     .tooltip("Run selection or all (⌘↵)")
-                    .on_click(cx.listener(|this, _, window, cx| this.run(&RunQuery, window, cx))),
-            )
+                    .on_click(cx.listener(|this, _, window, cx| this.run(&RunQuery, window, cx)))
+            })
             .child(div().text_xs().text_color(theme.muted_foreground).child(
                 match self.shared.cfg.driver {
                     Driver::Redis => "One command per line",

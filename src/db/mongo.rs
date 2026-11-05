@@ -283,7 +283,11 @@ impl MongoConn {
                 .collect(),
             ..Default::default()
         };
-        Ok(Structure { columns, indexes })
+        Ok(Structure {
+            columns,
+            indexes,
+            ..Default::default()
+        })
     }
 
     pub async fn fetch_table(&self, q: &TableQuery) -> Result<(QueryResult, Option<u64>)> {

@@ -24,10 +24,10 @@ use gpui_kit_assets::IconName;
 use super::completion::Schema;
 use super::picker::{OnPick, PickItem, Picker};
 use super::query_tab::QueryTab;
-use super::table_tab::TableTab;
+use super::table_tab::{TableTab, TableTabEvent};
 use super::{SearchList, Shared, search_list, tag_color};
-use crate::db::{DbObject, Driver, ObjectKind};
-use crate::runtime;
+use crate::db::{DbObject, Driver, Filter, ObjectKind};
+use crate::{history, runtime};
 
 enum TabItem {
     Table(Entity<TableTab>),
@@ -363,11 +363,55 @@ impl Session {
             self.activate(i, window, cx);
             return;
         }
+        self.open_table_tab(obj, vec![], window, cx);
+    }
+
+    fn open_table_tab(
+        &mut self,
+        obj: DbObject,
+        fixed: Vec<Filter>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let shared = self.shared.clone();
-        let tab = cx.new(|cx| TableTab::new(shared, obj, window, cx));
+        let tab = cx.new(|cx| TableTab::new(shared, obj, fixed, window, cx));
+        self._subs.push(cx.subscribe_in(&tab, window, Self::on_table_event));
         self.tabs.push(TabItem::Table(tab));
         let i = self.tabs.len() - 1;
         self.activate(i, window, cx);
+    }
+
+    fn on_table_event(
+        &mut self,
+        _: &Entity<TableTab>,
+        ev: &TableTabEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match ev {
+            TableTabEvent::OpenReference {
+                schema,
+                table,
+                filters,
+            } => {
+                // The listed object, so the tab matches the sidebar's.
+                let obj = self
+                    .objects
+                    .iter()
+                    .find(|o| {
+                        &o.name == table
+                            && (schema.is_none() || o.schema == *schema || o.schema.is_none())
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| DbObject {
+                        schema: schema.clone(),
+                        name: table.clone(),
+                        kind: ObjectKind::Table,
+                    });
+                self.open_table_tab(obj, filters.clone(), window, cx);
+            }
+            TableTabEvent::OpenQuery(sql) => self.open_query(sql.clone(), window, cx),
+        }
     }
 
     pub fn new_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -402,6 +446,108 @@ impl Session {
             window,
             cx,
         );
+    }
+
+    /// ⌘Y: past queries on this connection, newest first; picking one opens
+    /// it in a new query tab.
+    pub fn open_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let conn_id = self.shared.cfg.id.clone();
+        let task = runtime::spawn(async move { history::recent(&conn_id, 1000).await });
+        cx.spawn_in(window, async move |this, cx| {
+            let entries = task.await;
+            this.update_in(cx, |s, window, cx| match entries {
+                Ok(entries) => s.show_history(entries, window, cx),
+                Err(e) => window.push_notification(
+                    Notification::error(format!("Couldn't read query history: {e:#}")),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn show_history(
+        &mut self,
+        entries: Vec<history::Entry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if entries.is_empty() {
+            window.push_notification("No query history yet for this connection", cx);
+            return;
+        }
+        let now = history::now();
+        let mut items: Vec<PickItem> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let one_line = e.sql.split_whitespace().collect::<Vec<_>>().join(" ");
+                let mut detail = format!("{} · {}", history::ago(e.ran_at, now), e.database);
+                match (&e.error, e.rows) {
+                    (Some(_), _) => detail.push_str(" · failed"),
+                    (None, Some(n)) => detail.push_str(&format!(" · {n} rows")),
+                    _ => {}
+                }
+                PickItem {
+                    detail: Some(detail),
+                    ..PickItem::new(i.to_string(), one_line)
+                }
+            })
+            .collect();
+        items.push(PickItem::new("clear", "Clear history for this connection…"));
+        let me = cx.entity().downgrade();
+        let on_pick: OnPick = Rc::new(move |id, window, cx| {
+            if id == "clear" {
+                let me = me.clone();
+                window.defer(cx, move |window, cx| {
+                    me.update(cx, |s, cx| s.confirm_clear_history(window, cx)).ok();
+                });
+                return;
+            }
+            let Some(sql) = id.parse::<usize>().ok().and_then(|i| entries.get(i)) else {
+                return;
+            };
+            let sql = sql.sql.clone();
+            me.update(cx, |s, cx| s.open_query(sql, window, cx)).ok();
+        });
+        Picker::open(
+            "Query History",
+            "Search past queries…",
+            IconName::Undo2,
+            items,
+            on_pick,
+            window,
+            cx,
+        );
+    }
+
+    fn confirm_clear_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let conn_id = self.shared.cfg.id.clone();
+        let name = self.shared.cfg.display_name();
+        window.open_alert_dialog(cx, move |d, _, _| {
+            let conn_id = conn_id.clone();
+            d.title("Clear query history?")
+                .description(format!("Deletes every saved query run on {name}."))
+                .on_ok(move |_, window, cx| {
+                    let conn_id = conn_id.clone();
+                    let task = runtime::spawn(async move { history::clear(&conn_id).await });
+                    window
+                        .spawn(cx, async move |cx| {
+                            let res = task.await;
+                            cx.update(|window, cx| match res {
+                                Ok(()) => window.push_notification("Query history cleared", cx),
+                                Err(e) => window.push_notification(
+                                    Notification::error(format!("{e:#}")),
+                                    cx,
+                                ),
+                            })
+                            .ok();
+                        })
+                        .detach();
+                    true
+                })
+        });
     }
 
     pub fn active_table(&self) -> Option<Entity<TableTab>> {

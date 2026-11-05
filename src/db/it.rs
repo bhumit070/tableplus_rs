@@ -4,6 +4,7 @@
 //!   redis 56379, mongo 57017.
 
 use super::*;
+use std::sync::Arc;
 
 fn it_enabled() -> bool {
     std::env::var("TABULA_IT").is_ok()
@@ -596,4 +597,126 @@ async fn mongo_end_to_end() {
         "the insert was saved"
     );
     c.drop_object(&t).await.unwrap();
+}
+
+/// ⌘. stops a long statement on the server, not just in the app.
+async fn cancel_scenario(driver: Driver, sleep: &str, still_running: &str) {
+    let c = Arc::new(Connection::connect(&cfg(driver)).await.expect("connect"));
+    let cancel = Arc::new(Cancel::default());
+    let run = tokio::spawn({
+        let (c, cancel, sleep) = (c.clone(), cancel.clone(), sleep.to_string());
+        async move { c.execute_cancellable(&sleep, &cancel).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let start = Instant::now();
+    cancel.cancel().await;
+    let err = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+        .await
+        .expect("cancel returns promptly")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(err.root_cause().to_string(), cancel::CANCELLED, "{err:#}");
+    assert!(start.elapsed().as_secs() < 5);
+    // The server isn't still sleeping on our behalf.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let r = c.execute(still_running).await.unwrap();
+    assert_eq!(r[0].rows[0][0].as_deref(), Some("0"), "{driver:?}");
+    // The pool still works afterwards.
+    assert_eq!(
+        c.execute("select 1").await.unwrap()[0].rows[0][0].as_deref(),
+        Some("1")
+    );
+}
+
+#[tokio::test]
+async fn postgres_cancel() {
+    if !it_enabled() {
+        return;
+    }
+    cancel_scenario(
+        Driver::Postgres,
+        "select pg_sleep(30)",
+        "select count(*) from pg_stat_activity where query = 'select pg_sleep(30)' and state = 'active' and pid <> pg_backend_pid()",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn mysql_cancel() {
+    if !it_enabled() {
+        return;
+    }
+    cancel_scenario(
+        Driver::MySql,
+        "select sleep(30)",
+        "select count(*) from information_schema.processlist where info = 'select sleep(30)'",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn sqlite_cancel() {
+    // A slow recursive query; SQLite just abandons it.
+    let c = Connection::connect(&cfg(Driver::Sqlite)).await.unwrap();
+    let cancel = Arc::new(Cancel::default());
+    let c2 = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        c2.cancel().await;
+    });
+    let err = c
+        .execute_cancellable(
+            "with recursive n(x) as (select 1 union all select x + 1 from n where x < 100000000) select count(*) from n",
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.root_cause().to_string(), cancel::CANCELLED);
+}
+
+/// Structure view extras: foreign keys (with composite keys and actions)
+/// and the table's CREATE statement.
+async fn fk_scenario(driver: Driver) {
+    let c = Connection::connect(&cfg(driver)).await.expect("connect");
+    let int = if driver == Driver::MySql { "int" } else { "integer" };
+    c.execute(&format!(
+        "drop table if exists it_child; drop table if exists it_parent; \
+         create table it_parent (a {int} not null, b {int} not null, name varchar(20), primary key (a, b)); \
+         create table it_child (id {int} primary key, pa {int}, pb {int}, \
+           constraint it_child_parent foreign key (pa, pb) references it_parent (a, b) on delete cascade)"
+    ))
+    .await
+    .unwrap();
+    let objects = c.list_objects().await.unwrap();
+    let st = c.structure(&obj(&objects, "it_child")).await.unwrap();
+    assert_eq!(st.foreign_keys.len(), 1, "{driver:?}");
+    let fk = &st.foreign_keys[0];
+    assert_eq!(fk.columns, ["pa", "pb"], "{driver:?}");
+    assert_eq!(fk.ref_table, "it_parent");
+    assert_eq!(fk.ref_columns, ["a", "b"], "{driver:?}");
+    assert_eq!(fk.on_delete, "CASCADE", "{driver:?}");
+    let ddl = st.ddl.to_lowercase();
+    assert!(ddl.contains("create table"), "{driver:?}: {ddl}");
+    assert!(ddl.contains("foreign key"), "{driver:?}: {ddl}");
+    assert!(ddl.contains("it_parent"), "{driver:?}: {ddl}");
+    c.execute("drop table it_child; drop table it_parent").await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_foreign_keys() {
+    fk_scenario(Driver::Sqlite).await;
+}
+
+#[tokio::test]
+async fn postgres_foreign_keys() {
+    if it_enabled() {
+        fk_scenario(Driver::Postgres).await;
+    }
+}
+
+#[tokio::test]
+async fn mysql_foreign_keys() {
+    if it_enabled() {
+        fk_scenario(Driver::MySql).await;
+    }
 }

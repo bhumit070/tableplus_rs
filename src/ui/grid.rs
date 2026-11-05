@@ -32,6 +32,8 @@ pub fn data_table<D: TableDelegate>(
 
 pub type SortFn = Rc<dyn Fn(usize, ColumnSort, &mut Window, &mut App)>;
 pub type MenuFn = Rc<dyn Fn(usize, PopupMenu, &mut Window, &mut App) -> PopupMenu>;
+/// Called with (row, column) when a foreign-key link is clicked.
+pub type FollowFn = Rc<dyn Fn(usize, usize, &mut Window, &mut App)>;
 
 #[derive(Default)]
 pub struct Grid {
@@ -51,6 +53,9 @@ pub struct Grid {
     /// Server-side sort; when unset the grid sorts the loaded rows itself.
     pub on_sort: Option<SortFn>,
     pub on_menu: Option<MenuFn>,
+    /// Columns that reference another table: their values get a → link.
+    pub links: Vec<bool>,
+    pub on_follow: Option<FollowFn>,
 }
 
 fn display(v: &str) -> String {
@@ -208,47 +213,24 @@ impl Grid {
         self.value(r, c).cloned().flatten()
     }
 
-    /// Row as a JSON object (for "Copy row as JSON").
-    pub fn row_json(&self, r: usize) -> String {
-        let obj: serde_json::Map<String, serde_json::Value> = self
-            .columns
-            .iter()
-            .enumerate()
-            .map(|(c, name)| {
-                (
-                    name.clone(),
-                    self.cell_string(r, c)
-                        .map(serde_json::Value::String)
-                        .unwrap_or(serde_json::Value::Null),
-                )
-            })
-            .collect();
-        serde_json::to_string_pretty(&serde_json::Value::Object(obj)).unwrap_or_default()
+    /// Row `r` as shown (staged edits applied).
+    pub fn row_values(&self, r: usize) -> crate::export::Row {
+        (0..self.columns.len()).map(|c| self.cell_string(r, c)).collect()
     }
 
-    pub fn to_csv(&self) -> String {
-        let esc = |s: &str| {
-            if s.contains([',', '"', '\n', '\r']) {
-                format!("\"{}\"", s.replace('"', "\"\""))
-            } else {
-                s.to_string()
-            }
-        };
-        let mut out = self
-            .columns
-            .iter()
-            .map(|c| esc(c))
-            .collect::<Vec<_>>()
-            .join(",");
-        out.push('\n');
-        for r in 0..self.rows.len() {
-            let line: Vec<String> = (0..self.columns.len())
-                .map(|c| self.cell_string(r, c).map(|v| esc(&v)).unwrap_or_default())
-                .collect();
-            out.push_str(&line.join(","));
-            out.push('\n');
-        }
-        out
+    /// Every row as shown, minus rows marked for deletion.
+    pub fn all_values(&self) -> Vec<crate::export::Row> {
+        (0..self.rows.len())
+            .filter(|r| !self.deleted.contains(r))
+            .map(|r| self.row_values(r))
+            .collect()
+    }
+
+    pub fn column_values(&self, c: usize) -> Vec<Option<String>> {
+        (0..self.rows.len())
+            .filter(|r| !self.deleted.contains(r))
+            .map(|r| self.cell_string(r, c))
+            .collect()
     }
 }
 
@@ -354,7 +336,34 @@ impl TableDelegate for Grid {
             .overflow_hidden()
             .when_some(bg, |d, bg| d.bg(bg))
             .when(deleted, |d| d.line_through());
+        let link = self.links.get(col_ix).copied().unwrap_or(false) && !new_row;
         match self.value(row_ix, col_ix) {
+            Some(Some(v)) if link => {
+                let follow = self.on_follow.clone();
+                let id = row_ix * self.columns.len().max(1) + col_ix;
+                cell.gap_1()
+                    .child(div().flex_1().min_w_0().truncate().child(display(v)))
+                    .child(
+                        div()
+                            .id(("fk-link", id))
+                            .debug_selector(move || format!("fk-link-{row_ix}-{col_ix}"))
+                            .flex_none()
+                            .cursor_pointer()
+                            .text_color(theme.muted_foreground)
+                            .hover(|d| d.text_color(theme.primary))
+                            .child(
+                                gpui_component::Icon::new(gpui_kit_assets::IconName::ArrowRight)
+                                    .xsmall(),
+                            )
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                if let Some(f) = &follow {
+                                    f(row_ix, col_ix, window, cx);
+                                }
+                            }),
+                    )
+                    .into_any_element()
+            }
             Some(Some(v)) => cell
                 .child(div().truncate().child(display(v)))
                 .into_any_element(),

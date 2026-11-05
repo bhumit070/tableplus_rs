@@ -12,6 +12,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::PopupMenuItem;
 use gpui_component::notification::Notification;
 use gpui_component::select::{Select, SelectState};
+use gpui_component::tab::{Tab, TabBar};
 use gpui_component::table::{TableEvent, TableState};
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IndexPath, Selectable as _, Sizable as _, WindowExt as _,
@@ -20,6 +21,7 @@ use gpui_component::{
 use gpui_kit_assets::IconName;
 
 use super::cell_edit::{self, EditStart};
+use super::copy;
 use super::grid::{Grid, data_table};
 use super::{
     AddRow, Commit, CopyCell, DeleteRows, Discard, SearchList, SetNull, Shared, ToggleFilter,
@@ -27,6 +29,19 @@ use super::{
 };
 use crate::db::{DbObject, EnvTag, Filter, FilterOp, QueryResult, Structure, TableQuery};
 use crate::runtime;
+
+pub enum TableTabEvent {
+    /// Open `table` showing only rows matching `filters`.
+    OpenReference {
+        schema: Option<String>,
+        table: String,
+        filters: Vec<Filter>,
+    },
+    /// Open SQL in a new query tab.
+    OpenQuery(String),
+}
+
+impl gpui::EventEmitter<TableTabEvent> for TableTab {}
 
 const PAGE_SIZES: [usize; 4] = [100, 300, 1000, 5000];
 
@@ -43,7 +58,13 @@ pub struct TableTab {
     structure: Option<Structure>,
     struct_cols: Entity<TableState<Grid>>,
     struct_idx: Entity<TableState<Grid>>,
+    struct_fks: Entity<TableState<Grid>>,
     show_structure: bool,
+    /// Structure view section: columns, indexes, foreign keys, SQL.
+    struct_section: usize,
+    /// Filters this tab was opened with (following a foreign key); shown as
+    /// a removable chip, applied on top of the filter bar.
+    fixed: Vec<Filter>,
     filters: Vec<FilterRow>,
     show_filters: bool,
     page: usize,
@@ -63,6 +84,7 @@ impl TableTab {
     pub fn new(
         shared: Rc<Shared>,
         object: DbObject,
+        fixed: Vec<Filter>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -103,16 +125,8 @@ impl TableTab {
             .item(item("Copy Cell", |t, _, window, cx| {
                 t.copy_cell(window, cx)
             }))
-            .item(item("Copy Row as JSON", |t, row, window, cx| {
-                let json = t.table.read(cx).delegate().row_json(row);
-                cx.write_to_clipboard(ClipboardItem::new_string(json));
-                window.push_notification("Row copied as JSON", cx);
-            }))
-            .item(item("Copy Page as CSV", |t, _, window, cx| {
-                let csv = t.table.read(cx).delegate().to_csv();
-                cx.write_to_clipboard(ClipboardItem::new_string(csv));
-                window.push_notification("Page copied as CSV", cx);
-            }))
+            .separator()
+            .map(|menu| copy::copy_items(menu, w.clone(), row))
             .separator()
             .item(item("Set NULL", |t, _, window, cx| t.set_null(window, cx)))
             .item(item("Duplicate Row", |t, row, _, cx| {
@@ -125,6 +139,11 @@ impl TableTab {
                 });
                 cx.notify();
             }))
+        }));
+
+        let w = weak.clone();
+        grid.on_follow = Some(Rc::new(move |row, col, _, cx| {
+            w.update(cx, |t, cx| t.follow(row, col, cx)).ok();
         }));
 
         let table = cx.new(|cx| {
@@ -143,6 +162,7 @@ impl TableTab {
         };
         let struct_cols = read_only(window, cx);
         let struct_idx = read_only(window, cx);
+        let struct_fks = read_only(window, cx);
 
         let subs = vec![
             cx.subscribe_in(&table, window, |this, _, ev: &TableEvent, window, cx| {
@@ -159,7 +179,10 @@ impl TableTab {
             structure: None,
             struct_cols,
             struct_idx,
+            struct_fks,
             show_structure: false,
+            struct_section: 0,
+            fixed,
             filters: Vec::new(),
             show_filters: false,
             page: 0,
@@ -203,6 +226,16 @@ impl TableTab {
     #[cfg(test)]
     pub fn staged(&self, r: usize, c: usize, cx: &App) -> Option<Option<String>> {
         self.table.read(cx).delegate().edits.get(&(r, c)).cloned()
+    }
+
+    #[cfg(test)]
+    pub fn cell(&self, r: usize, c: usize, cx: &App) -> Option<String> {
+        self.table.read(cx).delegate().cell_string(r, c)
+    }
+
+    #[cfg(test)]
+    pub fn links(&self, cx: &App) -> Vec<bool> {
+        self.table.read(cx).delegate().links.clone()
     }
 
     #[cfg(test)]
@@ -264,22 +297,32 @@ impl TableTab {
         self.reload(cx);
     }
 
-    pub fn reload(&mut self, cx: &mut Context<Self>) {
+    /// The current page, with the tab's filters and sort.
+    fn current_query(&self, cx: &App) -> TableQuery {
         let grid = self.table.read(cx).delegate();
         let order = grid
             .sort
             .and_then(|(c, asc)| Some((grid.columns.get(c)?.clone(), asc)));
-        let q = TableQuery {
+        TableQuery {
             object: self.object.clone(),
-            filters: if self.show_filters {
-                self.filter_values(cx)
-            } else {
-                vec![]
-            },
+            filters: self
+                .fixed
+                .iter()
+                .cloned()
+                .chain(if self.show_filters {
+                    self.filter_values(cx)
+                } else {
+                    vec![]
+                })
+                .collect(),
             order,
             limit: self.page_size,
             offset: self.page * self.page_size,
-        };
+        }
+    }
+
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        let q = self.current_query(cx);
         self.table.update(cx, |t, cx| {
             t.delegate_mut().loading = true;
             cx.notify();
@@ -358,6 +401,33 @@ impl TableTab {
                 t.delegate_mut().set_result(&idx);
                 t.refresh(cx);
             });
+            let fks = QueryResult {
+                columns: ["name", "columns", "references", "on update", "on delete"]
+                    .map(String::from)
+                    .to_vec(),
+                rows: st
+                    .foreign_keys
+                    .iter()
+                    .map(|f| {
+                        let table = match &f.ref_schema {
+                            Some(s) if !s.is_empty() => format!("{s}.{}", f.ref_table),
+                            _ => f.ref_table.clone(),
+                        };
+                        vec![
+                            Some(f.name.clone()),
+                            Some(f.columns.join(", ")),
+                            Some(format!("{table} ({})", f.ref_columns.join(", "))),
+                            Some(f.on_update.clone()),
+                            Some(f.on_delete.clone()),
+                        ]
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            self.struct_fks.update(cx, |t, cx| {
+                t.delegate_mut().set_result(&fks);
+                t.refresh(cx);
+            });
             self.structure = Some(st);
         }
         let pk_names: Vec<String> = self
@@ -373,15 +443,61 @@ impl TableTab {
             .unwrap_or_default();
         self.total = total;
         self.elapsed = data.elapsed_ms;
+        let fk_cols: Vec<String> = self
+            .structure
+            .iter()
+            .flat_map(|s| &s.foreign_keys)
+            .flat_map(|f| f.columns.clone())
+            .collect();
         self.table.update(cx, |t, cx| {
             let g = t.delegate_mut();
             g.set_result(&data);
             g.pk = g.columns.iter().map(|c| pk_names.contains(c)).collect();
+            g.links = g.columns.iter().map(|c| fk_cols.contains(c)).collect();
             g.editable = vec![true; g.columns.len()];
             t.refresh(cx);
             cx.notify();
         });
         cx.notify();
+    }
+
+    /// → on a foreign-key cell: open the referenced table filtered to the
+    /// row(s) this one points at.
+    fn follow(&mut self, row: usize, col: usize, cx: &mut Context<Self>) {
+        let g = self.table.read(cx).delegate();
+        let Some(column) = g.columns.get(col).cloned() else {
+            return;
+        };
+        let Some(st) = &self.structure else { return };
+        // Prefer a single-column key on this column over a composite one.
+        let Some(fk) = st
+            .foreign_keys
+            .iter()
+            .filter(|f| f.columns.contains(&column))
+            .min_by_key(|f| f.columns.len())
+        else {
+            return;
+        };
+        let mut filters = vec![];
+        for (c, rc) in fk.columns.iter().zip(&fk.ref_columns) {
+            let Some(ix) = g.columns.iter().position(|x| x == c) else {
+                return;
+            };
+            // A NULL part of the key references nothing.
+            let Some(value) = g.cell_string(row, ix) else {
+                return;
+            };
+            filters.push(Filter {
+                column: rc.clone(),
+                op: FilterOp::Eq,
+                value,
+            });
+        }
+        cx.emit(TableTabEvent::OpenReference {
+            schema: fk.ref_schema.clone().filter(|s| !s.is_empty()),
+            table: fk.ref_table.clone(),
+            filters,
+        });
     }
 
     fn selected_cell(&self, cx: &App) -> Option<(usize, usize)> {
@@ -402,7 +518,7 @@ impl TableTab {
         let t = table.read(cx);
         let text = match (t.selected_cell(), t.selected_row()) {
             (Some((r, c)), _) => t.delegate().cell_string(r, c).unwrap_or_default(),
-            (None, Some(r)) => t.delegate().row_json(r),
+            (None, Some(r)) => copy::row_tsv(t.delegate(), r),
             _ => return,
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -850,6 +966,31 @@ impl TableTab {
     }
 }
 
+impl copy::ExportHost for TableTab {
+    fn export_grid(&self) -> &Entity<TableState<Grid>> {
+        &self.table
+    }
+
+    fn sql_target(&self, _cx: &App) -> crate::export::SqlTarget {
+        crate::export::SqlTarget {
+            driver: self.shared.cfg.driver,
+            schema: self.object.schema.clone(),
+            table: self.object.name.clone(),
+        }
+    }
+
+    fn export_name(&self) -> String {
+        self.object.name.clone()
+    }
+
+    fn export_source(&self, cx: &App) -> copy::Source {
+        copy::Source::Table {
+            conn: self.shared.conn.clone(),
+            query: self.current_query(cx),
+        }
+    }
+}
+
 impl cell_edit::CellEditHost for TableTab {
     fn grid(&self) -> &Entity<TableState<Grid>> {
         &self.table
@@ -870,25 +1011,90 @@ impl Render for TableTab {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let body = if self.show_structure {
+            let section = self.struct_section;
+            let ddl = self
+                .structure
+                .as_ref()
+                .map(|s| s.ddl.clone())
+                .unwrap_or_default();
+            let content = match section {
+                0 => data_table(&self.struct_cols, cx).into_any_element(),
+                1 => data_table(&self.struct_idx, cx).into_any_element(),
+                2 => data_table(&self.struct_fks, cx).into_any_element(),
+                _ => v_flex()
+                    .size_full()
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .p_1()
+                            .child(
+                                Button::new("copy-ddl")
+                                    .icon(IconName::Copy)
+                                    .label("Copy")
+                                    .ghost()
+                                    .xsmall()
+                                    .on_click({
+                                        let ddl = ddl.clone();
+                                        move |_, window, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                ddl.clone(),
+                                            ));
+                                            window.push_notification("SQL copied", cx);
+                                        }
+                                    }),
+                            )
+                            .child(
+                                Button::new("ddl-to-query")
+                                    .icon(IconName::SquareTerminal)
+                                    .label("Open in Query Tab")
+                                    .ghost()
+                                    .xsmall()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        let sql = this
+                                            .structure
+                                            .as_ref()
+                                            .map(|s| s.ddl.clone())
+                                            .unwrap_or_default();
+                                        cx.emit(TableTabEvent::OpenQuery(sql));
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("ddl")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_scroll()
+                            .p_2()
+                            .text_sm()
+                            .font_family(theme.mono_font_family.clone())
+                            .child(if ddl.is_empty() {
+                                "-- Not available for this object".to_string()
+                            } else {
+                                ddl
+                            }),
+                    )
+                    .into_any_element(),
+            };
+            let fk_count = self.structure.as_ref().map_or(0, |s| s.foreign_keys.len());
+            let idx_count = self.structure.as_ref().map_or(0, |s| s.indexes.rows.len());
             v_flex()
                 .size_full()
                 .child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .child(data_table(&self.struct_cols, cx)),
+                    TabBar::new("structure-sections")
+                        .underline()
+                        .small()
+                        .selected_index(section)
+                        .child(Tab::new().label("Columns"))
+                        .child(Tab::new().label(format!("Indexes ({idx_count})")))
+                        .child(Tab::new().label(format!("Foreign Keys ({fk_count})")))
+                        .child(Tab::new().label("SQL"))
+                        .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                            this.struct_section = *ix;
+                            cx.notify();
+                        })),
                 )
-                .child(
-                    div()
-                        .px_2()
-                        .py_1()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .border_t_1()
-                        .border_color(theme.border)
-                        .child("INDEXES"),
-                )
-                .child(div().h(rems(11.25)).child(data_table(&self.struct_idx, cx)))
+                .child(div().flex_1().min_h_0().child(content))
                 .into_any_element()
         } else {
             cell_edit::editable(data_table(&self.table, cx), cx).into_any_element()
@@ -899,6 +1105,45 @@ impl Render for TableTab {
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &CopyCell, window, cx| this.copy_cell(window, cx)))
             .on_action(cx.listener(|this, _: &SetNull, window, cx| this.set_null(window, cx)))
+            .when(!self.fixed.is_empty() && !self.show_structure, |d| {
+                let text = self
+                    .fixed
+                    .iter()
+                    .map(|f| format!("{} {} {}", f.column, f.op.label(), f.value))
+                    .collect::<Vec<_>>()
+                    .join(" AND ");
+                d.child(
+                    h_flex()
+                        .gap_1()
+                        .px_2()
+                        .py_1()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .text_xs()
+                        .child(
+                            h_flex()
+                                .gap_1()
+                                .pl_2()
+                                .rounded_md()
+                                .bg(cx.theme().accent)
+                                .child(format!("Referenced row: {text}"))
+                                .child(
+                                    Button::new("clear-fixed")
+                                        .debug_selector(|| "clear-fixed".into())
+                                        .icon(IconName::Close)
+                                        .ghost()
+                                        .xsmall()
+                                        .tooltip("Show all rows")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.reload_unless_dirty(window, cx, |t| {
+                                                t.fixed.clear();
+                                                t.page = 0;
+                                            });
+                                        })),
+                                ),
+                        ),
+                )
+            })
             .when(self.show_filters && !self.show_structure, |d| {
                 d.child(self.render_filters(cx))
             })

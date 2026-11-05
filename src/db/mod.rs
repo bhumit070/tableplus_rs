@@ -1,6 +1,7 @@
 //! Database layer: one `Connection` enum that hides the five drivers behind a
 //! common, string-based API the UI can render directly.
 
+pub mod cancel;
 #[cfg(test)]
 mod it;
 mod mongo;
@@ -14,6 +15,8 @@ use std::time::Instant;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+
+pub use cancel::Cancel;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Driver {
@@ -208,11 +211,27 @@ pub struct ColumnInfo {
     pub is_pk: bool,
 }
 
-/// Index / constraint rows for the Structure view.
+/// A foreign key: `columns` of this table reference `ref_columns` of
+/// `ref_table`, in order.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ForeignKey {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub ref_schema: Option<String>,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+    pub on_update: String,
+    pub on_delete: String,
+}
+
+/// What the Structure view shows.
 #[derive(Clone, Debug, Default)]
 pub struct Structure {
     pub columns: Vec<ColumnInfo>,
     pub indexes: QueryResult,
+    pub foreign_keys: Vec<ForeignKey>,
+    /// `CREATE TABLE …` (plus indexes where the server keeps them apart).
+    pub ddl: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -402,11 +421,28 @@ impl Connection {
     }
 
     /// Runs editor text. SQL is split into statements; one result per statement.
+    #[cfg(test)]
     pub async fn execute(&self, text: &str) -> Result<Vec<QueryResult>> {
-        match self {
-            Connection::Sql(c) => c.execute(text).await,
-            Connection::Redis(c) => c.execute(text).await,
-            Connection::Mongo(c) => c.execute(text).await,
+        self.execute_cancellable(text, &Cancel::default()).await
+    }
+
+    /// `execute` that `cancel` can stop (see `cancel::Cancel`).
+    pub async fn execute_cancellable(
+        &self,
+        text: &str,
+        cancel: &Cancel,
+    ) -> Result<Vec<QueryResult>> {
+        let run = async {
+            match self {
+                Connection::Sql(c) => c.execute(text, cancel).await,
+                Connection::Redis(c) => c.execute(text).await,
+                Connection::Mongo(c) => c.execute(text).await,
+            }
+        };
+        // SQL batches watch `cancel` themselves, to clean up the connection.
+        tokio::select! {
+            r = run => r,
+            _ = cancel.cancelled() => Err(anyhow::anyhow!(cancel::CANCELLED)),
         }
     }
 

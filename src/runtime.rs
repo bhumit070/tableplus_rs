@@ -28,3 +28,8 @@ pub fn spawn<T: Send + 'static>(
             .unwrap_or_else(|_| Err(anyhow::anyhow!("task cancelled")))
     }
 }
+
+/// Runs `fut` on tokio without waiting for it.
+pub fn spawn_detached(fut: impl Future<Output = ()> + Send + 'static) {
+    RT.spawn(fut);
+}
