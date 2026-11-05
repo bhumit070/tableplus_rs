@@ -27,7 +27,7 @@ use super::table_tab::TableTab;
 use super::{
     AddRow, CloseTab, Commit, Connection1, Connection2, Connection3, Connection4, Connection5,
     Connection6, Connection7, Connection8, Connection9, DeleteRows, Discard, GoHome, NewQuery,
-    CancelQuery, ExportData, ToggleRowDetail, NextTab, QueryHistory, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
+    CancelQuery, ExportData, FormatSql, ToggleRowDetail, NextTab, QueryHistory, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
     ToggleFilter, ToggleTheme, tag_color,
 };
 use crate::db::ssh::UnknownHostKey;
@@ -580,6 +580,13 @@ pub fn register_actions(cx: &mut App) {
     });
 
     cx.on_action(|_: &QueryHistory, cx| with_session(cx, |s, w, cx| s.open_history(w, cx)));
+    cx.on_action(|_: &FormatSql, cx| {
+        with_session(cx, |s, w, cx| {
+            if let Some(q) = s.active_query() {
+                q.update(cx, |q, cx| q.format(w, cx));
+            }
+        })
+    });
     cx.on_action(|_: &ToggleRowDetail, cx| {
         with_session(cx, |s, _, cx| {
             if let Some(t) = s.active_table() {
@@ -1241,6 +1248,39 @@ mod tests {
         cx.simulate_keystrokes("cmd-shift-i");
         cx.run_until_parked();
         assert!(cx.debug_bounds("row-detail").is_none(), "panel hidden");
+        let _ = std::fs::remove_file(file);
+    }
+
+    /// ⌘⇧F formats the editor while typing in it; ⌘Z undoes it.
+    #[gpui::test]
+    fn format_sql_shortcut(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-format-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        session.update_in(&mut cx, |s, w, cx| s.new_query_for_test(w, cx));
+        let q = session.read_with(&cx, |s, _| s.active_query().unwrap());
+        cx.run_until_parked();
+        cx.simulate_input("select a, b from t where a = 1");
+        cx.simulate_keystrokes("cmd-shift-f");
+        cx.run_until_parked();
+        assert_eq!(
+            q.read_with(&cx, |q, cx| q.text(cx)),
+            "SELECT\n  a,\n  b\nFROM t\nWHERE\n  a = 1"
+        );
+        cx.simulate_keystrokes("cmd-z");
+        cx.run_until_parked();
+        assert_eq!(
+            q.read_with(&cx, |q, cx| q.text(cx)),
+            "select a, b from t where a = 1"
+        );
         let _ = std::fs::remove_file(file);
     }
 

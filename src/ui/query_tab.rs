@@ -298,6 +298,26 @@ impl QueryTab {
         .detach();
     }
 
+    /// ⌘⇧F: formats the selection, or the whole editor (undoable).
+    pub fn format(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.shared.cfg.driver, Driver::Redis | Driver::Mongo) {
+            return;
+        }
+        let mysql = self.shared.cfg.driver == Driver::MySql;
+        self.editor.update(cx, |e, cx| {
+            let sel = e.selected_value().to_string();
+            if sel.trim().is_empty() {
+                let all = e.value().to_string();
+                let f = crate::db::format::format_sql(&all, mysql);
+                if f != all {
+                    e.replace_all(f, window, cx);
+                }
+            } else {
+                e.replace(crate::db::format::format_sql(&sel, mysql), window, cx);
+            }
+        });
+    }
+
     /// ⌘. / Stop: cancels the running batch.
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         let Some(cancel) = self.cancel.clone() else {
@@ -732,6 +752,19 @@ impl Render for QueryTab {
                     .tooltip("Run selection or all (⌘↵)")
                     .on_click(cx.listener(|this, _, window, cx| this.run(&RunQuery, window, cx)))
             })
+            .when(
+                !matches!(self.shared.cfg.driver, Driver::Redis | Driver::Mongo),
+                |d| {
+                    d.child(
+                        Button::new("format")
+                            .label("Format")
+                            .ghost()
+                            .small()
+                            .tooltip("Format SQL (⌘⇧F)")
+                            .on_click(cx.listener(|this, _, window, cx| this.format(window, cx))),
+                    )
+                },
+            )
             .child(div().text_xs().text_color(theme.muted_foreground).child(
                 match self.shared.cfg.driver {
                     Driver::Redis => "One command per line",
