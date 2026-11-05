@@ -102,7 +102,7 @@ impl client::Handler for Client {
     ) -> Result<bool, Self::Error> {
         let russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } = key else {
             // Certificate host keys would need a trusted CA list.
-            *self.problem.lock().unwrap() = Some(KeyProblem::Changed(
+            *self.problem.lock().unwrap_or_else(|e| e.into_inner()) = Some(KeyProblem::Changed(
                 "the server presented a host certificate, which isn't supported".into(),
             ));
             return Ok(false);
@@ -123,7 +123,7 @@ impl client::Handler for Client {
                 Ok(true) => return Ok(true),
                 Ok(false) => {}
                 Err(russh::keys::Error::KeyChanged { line }) => {
-                    *self.problem.lock().unwrap() = Some(KeyProblem::Changed(format!(
+                    *self.problem.lock().unwrap_or_else(|e| e.into_inner()) = Some(KeyProblem::Changed(format!(
                         "the SSH host key for {}:{} has CHANGED (it doesn't match line {line} \
                          of {}). Someone could be intercepting the connection. If the server \
                          was reinstalled, remove that line and connect again.",
@@ -137,7 +137,7 @@ impl client::Handler for Client {
                 Err(_) => {}
             }
         }
-        *self.problem.lock().unwrap() = Some(KeyProblem::Unknown(UnknownHostKey {
+        *self.problem.lock().unwrap_or_else(|e| e.into_inner()) = Some(KeyProblem::Unknown(UnknownHostKey {
             host: self.host.clone(),
             port: self.port,
             fingerprint: key.fingerprint(HashAlg::Sha256).to_string(),
@@ -200,7 +200,7 @@ impl Tunnel {
             Err(_) => bail!("SSH: timed out connecting to {}:{port}", ssh.host),
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
-                return Err(match problem.lock().unwrap().take() {
+                return Err(match problem.lock().unwrap_or_else(|e| e.into_inner()).take() {
                     Some(KeyProblem::Unknown(u)) => anyhow::Error::new(u),
                     Some(KeyProblem::Changed(msg)) => anyhow::anyhow!("SSH: {msg}"),
                     None => anyhow::Error::new(e)

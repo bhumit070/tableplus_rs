@@ -3,6 +3,8 @@
 
 use std::rc::Rc;
 
+use anyhow::Context as _;
+
 use gpui::{
     App, ClipboardItem, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement,
     Render, SharedString, Styled, Subscription, Window, div, prelude::*, px, rems,
@@ -759,23 +761,50 @@ impl TableTab {
         if let crate::db::safety::Gate::Block(why) = crate::db::safety::gate_write(&self.shared.cfg) {
             return fail(why, window, cx);
         }
+        // Read and parse off the UI thread: a big file mustn't freeze it.
+        let path = path.to_path_buf();
+        let task = runtime::spawn(async move {
+            let bytes = tokio::fs::read(&path)
+                .await
+                .with_context(|| format!("reading {}", path.display()))?;
+            tokio::task::spawn_blocking(move || crate::csv_import::parse(&bytes)).await?
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let res = task.await;
+            this.update_in(cx, |t, window, cx| match res {
+                Ok(csv) => t.confirm_import(csv, window, cx),
+                Err(e) => window.push_notification(
+                    Notification::error(format!("{e:#}")).title("Import failed"),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn confirm_import(
+        &mut self,
+        csv: crate::csv_import::Csv,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let fail = |msg: String, window: &mut Window, cx: &mut Context<Self>| {
+            window.push_notification(Notification::error(msg).title("Import failed"), cx);
+        };
         let atomic = self
             .shared
             .conn
             .try_read()
             .map(|c| c.commits_atomically())
             .unwrap_or(true);
-        let csv = match std::fs::read(path)
-            .map_err(anyhow::Error::from)
-            .and_then(|b| crate::csv_import::parse(&b))
-        {
-            Ok(c) => c,
-            Err(e) => return fail(format!("{e:#}"), window, cx),
-        };
         let Some(columns) = self.structure.as_ref().map(|s| s.columns.clone()) else {
             return fail("The table's columns haven't loaded yet".into(), window, cx);
         };
-        let mapping = crate::csv_import::map_columns(&csv.headers, &columns);
+        let mapping = match crate::csv_import::map_columns(&csv.headers, &columns) {
+            Ok(m) => m,
+            Err(e) => return fail(format!("{e:#}"), window, cx),
+        };
         let matched: Vec<String> = csv
             .headers
             .iter()

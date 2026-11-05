@@ -35,6 +35,13 @@ async fn pool() -> Result<&'static SqlitePool> {
             .max_connections(1)
             .connect_with(o)
             .await?;
+        // Schema version, so later changes can migrate old files.
+        let version: i64 = sqlx::query_scalar("pragma user_version")
+            .fetch_one(&pool)
+            .await?;
+        if version > 1 {
+            anyhow::bail!("history.db was written by a newer Tabula; history is off until you update");
+        }
         sqlx::raw_sql(
             "create table if not exists history (
                 id integer primary key,
@@ -46,7 +53,8 @@ async fn pool() -> Result<&'static SqlitePool> {
                 rows integer,
                 error text
             );
-            create index if not exists history_conn on history (conn_id, ran_at);",
+            create index if not exists history_conn on history (conn_id, ran_at);
+            pragma user_version = 1;",
         )
         .execute(&pool)
         .await?;

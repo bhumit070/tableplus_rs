@@ -250,10 +250,7 @@ impl AppView {
         let s = self.sessions.remove(ix);
         let conn = s.read(cx).shared.conn.clone();
         // Close pools in the background.
-        let _ = runtime::spawn(async move {
-            conn.read().await.close().await;
-            Ok(())
-        });
+        runtime::spawn_detached(async move { conn.read().await.close().await });
         self.active = match self.active {
             Some(a) if a == ix => {
                 (!self.sessions.is_empty()).then(|| ix.min(self.sessions.len() - 1))
@@ -1500,8 +1497,7 @@ mod tests {
         });
 
         tab.update_in(&mut cx, |t, w, cx| t.import_csv_file(&good, w, cx));
-        cx.run_until_parked();
-        assert!(cx.update(|w, cx| w.has_active_dialog(cx)), "confirmation");
+        wait_until(&mut cx, "confirmation", |cx| cx.update(|w, cx| w.has_active_dialog(cx)));
         cx.simulate_keystrokes("enter");
         wait_until(&mut cx, "imported", |cx| tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 3));
         assert_eq!(tab.read_with(&cx, |t, cx| t.cell(1, 1, cx)).as_deref(), Some("Hopper, Grace"));
@@ -1509,7 +1505,7 @@ mod tests {
 
         // The second row has no name (NOT NULL): the whole file is rejected.
         tab.update_in(&mut cx, |t, w, cx| t.import_csv_file(&bad, w, cx));
-        cx.run_until_parked();
+        wait_until(&mut cx, "confirmation", |cx| cx.update(|w, cx| w.has_active_dialog(cx)));
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         std::thread::sleep(std::time::Duration::from_millis(200));

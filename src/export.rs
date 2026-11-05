@@ -116,10 +116,24 @@ fn delimited(columns: &[String], rows: &[Row], sep: char) -> String {
     out
 }
 
+/// JSON keys for `columns`: a repeated name (`select a.id, b.id`) gets a
+/// suffix (`id_2`) instead of overwriting the first one's value.
+fn json_keys(columns: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashMap::<&str, usize>::new();
+    columns
+        .iter()
+        .map(|c| {
+            let n = seen.entry(c).or_insert(0);
+            *n += 1;
+            if *n == 1 { c.clone() } else { format!("{c}_{n}") }
+        })
+        .collect()
+}
+
 fn json_object(columns: &[String], row: &Row) -> serde_json::Value {
+    let keys = json_keys(columns);
     serde_json::Value::Object(
-        columns
-            .iter()
+        keys.iter()
             .zip(row)
             .map(|(c, v)| {
                 (
@@ -308,6 +322,13 @@ mod tests {
         assert_eq!(j[0]["name"], "O'Neil, \"Ada\"");
         let lines = render(Format::JsonLines, &cols(), &rows(), &pg());
         assert_eq!(lines.lines().count(), 2);
+    }
+
+    #[test]
+    fn json_keeps_repeated_column_names() {
+        let cols = vec!["id".to_string(), "id".to_string()];
+        let j = render(Format::JsonLines, &cols, &[vec![Some("1".into()), Some("2".into())]], &pg());
+        assert_eq!(j.trim(), r#"{"id":"1","id_2":"2"}"#);
     }
 
     #[test]

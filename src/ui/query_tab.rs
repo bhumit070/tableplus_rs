@@ -418,10 +418,12 @@ impl QueryTab {
                 error: res.as_ref().err().map(|e| format!("{e:#}")),
             };
             drop(c);
-            // History is a convenience: never fail the run over it.
-            if let Err(e) = history::record(entry).await {
-                eprintln!("query history: {e:#}");
-            }
+            // History is a convenience: never fail or delay the run over it.
+            runtime::spawn_detached(async move {
+                if let Err(e) = history::record(entry).await {
+                    eprintln!("query history: {e:#}");
+                }
+            });
             res
         });
         cx.spawn_in(window, async move |this, cx| {
