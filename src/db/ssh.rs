@@ -376,10 +376,22 @@ async fn authenticate(session: &mut client::Handle<Client>, ssh: &SshConfig) -> 
                 bail!("SSH: no private key found in ~/.ssh; choose a key file");
             }
             let passphrase = (!ssh.secret.is_empty()).then_some(ssh.secret.as_str());
+            // A chosen key must load; of the default keys, ones that can't
+            // (e.g. a passphrase wasn't given) are skipped for the next.
+            let chosen = !ssh.key_path.trim().is_empty();
             let mut ok = false;
+            let mut load_err = None;
             for path in paths {
-                let key = russh::keys::load_secret_key(&path, passphrase)
-                    .with_context(|| format!("SSH: couldn't read key {}", path.display()))?;
+                let key = match russh::keys::load_secret_key(&path, passphrase)
+                    .with_context(|| format!("SSH: couldn't read key {}", path.display()))
+                {
+                    Ok(k) => k,
+                    Err(e) if chosen => return Err(e),
+                    Err(e) => {
+                        load_err = Some(e);
+                        continue;
+                    }
+                };
                 let hash = session.best_supported_rsa_hash().await?.flatten();
                 let key = PrivateKeyWithHashAlg::new(Arc::new(key), hash);
                 if session
@@ -390,6 +402,9 @@ async fn authenticate(session: &mut client::Handle<Client>, ssh: &SshConfig) -> 
                     ok = true;
                     break;
                 }
+            }
+            if let (false, Some(e)) = (ok, load_err) {
+                return Err(e.context("SSH: no default key logged in"));
             }
             ok
         }

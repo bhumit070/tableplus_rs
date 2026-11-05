@@ -60,9 +60,10 @@ pub fn explain_sql(driver: Driver, stmt: &str, analyze: bool) -> Result<String> 
 /// transaction that's rolled back, so a write is measured but not kept.
 pub fn explain_script(driver: Driver, stmt: &str, analyze: bool) -> Result<String> {
     let sql = explain_sql(driver, stmt, analyze)?;
+    // `;` on its own line: a trailing `-- comment` must not swallow it.
     Ok(match (analyze, driver) {
-        (true, Driver::Postgres) => format!("BEGIN;\n{sql};\nROLLBACK;"),
-        (true, Driver::MySql) => format!("START TRANSACTION;\n{sql};\nROLLBACK;"),
+        (true, Driver::Postgres) => format!("BEGIN;\n{sql}\n;\nROLLBACK;"),
+        (true, Driver::MySql) => format!("START TRANSACTION;\n{sql}\n;\nROLLBACK;"),
         _ => sql,
     })
 }

@@ -24,7 +24,8 @@ pub struct ImportReport {
     /// Imported SSH connections that log in with a private key: TablePlus
     /// exports don't include the key, so the default ~/.ssh keys are used.
     pub ssh_key: Vec<String>,
-    /// Passwords that couldn't be stored in the keychain.
+    /// Connections whose passwords (database or SSH) couldn't be stored in
+    /// the keychain.
     pub keychain_failed: usize,
 }
 
@@ -235,15 +236,18 @@ pub fn parse(
 
 impl ImportReport {
     pub fn summary(&self) -> String {
+        // Counted per connection, as `keychain_failed` is.
         let with_pw = self
             .added
             .iter()
-            .filter(|c| !c.password.is_empty())
+            .filter(|c| {
+                !c.password.is_empty() || c.ssh.as_ref().is_some_and(|s| !s.secret.is_empty())
+            })
             .count()
             .saturating_sub(self.keychain_failed);
         let mut parts = vec![format!("Imported {} connection(s)", self.added.len())];
         if with_pw > 0 {
-            parts.push(format!("{with_pw} password(s) saved to Keychain"));
+            parts.push(format!("{with_pw} with passwords saved to the keychain"));
         }
         if self.existing > 0 {
             parts.push(format!("{} already imported", self.existing));
@@ -328,7 +332,10 @@ mod tests {
         assert!(r.ssh_key.is_empty());
         assert!(r.added[0].ssh.is_none());
         assert_eq!(r.unsupported, vec!["SQLServer"]);
-        assert!(r.summary().contains("1 password(s) saved"));
+        // The SSH password counts too, and failures are per connection.
+        assert!(r.summary().contains("2 with passwords saved"));
+        let r = ImportReport { keychain_failed: 1, ..r };
+        assert!(r.summary().contains("1 with passwords saved"));
         // Passwords never reach connections.json.
         let json = serde_json::to_string(&r.added).unwrap();
         assert!(!json.contains("s3cret") && !json.contains("tunnel-pw"));

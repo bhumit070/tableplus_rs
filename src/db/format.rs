@@ -35,6 +35,13 @@ fn tokenize(sql: &str, backslash_escapes: bool) -> Vec<Tok> {
                 i += 1;
             }
             out.push(Tok::LineComment(take(s, i).trim_end().to_string()));
+        } else if ch == '#' && backslash_escapes {
+            // MySQL: `#` comments run to the end of the line.
+            let s = i;
+            while i < c.len() && c[i] != '\n' {
+                i += 1;
+            }
+            out.push(Tok::LineComment(take(s, i).trim_end().to_string()));
         } else if ch == '/' && next == Some('*') {
             let s = i;
             i += 2;
@@ -43,13 +50,15 @@ fn tokenize(sql: &str, backslash_escapes: bool) -> Vec<Tok> {
             }
             i = (i + 2).min(c.len());
             out.push(Tok::BlockComment(take(s, i)));
-        } else if matches!(ch, '\'' | '"' | '`') || ((ch == 'E' || ch == 'e') && next == Some('\'')) {
+        } else if matches!(ch, '\'' | '"' | '`')
+            || (matches!(ch, 'E' | 'e' | 'N' | 'n' | 'X' | 'x' | 'B' | 'b') && next == Some('\''))
+        {
             let s = i;
             if ch != '\'' && ch != '"' && ch != '`' {
-                i += 1; // E prefix
+                i += 1; // E'', N'', X'', B'' prefix: part of the literal
             }
             let q = c[i];
-            let escapes = backslash_escapes || i > s;
+            let escapes = backslash_escapes || matches!(ch, 'E' | 'e');
             i += 1;
             while i < c.len() {
                 if escapes && c[i] == '\\' {
@@ -103,8 +112,16 @@ fn tokenize(sql: &str, backslash_escapes: bool) -> Vec<Tok> {
             }
             // Decimals like 1.5 and exponents stay one token.
             if ch.is_ascii_digit() {
-                while i < c.len() && (c[i].is_ascii_alphanumeric() || c[i] == '.') {
-                    i += 1;
+                loop {
+                    // Signed exponent: 1e-5, 2.5E+10.
+                    let signed_exp = matches!(c[i - 1], 'e' | 'E')
+                        && matches!(c.get(i), Some('+' | '-'))
+                        && c.get(i + 1).is_some_and(char::is_ascii_digit);
+                    if signed_exp || (i < c.len() && (c[i].is_ascii_alphanumeric() || c[i] == '.')) {
+                        i += 1;
+                    } else {
+                        break;
+                    }
                 }
                 out.push(Tok::Lit(take(s, i)));
             } else {
@@ -443,6 +460,18 @@ mod tests {
         assert!(out.contains("$1"), "{out}");
         assert!(out.contains("$$a;b$$"), "{out}");
         assert!(out.contains("-- note"), "{out}");
+    }
+
+    #[test]
+    fn keeps_exponents_prefixed_literals_and_mysql_comments() {
+        let out = f("select 1e-5, 2.5E+10, x'4D', n'abc' from t");
+        assert!(out.contains("1e-5,"), "{out}");
+        assert!(out.contains("2.5E+10"), "{out}");
+        assert!(out.contains("x'4D'"), "{out}");
+        assert!(out.contains("n'abc'"), "{out}");
+        let my = format_sql("select a # from here\n, b from t", true);
+        assert!(my.contains("# from here\n"), "{my}");
+        assert_eq!(my.matches("FROM").count(), 1, "{my}");
     }
 
     #[test]

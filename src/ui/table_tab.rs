@@ -613,7 +613,15 @@ impl TableTab {
         }
     }
 
+    /// A page is loading; staged edits would be dropped when it arrives.
+    fn loading(&self, cx: &App) -> bool {
+        self.table.read(cx).delegate().loading
+    }
+
     fn duplicate_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        if self.loading(cx) {
+            return;
+        }
         self.table.update(cx, |t, cx| {
             let g = t.delegate_mut();
             let values: Vec<_> = (0..g.columns.len())
@@ -637,7 +645,7 @@ impl TableTab {
     }
 
     pub fn add_row(&mut self, _: &AddRow, window: &mut Window, cx: &mut Context<Self>) {
-        if self.show_structure {
+        if self.show_structure || self.loading(cx) {
             return;
         }
         let r = self.table.update(cx, |t, cx| {

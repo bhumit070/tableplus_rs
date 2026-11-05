@@ -86,7 +86,8 @@ impl Grid {
         self.columns = res.columns.clone();
         self.rows = res.rows.clone();
         self.base_rows = self.rows.len();
-        self.pk.resize(self.columns.len(), false);
+        // Flags from the previous result don't describe these columns.
+        self.pk = vec![false; self.columns.len()];
         self.edits.clear();
         self.deleted.clear();
         self.editing = None;
@@ -105,8 +106,10 @@ impl Grid {
             .collect();
     }
 
+    /// Not while a page loads: its arrival would drop the edit unsaved.
     pub fn can_edit(&self, r: usize, c: usize) -> bool {
-        self.editable.get(c).copied().unwrap_or(false)
+        !self.loading
+            && self.editable.get(c).copied().unwrap_or(false)
             && r < self.rows.len()
             && !self.deleted.contains(&r)
     }
@@ -134,7 +137,7 @@ impl Grid {
     }
 
     pub fn set_cell(&mut self, r: usize, c: usize, v: Option<String>) {
-        if r >= self.rows.len() {
+        if r >= self.rows.len() || self.loading {
             return;
         }
         if self.original(r, c) == Some(&v) && r < self.base_rows {
@@ -150,6 +153,9 @@ impl Grid {
     }
 
     pub fn toggle_delete(&mut self, r: usize) {
+        if self.loading {
+            return;
+        }
         if r >= self.base_rows {
             // New rows are simply dropped.
             if r < self.rows.len() {

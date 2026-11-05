@@ -729,6 +729,23 @@ impl QueryTab {
         false
     }
 
+    /// The connection switched databases: staged edits and the edit target
+    /// belong to the old one, so drop them and make the result read-only.
+    pub fn database_changed(&mut self, cx: &mut Context<Self>) {
+        self.edit_gen += 1;
+        self.target = None;
+        self.grid.update(cx, |t, cx| {
+            let g = t.delegate_mut();
+            g.discard();
+            g.editable.clear();
+            cx.notify();
+        });
+        if !self.results.is_empty() {
+            self.edit_note = Some("Read-only: the database changed; run the query again to edit".into());
+        }
+        cx.notify();
+    }
+
     pub fn discard(&mut self, cx: &mut Context<Self>) {
         self.grid.update(cx, |t, cx| {
             t.delegate_mut().discard();
@@ -787,10 +804,17 @@ impl QueryTab {
                         Notification::success(format!("Committed {n} change(s)")),
                         cx,
                     );
-                    // Show what's saved now.
+                    // Show what's saved now: re-run only the edited result's
+                    // statement, and only when it just reads. Re-running the
+                    // whole batch would repeat its writes without the
+                    // safe-mode check.
                     this.discard(cx);
-                    let text = this.last_run.clone();
-                    this.execute(text, window, cx);
+                    let stmt = this.results.get(this.active).map(|r| r.statement.clone());
+                    if let Some(stmt) = stmt.filter(|s| {
+                        crate::db::safety::is_read_only(this.shared.cfg.driver, s)
+                    }) {
+                        this.execute(stmt, window, cx);
+                    }
                 }
                 Err(e) => window.push_notification(
                     Notification::error(format!("{e:#}")).title("Commit failed"),

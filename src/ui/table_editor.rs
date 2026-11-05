@@ -49,6 +49,12 @@ pub struct TableEditor {
     on_done: OnDone,
 }
 
+impl TableEditor {
+    fn row_mut(&mut self, key: gpui::EntityId) -> Option<&mut Row> {
+        self.rows.iter_mut().find(|r| r.name.entity_id() == key)
+    }
+}
+
 fn default_type(d: Driver) -> &'static str {
     match d {
         Driver::MySql => "varchar(255)",
@@ -356,6 +362,9 @@ impl Render for TableEditor {
                     .max_h(px(380.))
                     .overflow_y_scroll()
                     .child(v_flex().gap_1().children(self.rows.iter().enumerate().map(|(i, r)| {
+                        // Clicks find their row by this id: positions shift
+                        // when a row is removed before the next redraw.
+                        let key = r.name.entity_id();
                         h_flex()
                             .gap_2()
                             .when(r.dropped, |d| d.opacity(0.45))
@@ -365,7 +374,9 @@ impl Render for TableEditor {
                                 div().w(px(50.)).child(
                                     Checkbox::new(("null", i)).checked(r.nullable).on_click(
                                         cx.listener(move |e, v: &bool, _, cx| {
-                                            e.rows[i].nullable = *v;
+                                            if let Some(r) = e.row_mut(key) {
+                                                r.nullable = *v;
+                                            }
                                             cx.notify();
                                         }),
                                     ),
@@ -379,9 +390,11 @@ impl Render for TableEditor {
                                         .checked(r.pk)
                                         .disabled(self.object.is_some())
                                         .on_click(cx.listener(move |e, v: &bool, _, cx| {
-                                            e.rows[i].pk = *v;
-                                            if *v {
-                                                e.rows[i].nullable = false;
+                                            if let Some(r) = e.row_mut(key) {
+                                                r.pk = *v;
+                                                if *v {
+                                                    r.nullable = false;
+                                                }
                                             }
                                             cx.notify();
                                         })),
@@ -394,6 +407,11 @@ impl Render for TableEditor {
                                     .xsmall()
                                     .tooltip(if r.dropped { "Keep column" } else { "Remove column" })
                                     .on_click(cx.listener(move |e, _, _, cx| {
+                                        let Some(i) =
+                                            e.rows.iter().position(|r| r.name.entity_id() == key)
+                                        else {
+                                            return;
+                                        };
                                         if e.rows[i].orig.is_none() {
                                             e.rows.remove(i);
                                         } else {

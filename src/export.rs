@@ -156,7 +156,7 @@ fn json_object(columns: &[String], row: &Row) -> serde_json::Value {
 }
 
 fn md_esc(s: &str) -> String {
-    s.replace('|', "\\|").replace(['\n', '\r'], " ")
+    s.replace('\\', "\\\\").replace('|', "\\|").replace(['\n', '\r'], " ")
 }
 
 fn html_esc(s: &str) -> String {
@@ -210,6 +210,10 @@ pub fn updates(target: &SqlTarget, columns: &[String], key: &[bool], rows: &[Row
                 .filter(|(i, _)| is_key(*i))
                 .map(|(_, (c, v))| cond(c, v))
                 .collect();
+            // Every column is a key: there's nothing to set.
+            if set.is_empty() {
+                return String::new();
+            }
             format!(
                 "UPDATE {} SET {} WHERE {};\n",
                 target.table_name(),

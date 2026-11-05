@@ -274,6 +274,12 @@ impl Session {
                     this.current_db = name.clone();
                     // Table tabs belong to the old database.
                     this.tabs.retain(|t| matches!(t, TabItem::Query(_)));
+                    // Query results can't be edited against the new one.
+                    for t in &this.tabs {
+                        if let TabItem::Query(q) = t {
+                            q.update(cx, |q, cx| q.database_changed(cx));
+                        }
+                    }
                     this.active = 0;
                     this.load_objects(window, cx);
                     window.push_notification(format!("Switched to {name}"), cx);
@@ -902,7 +908,6 @@ impl Session {
     fn object_menu(
         session: WeakEntity<Session>,
         obj: DbObject,
-        idx: usize,
         menu: gpui_component::menu::PopupMenu,
     ) -> gpui_component::menu::PopupMenu {
         let item = |label: &'static str, f: Rc<dyn Fn(&mut Session, &DbObject, &mut Window, &mut Context<Session>)>| {
@@ -916,7 +921,11 @@ impl Session {
         };
         menu.item(item(
             "Open",
-            Rc::new(move |s, _, w, cx| s.open_object(idx, w, cx)),
+            // By value: the list may have reloaded while the menu was open.
+            Rc::new(|s, o, w, cx| match s.objects.iter().position(|x| x == o) {
+                Some(i) => s.open_object(i, w, cx),
+                None => w.push_notification(format!("{} is no longer in the list", o.title()), cx),
+            }),
         ))
         .item(item(
             "Copy Name",
@@ -1535,7 +1544,7 @@ impl Session {
                             .upgrade()
                             .and_then(|s| s.read(cx).objects.get(i).cloned())
                         {
-                            Some(obj) => Session::object_menu(s2.clone(), obj, i, menu),
+                            Some(obj) => Session::object_menu(s2.clone(), obj, menu),
                             None => menu,
                         }
                     }),

@@ -96,7 +96,14 @@ pub fn write_atomic(p: &std::path::Path, text: &str) -> Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = p.with_extension("tmp");
-    std::fs::write(&tmp, text)?;
+    {
+        use std::io::Write as _;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(text.as_bytes())?;
+        // Flush to disk before the rename, so a crash can't leave the
+        // renamed file empty.
+        f.sync_all()?;
+    }
     std::fs::rename(&tmp, p)?;
     Ok(())
 }

@@ -39,25 +39,71 @@ pub fn is_read_only(driver: Driver, text: &str) -> bool {
         Driver::Redis => redis_read_only(text),
         Driver::Mongo => mongo_read_only(text),
         _ => {
-            let stmts = split_statements(text, driver == Driver::MySql);
-            !stmts.is_empty() && stmts.iter().all(|s| sql_read_only(s))
+            let mysql = driver == Driver::MySql;
+            let stmts = split_statements(text, mysql);
+            !stmts.is_empty() && stmts.iter().all(|s| sql_read_only(s, mysql))
         }
     }
 }
 
-/// Lowercase words of a statement with comments removed.
-fn words(stmt: &str) -> Vec<String> {
+/// Lowercase words of a statement with comments removed. Quoted text is
+/// kept as words (so `'into'` still counts: when unsure, it "writes"), but
+/// `--` or `/*` inside quotes doesn't start a comment. Quotes follow the
+/// same escaping rules as `split_statements`.
+fn words(stmt: &str, backslash_escapes: bool) -> Vec<String> {
+    let chars: Vec<char> = stmt.chars().collect();
     let mut text = String::new();
-    let mut rest = stmt;
-    while !rest.is_empty() {
-        if let Some(r) = rest.strip_prefix("--") {
-            rest = r.split_once('\n').map_or("", |(_, r)| r);
-        } else if let Some(r) = rest.strip_prefix("/*") {
-            rest = r.split_once("*/").map_or("", |(_, r)| r);
-        } else {
-            let c = rest.chars().next().unwrap();
-            text.push(c);
-            rest = &rest[c.len_utf8()..];
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        match c {
+            '-' if next == Some('-') => {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                text.push(' ');
+            }
+            '/' if next == Some('*') => {
+                i += 2;
+                while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                    i += 1;
+                }
+                i += 2;
+                text.push(' ');
+            }
+            '\'' | '"' | '`' => {
+                let e_string = c == '\''
+                    && i > 0
+                    && matches!(chars[i - 1], 'e' | 'E')
+                    && (i < 2 || !(chars[i - 2].is_alphanumeric() || chars[i - 2] == '_'));
+                let escapes = c != '"' && (backslash_escapes || e_string);
+                text.push(' ');
+                i += 1;
+                while i < chars.len() {
+                    if chars[i] == c {
+                        if chars.get(i + 1) == Some(&c) {
+                            text.push(c);
+                            i += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    if chars[i] == '\\' && escapes {
+                        i += 1;
+                    }
+                    if let Some(&ch) = chars.get(i) {
+                        text.push(ch);
+                    }
+                    i += 1;
+                }
+                i += 1;
+                text.push(' ');
+            }
+            _ => {
+                text.push(c);
+                i += 1;
+            }
         }
     }
     text.to_ascii_lowercase()
@@ -71,8 +117,8 @@ const DATA_CHANGING: &[&str] = &[
     "insert", "update", "delete", "merge", "truncate", "drop", "alter", "create",
 ];
 
-fn sql_read_only(stmt: &str) -> bool {
-    let w = words(stmt);
+fn sql_read_only(stmt: &str, backslash_escapes: bool) -> bool {
+    let w = words(stmt, backslash_escapes);
     let has = |k: &str| w.iter().any(|x| x == k);
     let Some(first) = w.first() else { return true };
     match first.as_str() {
@@ -206,6 +252,10 @@ mod tests {
         assert!(!ro(pg, "EXPLAIN ANALYZE DELETE FROM t"));
         assert!(!ro(pg, "select * into backup from users"));
         assert!(!ro(pg, "/* select */ delete from t"));
+        // Comment markers inside strings don't hide the rest of the statement.
+        assert!(!ro(pg, "select '--' as a into backup from users"));
+        assert!(!ro(pg, "with x as (select '/*') delete from t -- */"));
+        assert!(!ro(Driver::MySql, r"select 'a\' -- ' into outfile '/tmp/x'"));
         assert!(!ro(pg, "update t set a = 1"));
         assert!(!ro(pg, ""), "nothing to run → ask");
         assert!(ro(Driver::Sqlite, "pragma table_info(t)"));

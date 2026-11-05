@@ -308,7 +308,7 @@ impl MongoConn {
     }
 
     pub async fn fetch_table(&self, q: &TableQuery) -> Result<(QueryResult, Option<u64>)> {
-        let mut filter = Document::new();
+        let mut clauses: Vec<Document> = Vec::new();
         for f in q.filters.iter().filter(|f| !f.column.is_empty()) {
             let parsed = parse_json5(&f.value).unwrap_or_else(|_| Bson::String(f.value.clone()));
             let cond: Bson = match f.op {
@@ -328,8 +328,14 @@ impl MongoConn {
                 FilterOp::IsNull => Bson::Null,
                 FilterOp::IsNotNull => doc! {"$ne": Bson::Null}.into(),
             };
-            filter.insert(f.column.clone(), cond);
+            clauses.push(doc! {f.column.clone(): cond});
         }
+        // `$and`, so two filters on one field (age > 18, age < 30) both apply.
+        let filter = match clauses.len() {
+            0 => Document::new(),
+            1 => clauses.pop().unwrap(),
+            _ => doc! {"$and": clauses},
+        };
         let coll = self.coll(&q.object.name);
         let mut find = coll
             .find(filter.clone())
