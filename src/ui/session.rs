@@ -729,6 +729,11 @@ impl Session {
     }
 
     #[cfg(test)]
+    pub fn object(&self, name: &str) -> Option<DbObject> {
+        self.objects.iter().find(|o| o.name == name).cloned()
+    }
+
+    #[cfg(test)]
     pub fn object_index(&self, name: &str) -> Option<usize> {
         self.objects.iter().position(|o| o.name == name)
     }
@@ -809,6 +814,21 @@ impl Session {
             }),
         ))
         .item(item("New Table…", Rc::new(|s, _, w, cx| s.new_table(w, cx))))
+        .item(item("Rename…", Rc::new(|s, o, w, cx| {
+            if s.is_sql() {
+                s.rename_object(o.clone(), w, cx)
+            }
+        })))
+        .item(item("Duplicate…", Rc::new(|s, o, w, cx| {
+            if s.is_sql() && o.kind == ObjectKind::Table {
+                s.duplicate_object(o.clone(), w, cx)
+            }
+        })))
+        .item(item("Vacuum / Optimize", Rc::new(|s, o, w, cx| {
+            if s.is_sql() && o.kind == ObjectKind::Table {
+                s.maintain_object(o.clone(), w, cx)
+            }
+        })))
         .separator()
         .item(item(
             "Truncate…",
@@ -973,6 +993,169 @@ impl Session {
             .ok();
         })
         .detach();
+    }
+
+    /// Runs a DB call, then reports and reloads the sidebar.
+    fn run_op(
+        &mut self,
+        done: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        op: impl FnOnce(
+            std::sync::Arc<tokio::sync::RwLock<crate::db::Connection>>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<String>>> + Send>>,
+    ) {
+        let task = runtime::spawn(op(self.shared.conn.clone()));
+        cx.spawn_in(window, async move |this, cx| {
+            let res = task.await;
+            this.update_in(cx, |s, window, cx| {
+                match res {
+                    Ok(msg) => window.push_notification(
+                        Notification::success(msg.unwrap_or_else(|| done.to_string())),
+                        cx,
+                    ),
+                    Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
+                }
+                s.load_objects(window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn blocked(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        match crate::db::safety::gate_write(&self.shared.cfg) {
+            crate::db::safety::Gate::Block(why) => {
+                window.push_notification(Notification::warning(why), cx);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn new_database(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.shared.cfg.driver, Driver::Postgres | Driver::MySql) {
+            window.push_notification("New databases are for Postgres and MySQL", cx);
+            return;
+        }
+        if self.blocked(window, cx) {
+            return;
+        }
+        let me = cx.entity().downgrade();
+        super::prompt_text("New Database", "", "", window, cx, move |name, window, cx| {
+            me.update(cx, |s, cx| {
+                s.run_op("Database created", window, cx, move |c| {
+                    Box::pin(async move { c.read().await.create_database(&name).await.map(|_| None) })
+                })
+            })
+            .ok();
+            true
+        });
+    }
+
+    /// Drop Database…: pick one (not the current), then type its name.
+    pub fn drop_database(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.shared.cfg.driver, Driver::Postgres | Driver::MySql) || self.blocked(window, cx) {
+            return;
+        }
+        let items: Vec<PickItem> = self
+            .databases
+            .iter()
+            .filter(|d| **d != self.current_db)
+            .map(|d| PickItem::new(d, d))
+            .collect();
+        if items.is_empty() {
+            window.push_notification("No other database to drop", cx);
+            return;
+        }
+        let me = cx.entity().downgrade();
+        let on_pick: OnPick = Rc::new(move |name, window, cx| {
+            let me = me.clone();
+            window.defer(cx, move |window, cx| {
+                let n2 = name.clone();
+                super::prompt_text(
+                    "Drop Database?",
+                    &format!("This deletes {name} and everything in it. Type its name to confirm."),
+                    "",
+                    window,
+                    cx,
+                    move |typed, window, cx| {
+                        if typed != n2 {
+                            window.push_notification("The name doesn't match", cx);
+                            return false;
+                        }
+                        me.update(cx, |s, cx| {
+                            s.run_op("Database dropped", window, cx, move |c| {
+                                Box::pin(async move { c.read().await.drop_database(&typed).await.map(|_| None) })
+                            })
+                        })
+                        .ok();
+                        true
+                    },
+                );
+            });
+        });
+        Picker::open("Drop Database", "Choose a database…", IconName::Delete, items, on_pick, window, cx);
+    }
+
+    pub(crate) fn rename_object(&mut self, obj: DbObject, window: &mut Window, cx: &mut Context<Self>) {
+        if self.blocked(window, cx) {
+            return;
+        }
+        let me = cx.entity().downgrade();
+        let old = obj.name.clone();
+        let initial = old.clone();
+        super::prompt_text(&format!("Rename {}", obj.title()), "", &initial, window, cx, move |name, window, cx| {
+            if name == old {
+                return true;
+            }
+            let o = obj.clone();
+            me.update(cx, |s, cx| {
+                // Tabs of the old name would point at nothing.
+                s.tabs.retain(|t| !matches!(t, TabItem::Table(e) if e.read(cx).object == o));
+                s.active = s.active.min(s.tabs.len().saturating_sub(1));
+                s.run_op("Renamed", window, cx, move |c| {
+                    Box::pin(async move { c.read().await.rename_object(&o, &name).await.map(|_| None) })
+                })
+            })
+            .ok();
+            true
+        });
+    }
+
+    fn duplicate_object(&mut self, obj: DbObject, window: &mut Window, cx: &mut Context<Self>) {
+        if self.blocked(window, cx) {
+            return;
+        }
+        let me = cx.entity().downgrade();
+        let suggested = format!("{}_copy", obj.name);
+        super::prompt_text(
+            &format!("Duplicate {}", obj.title()),
+            "New table name (structure and rows are copied):",
+            &suggested,
+            window,
+            cx,
+            move |name, window, cx| {
+                let o = obj.clone();
+                me.update(cx, |s, cx| {
+                    s.run_op("Table duplicated", window, cx, move |c| {
+                        Box::pin(async move { c.read().await.duplicate_table(&o, &name, true).await.map(|_| None) })
+                    })
+                })
+                .ok();
+                true
+            },
+        );
+    }
+
+    fn maintain_object(&mut self, obj: DbObject, window: &mut Window, cx: &mut Context<Self>) {
+        if self.blocked(window, cx) {
+            return;
+        }
+        window.push_notification("Working…", cx);
+        self.run_op("Done", window, cx, move |c| {
+            Box::pin(async move { c.read().await.maintain(&obj).await.map(Some) })
+        });
     }
 
     fn is_sql(&self) -> bool {

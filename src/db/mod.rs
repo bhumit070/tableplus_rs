@@ -588,6 +588,34 @@ impl Connection {
         }
     }
 
+    fn sql(&self) -> Result<&sql::SqlConn> {
+        match &self.inner {
+            Conn::Sql(c) => Ok(c),
+            _ => anyhow::bail!("available for SQL databases only"),
+        }
+    }
+
+    pub async fn create_database(&self, name: &str) -> Result<()> {
+        self.sql()?.create_database(name).await
+    }
+
+    pub async fn drop_database(&self, name: &str) -> Result<()> {
+        self.sql()?.drop_database(name).await
+    }
+
+    pub async fn rename_object(&self, obj: &DbObject, new_name: &str) -> Result<()> {
+        self.sql()?.rename_object(obj, new_name).await
+    }
+
+    pub async fn duplicate_table(&self, obj: &DbObject, new_name: &str, data: bool) -> Result<()> {
+        self.sql()?.duplicate_table(obj, new_name, data).await
+    }
+
+    /// Returns what was done, for the notification.
+    pub async fn maintain(&self, obj: &DbObject) -> Result<String> {
+        self.sql()?.maintain(obj).await
+    }
+
     pub async fn truncate(&self, obj: &DbObject) -> Result<()> {
         match &self.inner {
             Conn::Sql(c) => c.truncate(obj).await,

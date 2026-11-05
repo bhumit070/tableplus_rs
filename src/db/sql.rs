@@ -1049,6 +1049,106 @@ impl SqlConn {
         Ok(())
     }
 
+    pub async fn create_database(&self, name: &str) -> Result<()> {
+        match self.cfg.driver {
+            Driver::Postgres | Driver::MySql => {
+                self.raw(format!("create database {}", self.q(name))).await?;
+                Ok(())
+            }
+            _ => bail!("SQLite has one database per file"),
+        }
+    }
+
+    pub async fn drop_database(&self, name: &str) -> Result<()> {
+        if name == self.database {
+            bail!("switch to another database before dropping this one");
+        }
+        match self.cfg.driver {
+            Driver::Postgres | Driver::MySql => {
+                self.raw(format!("drop database {}", self.q(name))).await?;
+                Ok(())
+            }
+            _ => bail!("SQLite has one database per file"),
+        }
+    }
+
+    pub async fn rename_object(&self, obj: &DbObject, new_name: &str) -> Result<()> {
+        let new = self.q(new_name);
+        let sql = match (self.cfg.driver, obj.kind) {
+            (Driver::MySql, _) => format!("rename table {} to {new}", self.full_name(obj)),
+            (Driver::Postgres, ObjectKind::View) => {
+                format!("alter view {} rename to {new}", self.full_name(obj))
+            }
+            (_, ObjectKind::View) => bail!("SQLite can't rename a view; recreate it instead"),
+            _ => format!("alter table {} rename to {new}", self.full_name(obj)),
+        };
+        self.raw(sql).await?;
+        Ok(())
+    }
+
+    /// Copies a table's structure (and with `data`, its rows) to `new_name`
+    /// in the same schema, in one transaction where the server allows it.
+    pub async fn duplicate_table(&self, obj: &DbObject, new_name: &str, data: bool) -> Result<()> {
+        let src = self.full_name(obj);
+        let dst = self.full_name(&DbObject {
+            name: new_name.to_string(),
+            ..obj.clone()
+        });
+        let script = match self.cfg.driver {
+            Driver::Postgres => {
+                let mut s = format!("begin; create table {dst} (like {src} including all);");
+                if data {
+                    s.push_str(&format!(" insert into {dst} select * from {src};"));
+                }
+                s.push_str(" commit;");
+                s
+            }
+            Driver::MySql => {
+                let mut s = format!("create table {dst} like {src};");
+                if data {
+                    s.push_str(&format!(" insert into {dst} select * from {src};"));
+                }
+                s
+            }
+            _ => {
+                // Reuse the original CREATE statement under the new name, so
+                // keys and constraints come along.
+                let r = self
+                    .raw(format!(
+                        "select sql from sqlite_master where type = 'table' and name = {}",
+                        self.lit(&obj.name)
+                    ))
+                    .await?;
+                let ddl = r
+                    .rows
+                    .first()
+                    .and_then(|r| r[0].clone())
+                    .context("table not found")?;
+                let open = ddl.find('(').context("unexpected CREATE statement")?;
+                let mut s = format!("begin; create table {dst} {};", &ddl[open..]);
+                if data {
+                    s.push_str(&format!(" insert into {dst} select * from {src};"));
+                }
+                s.push_str(" commit;");
+                s
+            }
+        };
+        self.execute(&script, &Default::default()).await?;
+        Ok(())
+    }
+
+    /// VACUUM ANALYZE / OPTIMIZE TABLE: reclaims space, refreshes statistics.
+    pub async fn maintain(&self, obj: &DbObject) -> Result<String> {
+        let t = self.full_name(obj);
+        let (sql, done) = match self.cfg.driver {
+            Driver::Postgres => (format!("vacuum (analyze) {t}"), "Vacuumed and analyzed"),
+            Driver::MySql => (format!("optimize table {t}"), "Optimized"),
+            _ => ("vacuum; analyze".to_string(), "Vacuumed and analyzed the database"),
+        };
+        self.execute(&sql, &Default::default()).await?;
+        Ok(done.to_string())
+    }
+
     pub async fn truncate(&self, obj: &DbObject) -> Result<()> {
         let sql = match self.cfg.driver {
             Driver::Sqlite => format!("delete from {}", self.full_name(obj)),

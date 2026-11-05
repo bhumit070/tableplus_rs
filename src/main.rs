@@ -38,6 +38,8 @@ fn menus() -> Vec<Menu> {
             vec![
                 I::action("Open Connection…", ui::OpenConnection),
                 I::action("Switch Database…", ui::SwitchDatabase),
+                I::action("New Database…", ui::NewDatabase),
+                I::action("Drop Database…", ui::DropDatabase),
                 I::action("Connections Home", ui::GoHome),
                 I::separator(),
                 I::action("Refresh", ui::Refresh),

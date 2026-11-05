@@ -38,6 +38,8 @@ gpui::actions!(
         BackupDatabase,
         RestoreDatabase,
         ExplainQuery,
+        NewDatabase,
+        DropDatabase,
         EditCell,
         CancelCellEdit,
         NextCell,
@@ -125,6 +127,77 @@ pub fn guarded(
         }
     }
     false
+}
+
+/// A small dialog asking for one line of text. `on_ok` gets the trimmed
+/// text and returns false to keep the dialog open (e.g. invalid input).
+pub fn prompt_text(
+    title: &str,
+    description: &str,
+    initial: &str,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+    on_ok: impl Fn(String, &mut gpui::Window, &mut gpui::App) -> bool + 'static,
+) {
+    use gpui::{AppContext as _, ParentElement as _, Styled as _};
+    use gpui_component::WindowExt as _;
+    use gpui_component::input::{Input, InputState};
+    let initial = initial.to_string();
+    let input = cx.new(|cx| InputState::new(window, cx).default_value(initial));
+    let (title, description) = (title.to_string(), description.to_string());
+    let on_ok = std::rc::Rc::new(on_ok);
+    let first = std::cell::Cell::new(true);
+    window.open_dialog(cx, move |dialog, window, cx| {
+        use gpui::prelude::FluentBuilder as _;
+        use gpui_component::button::{Button, ButtonVariants as _};
+        use gpui_component::Sizable as _;
+        if first.replace(false) {
+            input.update(cx, |i, cx| {
+                i.focus(window, cx);
+                i.select_all(window, cx);
+            });
+        }
+        let submit = {
+            let (input, on_ok) = (input.clone(), on_ok.clone());
+            move |window: &mut gpui::Window, cx: &mut gpui::App| -> bool {
+                let v = input.read(cx).value().trim().to_string();
+                !v.is_empty() && on_ok(v, window, cx)
+            }
+        };
+        let submit = std::rc::Rc::new(submit);
+        let (s1, s2) = (submit.clone(), submit);
+        dialog
+            .title(title.clone())
+            .w(gpui::px(420.))
+            .child(
+                gpui_component::v_flex()
+                    .gap_2()
+                    .when(!description.is_empty(), |d| d.child(description.clone()))
+                    .child(Input::new(&input)),
+            )
+            // Enter in the field.
+            .on_ok(move |_, window, cx| s1(window, cx))
+            .footer(
+                gpui_component::dialog::DialogFooter::new()
+                    .child(
+                        Button::new("prompt-cancel")
+                            .label("Cancel")
+                            .small()
+                            .on_click(|_, w, cx| w.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new("prompt-ok")
+                            .label("OK")
+                            .primary()
+                            .small()
+                            .on_click(move |_, window, cx| {
+                                if s2(window, cx) {
+                                    window.close_dialog(cx);
+                                }
+                            }),
+                    ),
+            )
+    });
 }
 
 /// Items for a searchable dropdown. A plain `Vec` also works as a dropdown

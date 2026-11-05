@@ -1079,3 +1079,63 @@ async fn mysql_analyze_rolls_back() {
         analyze_rolls_back(Driver::MySql).await;
     }
 }
+
+/// Sidebar object operations: rename, duplicate (with data), maintenance.
+async fn object_ops(driver: Driver) {
+    let c = Connection::connect(&cfg(driver)).await.unwrap();
+    c.execute("drop table if exists it_ops_b; drop table if exists it_ops_c; drop table if exists it_ops_a")
+        .await
+        .unwrap();
+    c.execute("create table it_ops_a (id int primary key, v text not null); insert into it_ops_a values (1, 'x')")
+        .await
+        .unwrap();
+    let objs = c.list_objects().await.unwrap();
+    let a = obj(&objs, "it_ops_a");
+    c.rename_object(&a, "it_ops_b").await.unwrap();
+    let objs = c.list_objects().await.unwrap();
+    let b = obj(&objs, "it_ops_b");
+    assert!(objs.iter().all(|o| o.name != "it_ops_a"));
+    c.duplicate_table(&b, "it_ops_c", true).await.unwrap();
+    let objs = c.list_objects().await.unwrap();
+    let cc = obj(&objs, "it_ops_c");
+    let st = c.structure(&cc).await.unwrap();
+    assert!(st.columns.iter().any(|c| c.is_pk), "{driver:?}: key copied");
+    assert!(!st.columns[1].nullable, "{driver:?}: NOT NULL copied");
+    let r = c.execute("select v from it_ops_c").await.unwrap();
+    assert_eq!(r[0].rows[0][0].as_deref(), Some("x"));
+    c.maintain(&cc).await.unwrap();
+    c.execute("drop table it_ops_b; drop table it_ops_c").await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_object_ops() {
+    object_ops(Driver::Sqlite).await;
+}
+
+#[tokio::test]
+async fn postgres_object_ops() {
+    if it_enabled() {
+        object_ops(Driver::Postgres).await;
+    }
+}
+
+#[tokio::test]
+async fn mysql_object_ops() {
+    if it_enabled() {
+        object_ops(Driver::MySql).await;
+    }
+}
+
+#[tokio::test]
+async fn postgres_create_drop_database() {
+    if !it_enabled() {
+        return;
+    }
+    let c = Connection::connect(&cfg(Driver::Postgres)).await.unwrap();
+    let name = format!("_tabula_db_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    c.create_database(&name).await.unwrap();
+    assert!(c.databases().await.unwrap().contains(&name));
+    assert!(c.drop_database("postgres").await.is_err(), "not the current one");
+    c.drop_database(&name).await.unwrap();
+    assert!(!c.databases().await.unwrap().contains(&name));
+}

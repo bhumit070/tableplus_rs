@@ -27,7 +27,7 @@ use super::table_tab::TableTab;
 use super::{
     AddRow, CloseTab, Commit, Connection1, Connection2, Connection3, Connection4, Connection5,
     Connection6, Connection7, Connection8, Connection9, DeleteRows, Discard, GoHome, NewQuery,
-    CancelQuery, ExportData, FormatSql, BackupDatabase, ExplainQuery, RestoreDatabase, SaveQuery, SavedQueries, ShowProcesses, ToggleRowDetail, NextTab, QueryHistory, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
+    CancelQuery, ExportData, FormatSql, BackupDatabase, DropDatabase, ExplainQuery, NewDatabase, RestoreDatabase, SaveQuery, SavedQueries, ShowProcesses, ToggleRowDetail, NextTab, QueryHistory, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
     ToggleFilter, ToggleTheme, tag_color,
 };
 use crate::db::ssh::UnknownHostKey;
@@ -587,6 +587,8 @@ pub fn register_actions(cx: &mut App) {
             }
         })
     });
+    cx.on_action(|_: &NewDatabase, cx| with_session(cx, |s, w, cx| s.new_database(w, cx)));
+    cx.on_action(|_: &DropDatabase, cx| with_session(cx, |s, w, cx| s.drop_database(w, cx)));
     cx.on_action(|_: &BackupDatabase, cx| with_session(cx, |s, w, cx| s.backup(w, cx)));
     cx.on_action(|_: &RestoreDatabase, cx| with_session(cx, |s, w, cx| s.restore(w, cx)));
     cx.on_action(|_: &ShowProcesses, cx| {
@@ -1475,6 +1477,43 @@ mod tests {
         wait_until(&mut cx, "altered", |cx| {
             tab.read_with(cx, |t, _| t.column_names() == ["id", "title", "year"])
         });
+        let _ = std::fs::remove_file(file);
+    }
+
+    /// Rename… asks for the new name (prefilled, selected) and renames.
+    #[gpui::test]
+    fn rename_table(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-rename-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        futures::executor::block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute("create table old_name (id integer primary key)").await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object("old_name").is_some())
+        });
+        let obj = session.read_with(&cx, |s, _| s.object("old_name").unwrap());
+        session.update_in(&mut cx, |s, w, cx| s.rename_object(obj, w, cx));
+        cx.run_until_parked();
+        cx.simulate_input("new_name");
+        cx.simulate_keystrokes("enter");
+        wait_until(&mut cx, "renamed", |cx| {
+            session.read_with(cx, |s, _| s.object("new_name").is_some() && s.object("old_name").is_none())
+        });
+        assert!(!cx.update(|w, cx| w.has_active_dialog(cx)));
         let _ = std::fs::remove_file(file);
     }
 
