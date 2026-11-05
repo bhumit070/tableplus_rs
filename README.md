@@ -18,18 +18,40 @@ connections as you like: each one gets an icon in the left rail.
 ## Features
 
 - **Connections:** saved list with environment tags (local → production) and
-  passwords in the macOS Keychain. Connections tagged *production* ask before
-  any commit or data-changing query.
+  passwords in the macOS Keychain. Last session's connections and tabs
+  (including unsaved query text) reopen at launch.
+- **SSH tunnels:** password, private key (with passphrase) or ssh-agent.
+  Host keys are checked against `~/.ssh/known_hosts`; a new host asks to be
+  trusted, a changed key is refused.
+- **Safe mode** per connection: automatic (confirm writes on *production*),
+  off, confirm writes, confirm every query, or read-only — read-only is also
+  enforced by the server session, not just the editor.
 - **Import from TablePlus:** password-protected `.tableplusconnection` exports,
   including their database passwords, or TablePlus's own connection list on
   this Mac.
 - **Table view:** spreadsheet-style editing. Changes are staged (yellow edited,
   green new, red deleted) until you commit, and *Preview SQL* shows what will
-  run. Also filters, paging, sorting, a structure view (columns, keys,
-  indexes), and copying rows as JSON or pages as CSV.
-- **Query editor:** syntax highlighting, one result tab per statement, and
+  run. Also filters, paging, sorting, and a **row detail panel** (⌘⇧I) with
+  JSON pretty-printed.
+- **Foreign keys:** a → in a foreign-key cell opens the referenced row.
+- **Structure:** columns, indexes, foreign keys and the table's SQL
+  (`CREATE TABLE …`). **New Table** and **Edit Columns** (add, rename,
+  retype, NULL, default, drop) preview the DDL before running it.
+- **Copy & export:** copy rows as JSON / INSERT / UPDATE, a column as an
+  `IN (…)` list, everything as CSV / Markdown / INSERT; export (⌘⇧E) to CSV,
+  TSV, JSON, JSON Lines, Markdown, HTML or SQL — table exports include every
+  page. **Import CSV** into a table in one transaction.
+- **Query editor:** syntax highlighting, one result tab per statement,
   autocomplete for tables, columns (including aliases), keywords and
-  functions.
+  functions, **Stop** (⌘.) that cancels on the server, a **SQL formatter**
+  (⌘⇧F), **query history** (⌘Y) and **saved queries** (⌘⇧S / ⌘⇧O).
+  Single-table results are editable like a table.
+- **EXPLAIN** (⌘E) as a plan tree with cost, rows and a bar per step;
+  *Analyze* shows actual times (run inside a rolled-back transaction).
+- **Admin:** process list with cancel / kill (⌘⇧P), backup / restore
+  (`pg_dump` / `psql`, `mysqldump` / `mysql`, SQLite file copy), create /
+  drop databases, rename / duplicate / vacuum tables.
+- **Redis:** keys grouped by namespace (`user:*`) in the sidebar.
 - **Database switcher (⌘K):** jump between databases on the same connection.
 - **Schemas (PostgreSQL):** the sidebar groups tables by schema, and the
   Schema dropdown shows one schema and makes it the default for queries
@@ -46,6 +68,14 @@ On Windows/Linux, use Ctrl in place of ⌘. Shortcuts work wherever focus is.
 | ⌘T / ⌘W | New query tab / close tab |
 | ⌘⇧] / ⌘⇧[ | Next / previous tab |
 | ⌘↵ | Run selection, or the whole editor |
+| ⌘. | Stop the running query |
+| ⌘E | Explain the query |
+| ⌘⇧F | Format SQL |
+| ⌘Y | Query history |
+| ⌘⇧S / ⌘⇧O | Save query / open a saved query |
+| ⌘⇧E | Export the table or result |
+| ⌘⇧I | Row detail panel |
+| ⌘⇧P | Process list |
 | ⌘S | Commit staged changes |
 | ⌘⇧⌫ | Discard staged changes |
 | ⌘R | Refresh table (or the sidebar) |
@@ -83,7 +113,8 @@ Metal Toolchain isn't needed.
 
 Settings and saved connections live in
 `~/Library/Application Support/tabula/` (`settings.json`,
-`connections.json`). Passwords are never written there.
+`connections.json`, `saved_queries.json`, `history.db`, `session.json`,
+`known_hosts`). Passwords are never written there.
 
 ## Tests
 
@@ -104,5 +135,5 @@ docker exec tabula-test-pg createdb -U postgres tabula_it_other
 
 ## Not yet supported
 
-SSH tunnels, editing table structure (ALTER), import/export to files, query
-history and saved queries, and multiple windows.
+ER diagrams, users & roles, schema compare, an AI assistant, more database
+drivers, and multiple windows.
