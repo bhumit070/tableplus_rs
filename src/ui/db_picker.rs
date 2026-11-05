@@ -62,7 +62,6 @@ impl DbPicker {
             );
             // Start on the current database so Enter is a no-op by default.
             let highlighted = all.iter().position(|d| *d == current).unwrap_or(0);
-            query.update(cx, |q, cx| q.focus(window, cx));
             Self {
                 all,
                 current,
@@ -72,7 +71,14 @@ impl DbPicker {
                 _sub: sub,
             }
         });
-        window.open_dialog(cx, move |dialog, _, _| {
+        let query = picker.read(cx).query.clone();
+        let first = std::cell::Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            // Focus once the dialog exists: opening it moves focus to the
+            // dialog itself, so focusing earlier gets undone.
+            if first.replace(false) {
+                query.update(cx, |q, cx| q.focus(window, cx));
+            }
             dialog
                 .title("Switch Database")
                 .w(px(420.))
@@ -131,8 +137,10 @@ impl Render for DbPicker {
                     })
                     .children(matches.into_iter().enumerate().map(|(i, name)| {
                         let is_current = name == self.current;
+                        let selector = format!("db-row-{name}");
                         div()
                             .id(("db", i))
+                            .debug_selector(|| selector)
                             .flex()
                             .items_center()
                             .gap_2()

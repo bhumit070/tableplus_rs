@@ -37,6 +37,9 @@ pub struct Session {
     pub shared: Rc<Shared>,
     objects: Vec<DbObject>,
     databases: Vec<String>,
+    /// As reported by the connection; the dropdown widget isn't a reliable
+    /// source for this (see GitHub #11).
+    current_db: String,
     db_select: Entity<SelectState<Vec<String>>>,
     search: Entity<InputState>,
     tree: Entity<TreeState>,
@@ -75,6 +78,7 @@ impl Session {
             shared,
             objects: Vec::new(),
             databases: Vec::new(),
+            current_db: String::new(),
             db_select,
             search,
             tree,
@@ -111,6 +115,7 @@ impl Session {
                         this.objects = objects;
                         let sel = dbs.iter().position(|d| *d == current).map(IndexPath::new);
                         this.databases = dbs.clone();
+                        this.current_db = current.clone();
                         this.db_select.update(cx, |s, cx| {
                             s.set_items(dbs, window, cx);
                             s.set_selected_index(sel, window, cx);
@@ -141,6 +146,9 @@ impl Session {
             let res = task.await;
             this.update_in(cx, |this, window, cx| match res {
                 Ok(()) => {
+                    // Right away, not after the sidebar reload, so a quick
+                    // ⌘K already knows which database is current.
+                    this.current_db = name.clone();
                     // Table tabs belong to the old database.
                     this.tabs.retain(|t| matches!(t, TabItem::Query(_)));
                     this.active = 0;
@@ -216,12 +224,7 @@ impl Session {
             window.push_notification("This connection has only one database", cx);
             return;
         }
-        let current = self
-            .db_select
-            .read(cx)
-            .selected_value()
-            .cloned()
-            .unwrap_or_default();
+        let current = self.current_db.clone();
         let me = cx.entity().downgrade();
         let on_pick: super::db_picker::OnPick = Rc::new(move |name, window, cx| {
             me.update(cx, |s, cx| s.switch_database(name, window, cx))
@@ -319,6 +322,11 @@ impl Session {
     #[cfg(test)]
     pub fn tab_count(&self) -> usize {
         self.tabs.len()
+    }
+
+    #[cfg(test)]
+    pub fn database_count(&self) -> usize {
+        self.databases.len()
     }
 
     pub fn has_unsaved(&self, cx: &App) -> bool {

@@ -460,11 +460,15 @@ mod tests {
     /// Waits for work on the tokio runtime (DB calls) to land in the UI.
     fn wait_until(
         cx: &mut VisualTestContext,
+        what: &str,
         mut done: impl FnMut(&mut VisualTestContext) -> bool,
     ) {
         let start = Instant::now();
         while !done(cx) {
-            assert!(start.elapsed() < Duration::from_secs(10), "timed out");
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "timed out waiting for {what}"
+            );
             std::thread::sleep(Duration::from_millis(20));
             cx.run_until_parked();
         }
@@ -505,7 +509,7 @@ mod tests {
         let file = std::env::temp_dir().join(format!("tabula-ui-{}.db", cfg.id));
         cfg.file = file.to_string_lossy().into();
         app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
-        wait_until(&mut cx, |cx| {
+        wait_until(&mut cx, "connection", |cx| {
             app.read_with(cx, |a, _| a.sessions.len() == 1)
         });
         let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
@@ -529,5 +533,80 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(tabs(&mut cx), 1, "⌘W closes the active tab");
         let _ = std::fs::remove_file(file);
+    }
+
+    /// GitHub #11: ⌘K must focus the search box, and picking must switch.
+    /// Needs the throwaway Postgres container (TABULA_IT=1, port 55432) with
+    /// an extra database: `createdb -U postgres tabula_it_other`.
+    #[gpui::test]
+    fn db_picker_focuses_search_and_switches(cx: &mut TestAppContext) {
+        if std::env::var("TABULA_IT").is_err() {
+            return;
+        }
+        cx.executor().allow_parking();
+        let (app, mut cx) = open(cx);
+        let mut cfg = ConnectionConfig::new(Driver::Postgres);
+        cfg.port = 55432;
+        cfg.user = "postgres".into();
+        cfg.password = "test".into();
+        cfg.database = "postgres".into();
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "database list", |cx| {
+            session.read_with(cx, |s, _| s.database_count() > 1)
+        });
+        let current = |cx: &mut VisualTestContext| {
+            session.read_with(cx, |s, _| {
+                s.shared.conn.try_read().map(|c| c.current_database()).ok()
+            })
+        };
+        assert_eq!(current(&mut cx).as_deref(), Some("postgres"));
+
+        cx.update(|window, cx| window.blur(cx));
+        cx.simulate_keystrokes("cmd-k");
+        cx.run_until_parked();
+        assert!(
+            cx.update(|w, cx| w.has_active_dialog(cx)),
+            "⌘K opens the picker"
+        );
+        assert!(
+            cx.update(|w, cx| w.focused_input(cx).is_some()),
+            "search box has focus"
+        );
+
+        cx.simulate_input("tabula_it_other");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(
+            !cx.update(|w, cx| w.has_active_dialog(cx)),
+            "Enter closes the picker"
+        );
+        wait_until(&mut cx, "switch to tabula_it_other", |cx| {
+            current(cx).as_deref() == Some("tabula_it_other")
+        });
+
+        // Clicking a database switches too.
+        cx.simulate_keystrokes("cmd-k");
+        cx.run_until_parked();
+        let row = cx
+            .debug_bounds("db-row-postgres")
+            .expect("postgres row is shown");
+        cx.simulate_click(row.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        wait_until(&mut cx, "click to switch to postgres", |cx| {
+            current(cx).as_deref() == Some("postgres")
+        });
+
+        // ↓ then Enter: the list starts on the current database.
+        cx.simulate_keystrokes("cmd-k");
+        cx.run_until_parked();
+        cx.simulate_keystrokes("down enter");
+        cx.run_until_parked();
+        wait_until(&mut cx, "arrow + enter switch", |cx| {
+            current(cx).as_deref() == Some("tabula_it_other")
+        });
     }
 }
