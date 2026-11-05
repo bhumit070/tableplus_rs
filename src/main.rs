@@ -4,6 +4,7 @@ mod history;
 mod import;
 mod rncryptor;
 mod runtime;
+mod saved;
 mod settings;
 mod store;
 mod ui;

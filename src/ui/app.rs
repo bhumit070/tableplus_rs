@@ -27,7 +27,7 @@ use super::table_tab::TableTab;
 use super::{
     AddRow, CloseTab, Commit, Connection1, Connection2, Connection3, Connection4, Connection5,
     Connection6, Connection7, Connection8, Connection9, DeleteRows, Discard, GoHome, NewQuery,
-    CancelQuery, ExportData, FormatSql, ToggleRowDetail, NextTab, QueryHistory, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
+    CancelQuery, ExportData, FormatSql, SaveQuery, SavedQueries, ToggleRowDetail, NextTab, QueryHistory, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
     ToggleFilter, ToggleTheme, tag_color,
 };
 use crate::db::ssh::UnknownHostKey;
@@ -580,6 +580,14 @@ pub fn register_actions(cx: &mut App) {
     });
 
     cx.on_action(|_: &QueryHistory, cx| with_session(cx, |s, w, cx| s.open_history(w, cx)));
+    cx.on_action(|_: &SavedQueries, cx| with_session(cx, |s, w, cx| s.open_saved(w, cx)));
+    cx.on_action(|_: &SaveQuery, cx| {
+        with_session(cx, |s, w, cx| {
+            if let Some(q) = s.active_query() {
+                q.update(cx, |q, cx| q.save(w, cx));
+            }
+        })
+    });
     cx.on_action(|_: &FormatSql, cx| {
         with_session(cx, |s, w, cx| {
             if let Some(q) = s.active_query() {
@@ -1281,6 +1289,62 @@ mod tests {
             q.read_with(&cx, |q, cx| q.text(cx)),
             "select a, b from t where a = 1"
         );
+        let _ = std::fs::remove_file(file);
+    }
+
+    /// ⌘⇧S names and saves the editor's query; ⌘⇧O reopens it by name;
+    /// ⌘⇧S in that tab updates it in place.
+    #[gpui::test]
+    fn saved_queries(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-saved-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let conn_id = cfg.id.clone();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        session.update_in(&mut cx, |s, w, cx| s.new_query_for_test(w, cx));
+        cx.run_until_parked();
+        cx.simulate_input("select 'kept'");
+        cx.simulate_keystrokes("cmd-shift-s");
+        cx.run_until_parked();
+        assert!(cx.update(|w, cx| w.has_active_dialog(cx)), "name dialog");
+        cx.simulate_input("Kept query");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        let saved = crate::saved::for_connection(&conn_id);
+        let mine: Vec<_> = saved.iter().filter(|q| q.conn_id.as_deref() == Some(&conn_id)).collect();
+        assert_eq!(mine.len(), 1);
+        assert_eq!((mine[0].name.as_str(), mine[0].sql.as_str()), ("Kept query", "select 'kept'"));
+
+        let tabs = session.read_with(&cx, |s, _| s.tab_count());
+        cx.simulate_keystrokes("cmd-shift-o");
+        cx.run_until_parked();
+        cx.simulate_input("Kept");
+        cx.simulate_keystrokes("enter");
+        wait_until(&mut cx, "opened", |cx| {
+            session.read_with(cx, |s, _| s.tab_count() == tabs + 1)
+        });
+        let q = session.read_with(&cx, |s, _| s.active_query().unwrap());
+        assert_eq!(q.read_with(&cx, |q, _| q.title.clone()), "Kept query");
+        assert_eq!(q.read_with(&cx, |q, cx| q.text(cx)), "select 'kept'");
+
+        // Editing and saving again updates the same entry, no dialog.
+        cx.simulate_keystrokes("cmd-down");
+        cx.simulate_input(" -- v2");
+        cx.simulate_keystrokes("cmd-shift-s");
+        cx.run_until_parked();
+        assert!(!cx.update(|w, cx| w.has_active_dialog(cx)));
+        let again = crate::saved::for_connection(&conn_id);
+        let mine: Vec<_> = again.iter().filter(|q| q.conn_id.as_deref() == Some(&conn_id)).collect();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].sql, "select 'kept' -- v2");
+        crate::saved::delete(&mine[0].id).unwrap();
         let _ = std::fs::remove_file(file);
     }
 

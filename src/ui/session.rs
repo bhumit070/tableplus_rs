@@ -522,6 +522,93 @@ impl Session {
         );
     }
 
+    /// ⌘⇧O: saved queries for this connection; picking one opens it.
+    pub fn open_saved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let list = crate::saved::for_connection(&self.shared.cfg.id);
+        if list.is_empty() {
+            window.push_notification("No saved queries yet: save one with ⌘⇧S", cx);
+            return;
+        }
+        let item = |q: &crate::saved::SavedQuery| {
+            let first = q.sql.split_whitespace().collect::<Vec<_>>().join(" ");
+            let scope = if q.conn_id.is_none() { " · all connections" } else { "" };
+            PickItem {
+                detail: Some(format!("{}{scope}", first.chars().take(60).collect::<String>())),
+                ..PickItem::new(q.id.clone(), q.name.clone())
+            }
+        };
+        let mut items: Vec<PickItem> = list.iter().map(item).collect();
+        items.push(PickItem::new("delete", "Delete a saved query…"));
+        let me = cx.entity().downgrade();
+        let on_pick: OnPick = Rc::new(move |id, window, cx| {
+            let me = me.clone();
+            if id == "delete" {
+                window.defer(cx, move |window, cx| {
+                    me.update(cx, |s, cx| s.pick_saved_to_delete(window, cx)).ok();
+                });
+                return;
+            }
+            if let Some(q) = list.iter().find(|q| q.id == id).cloned() {
+                me.update(cx, |s, cx| {
+                    s.open_query(q.sql.clone(), window, cx);
+                    if let Some(tab) = s.active_query() {
+                        tab.update(cx, |t, _| t.set_saved(q));
+                    }
+                })
+                .ok();
+            }
+        });
+        Picker::open(
+            "Saved Queries",
+            "Search saved queries…",
+            IconName::Star,
+            items,
+            on_pick,
+            window,
+            cx,
+        );
+    }
+
+    fn pick_saved_to_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let list = crate::saved::for_connection(&self.shared.cfg.id);
+        let items = list
+            .iter()
+            .map(|q| PickItem::new(q.id.clone(), q.name.clone()))
+            .collect();
+        let on_pick: OnPick = Rc::new(move |id, window, cx| {
+            let name = list
+                .iter()
+                .find(|q| q.id == id)
+                .map(|q| q.name.clone())
+                .unwrap_or_default();
+            window.defer(cx, move |window, cx| {
+                window.open_alert_dialog(cx, move |d, _, _| {
+                    let id = id.clone();
+                    d.title("Delete saved query?")
+                        .description(format!("“{name}” will be removed."))
+                        .show_cancel(true)
+                        .on_ok(move |_, window, cx| {
+                            match crate::saved::delete(&id) {
+                                Ok(()) => window.push_notification("Deleted", cx),
+                                Err(e) => window
+                                    .push_notification(Notification::error(format!("{e:#}")), cx),
+                            }
+                            true
+                        })
+                });
+            });
+        });
+        Picker::open(
+            "Delete Saved Query",
+            "Choose the query to delete…",
+            IconName::Delete,
+            items,
+            on_pick,
+            window,
+            cx,
+        );
+    }
+
     fn confirm_clear_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let conn_id = self.shared.cfg.id.clone();
         let name = self.shared.cfg.display_name();

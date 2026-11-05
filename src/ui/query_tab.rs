@@ -9,7 +9,8 @@ use gpui::{
     Render, SharedString, Styled, Subscription, Window, div, prelude::*, px, rems,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::input::{Editor, EditorState};
+use gpui_component::dialog::DialogFooter;
+use gpui_component::input::{Editor, EditorState, Input, InputState};
 use gpui_component::menu::PopupMenuItem;
 use gpui_component::notification::Notification;
 use gpui_component::tab::{Tab, TabBar};
@@ -52,6 +53,8 @@ pub struct QueryTab {
     edit_sub: Option<Subscription>,
     /// Row detail panel beside the results.
     pub show_detail: bool,
+    /// Set once this tab's text is a saved query; ⌘⇧S then updates it.
+    saved: Option<crate::saved::SavedQuery>,
     _subs: Vec<Subscription>,
 }
 
@@ -176,6 +179,7 @@ impl QueryTab {
             running: false,
             cancel: None,
             show_detail: false,
+            saved: None,
             error: None,
             elapsed: 0,
             focus: cx.focus_handle(),
@@ -296,6 +300,100 @@ impl QueryTab {
             .ok();
         })
         .detach();
+    }
+
+    /// Opened from a saved query: the tab takes its name.
+    pub fn set_saved(&mut self, q: crate::saved::SavedQuery) {
+        self.title = q.name.clone();
+        self.saved = Some(q);
+    }
+
+    /// ⌘⇧S: updates this tab's saved query, or asks for a name.
+    pub fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let sql = self.editor.read(cx).value().to_string();
+        if sql.trim().is_empty() {
+            return;
+        }
+        if let Some(q) = &self.saved {
+            let q = crate::saved::SavedQuery { sql, ..q.clone() };
+            match crate::saved::upsert(q.clone()) {
+                Ok(()) => {
+                    self.saved = Some(q);
+                    window.push_notification("Saved", cx);
+                }
+                Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
+            }
+            return;
+        }
+        let name = cx.new(|cx| InputState::new(window, cx).placeholder("Name, e.g. Active users"));
+        let me = cx.entity().downgrade();
+        let conn_id = self.shared.cfg.id.clone();
+        let first = std::cell::Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            if first.replace(false) {
+                name.update(cx, |n, cx| n.focus(window, cx));
+            }
+            // `all` = visible on every connection.
+            let save = {
+                let (name, me, sql, conn_id) =
+                    (name.clone(), me.clone(), sql.clone(), conn_id.clone());
+                move |all: bool, window: &mut Window, cx: &mut App| -> bool {
+                    let n = name.read(cx).value().trim().to_string();
+                    if n.is_empty() {
+                        return false;
+                    }
+                    let q = crate::saved::SavedQuery {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        name: n,
+                        sql: sql.clone(),
+                        conn_id: (!all).then(|| conn_id.clone()),
+                    };
+                    if let Err(e) = crate::saved::upsert(q.clone()) {
+                        window.push_notification(Notification::error(format!("{e:#}")), cx);
+                        return true;
+                    }
+                    me.update(cx, |t, cx| {
+                        t.set_saved(q);
+                        cx.notify();
+                    })
+                    .ok();
+                    window.push_notification("Query saved (⌘⇧O to open)", cx);
+                    true
+                }
+            };
+            let s1 = Rc::new(save);
+            let s_ok = s1.clone();
+            let s_all = s1.clone();
+            dialog
+                .title("Save Query")
+                .w(px(420.))
+                .child(Input::new(&name))
+                .on_ok(move |_, window, cx| s_ok(false, window, cx))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("save-all")
+                                .label("Save for All Connections")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    if s_all(true, window, cx) {
+                                        window.close_dialog(cx);
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new("save-one")
+                                .label("Save")
+                                .primary()
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    if s1(false, window, cx) {
+                                        window.close_dialog(cx);
+                                    }
+                                }),
+                        ),
+                )
+        });
     }
 
     /// ⌘⇧F: formats the selection, or the whole editor (undoable).
@@ -752,6 +850,14 @@ impl Render for QueryTab {
                     .tooltip("Run selection or all (⌘↵)")
                     .on_click(cx.listener(|this, _, window, cx| this.run(&RunQuery, window, cx)))
             })
+            .child(
+                Button::new("save-query")
+                    .label("Save")
+                    .ghost()
+                    .small()
+                    .tooltip("Save query (⌘⇧S)")
+                    .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
+            )
             .when(
                 !matches!(self.shared.cfg.driver, Driver::Redis | Driver::Mongo),
                 |d| {
