@@ -370,7 +370,28 @@ async fn redis_end_to_end() {
     c.execute("FLUSHDB\nSET it:greeting \"hello world\"\nHSET it:user:1 name Ada age 36\nRPUSH it:list a b c")
         .await
         .unwrap();
-    let keys = c.list_objects().await.unwrap().remove(0);
+    let objects = c.list_objects().await.unwrap();
+    let names: Vec<_> = objects.iter().map(|o| o.name.as_str()).collect();
+    assert_eq!(names, ["keys", "it:*"], "namespaces from key prefixes");
+    // The namespace entry lists only its keys; a filter narrows within it.
+    let mut ns_q = TableQuery {
+        object: objects[1].clone(),
+        filters: vec![],
+        order: None,
+        limit: 50,
+        offset: 0,
+    };
+    c.execute("SET other 1").await.unwrap();
+    assert_eq!(c.fetch_table(&ns_q).await.unwrap().1, Some(3));
+    ns_q.filters.push(Filter {
+        column: "key".into(),
+        op: FilterOp::Contains,
+        value: "user".into(),
+    });
+    let (r, n) = c.fetch_table(&ns_q).await.unwrap();
+    assert_eq!((n, r.rows[0][0].as_deref()), (Some(1), Some("it:user:1")));
+    c.execute("DEL other").await.unwrap();
+    let keys = objects[0].clone();
     let q = TableQuery {
         object: keys.clone(),
         filters: vec![Filter {

@@ -216,12 +216,39 @@ impl RedisConn {
         Ok(())
     }
 
+    /// "keys" (everything) plus one entry per key namespace — the part
+    /// before the first `:` — found in a sample of up to 10,000 keys, so
+    /// `user:1`, `user:2` show up as `user:*`.
     pub async fn list_objects(&self) -> Result<Vec<DbObject>> {
-        Ok(vec![DbObject {
+        let mut con = self.con.clone();
+        let mut prefixes = std::collections::BTreeSet::new();
+        let (mut cursor, mut seen) = (0u64, 0usize);
+        loop {
+            let (next, batch): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("COUNT")
+                .arg(1000)
+                .query_async(&mut con)
+                .await?;
+            seen += batch.len();
+            for k in batch {
+                if let Some((p, _)) = k.split_once(':') {
+                    prefixes.insert(format!("{}:*", glob_escape(p)));
+                }
+            }
+            cursor = next;
+            if cursor == 0 || seen >= 10_000 {
+                break;
+            }
+        }
+        let key = |name: String| DbObject {
             schema: None,
-            name: "keys".into(),
+            name,
             kind: ObjectKind::Keys,
-        }])
+        };
+        Ok(std::iter::once(key("keys".into()))
+            .chain(prefixes.into_iter().map(key))
+            .collect())
     }
 
     pub fn structure(&self, _obj: &DbObject) -> Result<Structure> {
@@ -246,14 +273,20 @@ impl RedisConn {
 
     pub async fn fetch_table(&self, q: &TableQuery) -> Result<(QueryResult, Option<u64>)> {
         let mut con = self.con.clone();
-        let mut pattern = "*".to_string();
+        // A namespace entry ("user:*") limits the keys to that prefix.
+        let base = if q.object.name == "keys" {
+            String::new()
+        } else {
+            q.object.name.trim_end_matches('*').to_string()
+        };
+        let mut pattern = format!("{base}*");
         for f in &q.filters {
             if f.column != "key" {
                 continue;
             }
             match f.op {
                 FilterOp::Eq => pattern = glob_escape(&f.value),
-                FilterOp::Contains => pattern = format!("*{}*", glob_escape(&f.value)),
+                FilterOp::Contains => pattern = format!("{base}*{}*", glob_escape(&f.value)),
                 _ => bail!("Redis key filters support only = and contains"),
             }
         }
