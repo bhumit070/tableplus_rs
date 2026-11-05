@@ -859,3 +859,82 @@ async fn mysql_read_only() {
         read_only_scenario(Driver::MySql).await;
     }
 }
+
+/// Table editor DDL runs as generated on each server.
+async fn ddl_scenario(driver: Driver) {
+    use ddl::{ColChange, ColDef};
+    let c = Connection::connect(&cfg(driver)).await.unwrap();
+    c.execute("drop table if exists it_ddl").await.unwrap();
+    let int = if driver == Driver::MySql { "int" } else { "integer" };
+    let text = if driver == Driver::MySql { "varchar(50)" } else { "text" };
+    let col = |n: &str, t: &str, nullable, d: Option<&str>, pk| ColDef {
+        name: n.into(),
+        ty: t.into(),
+        nullable,
+        default: d.map(String::from),
+        pk,
+    };
+    let create = ddl::create_table(
+        driver,
+        None,
+        "it_ddl",
+        &[col("id", int, false, None, true), col("name", text, true, None, false)],
+    )
+    .unwrap();
+    c.execute(&ddl::script(driver, &[create])).await.unwrap();
+    let mut changes = vec![
+        ColChange::Add(col("age", int, true, Some("0"), false)),
+        ColChange::Alter {
+            from: col("name", text, true, None, false),
+            to: col("full_name", text, true, None, false),
+        },
+    ];
+    if driver != Driver::Sqlite {
+        changes.push(ColChange::Alter {
+            from: col("full_name", text, true, None, false),
+            to: col("full_name", text, false, Some("'x'"), false),
+        });
+    }
+    let stmts = ddl::alter_table(driver, None, "it_ddl", &changes).unwrap();
+    c.execute(&ddl::script(driver, &stmts)).await.unwrap();
+    let objects = c.list_objects().await.unwrap();
+    let st = c.structure(&obj(&objects, "it_ddl")).await.unwrap();
+    let names: Vec<_> = st.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["id", "full_name", "age"], "{driver:?}");
+    if driver != Driver::Sqlite {
+        assert!(!st.columns[1].nullable, "{driver:?}");
+    }
+    // A failing script leaves nothing half-applied where DDL is transactional.
+    if driver != Driver::MySql {
+        let bad = ddl::script(
+            driver,
+            &[
+                "ALTER TABLE it_ddl ADD COLUMN extra int;".into(),
+                "ALTER TABLE it_ddl DROP COLUMN no_such_column;".into(),
+            ],
+        );
+        assert!(c.execute(&bad).await.is_err());
+        let st = c.structure(&obj(&objects, "it_ddl")).await.unwrap();
+        assert!(st.columns.iter().all(|c| c.name != "extra"), "{driver:?} rolled back");
+    }
+    c.execute("drop table it_ddl").await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_ddl() {
+    ddl_scenario(Driver::Sqlite).await;
+}
+
+#[tokio::test]
+async fn postgres_ddl() {
+    if it_enabled() {
+        ddl_scenario(Driver::Postgres).await;
+    }
+}
+
+#[tokio::test]
+async fn mysql_ddl() {
+    if it_enabled() {
+        ddl_scenario(Driver::MySql).await;
+    }
+}

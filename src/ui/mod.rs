@@ -11,6 +11,7 @@ pub mod query_tab;
 pub mod row_panel;
 pub mod session;
 pub mod settings_view;
+pub mod table_editor;
 pub mod table_tab;
 
 use std::cell::RefCell;

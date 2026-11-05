@@ -1,0 +1,259 @@
+//! CREATE / ALTER TABLE statements for the table editor, per dialect.
+
+use anyhow::{Result, bail};
+
+use super::{ColumnInfo, Driver};
+use crate::export::ident;
+
+/// A column as the editor describes it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColDef {
+    pub name: String,
+    /// Written as typed, e.g. `varchar(100)`, `numeric(10,2)`.
+    pub ty: String,
+    pub nullable: bool,
+    /// A SQL expression (`0`, `'new'`, `now()`), as typed.
+    pub default: Option<String>,
+    pub pk: bool,
+}
+
+impl ColDef {
+    pub fn from_info(c: &ColumnInfo) -> ColDef {
+        ColDef {
+            name: c.name.clone(),
+            ty: c.data_type.clone(),
+            nullable: c.nullable,
+            default: c.default.clone(),
+            pk: c.is_pk,
+        }
+    }
+}
+
+fn table_name(driver: Driver, schema: Option<&str>, table: &str) -> String {
+    match schema.filter(|s| !s.is_empty() && driver == Driver::Postgres) {
+        Some(s) => format!("{}.{}", ident(driver, s), ident(driver, table)),
+        None => ident(driver, table),
+    }
+}
+
+/// `name type [NOT NULL] [DEFAULT x]`.
+fn column_sql(driver: Driver, c: &ColDef) -> Result<String> {
+    if c.name.trim().is_empty() {
+        bail!("every column needs a name");
+    }
+    if c.ty.trim().is_empty() {
+        bail!("column {} needs a type", c.name);
+    }
+    let mut s = format!("{} {}", ident(driver, c.name.trim()), c.ty.trim());
+    if !c.nullable {
+        s.push_str(" NOT NULL");
+    }
+    if let Some(d) = c.default.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        s.push_str(&format!(" DEFAULT {d}"));
+    }
+    Ok(s)
+}
+
+pub fn create_table(
+    driver: Driver,
+    schema: Option<&str>,
+    table: &str,
+    cols: &[ColDef],
+) -> Result<String> {
+    if table.trim().is_empty() {
+        bail!("the table needs a name");
+    }
+    if cols.is_empty() {
+        bail!("add at least one column");
+    }
+    let mut lines = cols
+        .iter()
+        .map(|c| column_sql(driver, c).map(|s| format!("  {s}")))
+        .collect::<Result<Vec<_>>>()?;
+    let pk: Vec<String> = cols
+        .iter()
+        .filter(|c| c.pk)
+        .map(|c| ident(driver, c.name.trim()))
+        .collect();
+    if !pk.is_empty() {
+        lines.push(format!("  PRIMARY KEY ({})", pk.join(", ")));
+    }
+    Ok(format!(
+        "CREATE TABLE {} (\n{}\n);",
+        table_name(driver, schema, table.trim()),
+        lines.join(",\n")
+    ))
+}
+
+/// One edit of an existing table's columns.
+#[derive(Clone, Debug)]
+pub enum ColChange {
+    Add(ColDef),
+    Drop(String),
+    Alter { from: ColDef, to: ColDef },
+}
+
+/// Statements that apply `changes`, in order. SQLite can add, drop and
+/// rename columns, but changing a type, NULL-ability or default needs a
+/// table rebuild, which is refused here.
+pub fn alter_table(
+    driver: Driver,
+    schema: Option<&str>,
+    table: &str,
+    changes: &[ColChange],
+) -> Result<Vec<String>> {
+    let t = table_name(driver, schema, table);
+    let q = |s: &str| ident(driver, s);
+    let mut out = vec![];
+    for ch in changes {
+        match ch {
+            ColChange::Add(c) => {
+                out.push(format!("ALTER TABLE {t} ADD COLUMN {};", column_sql(driver, c)?));
+            }
+            ColChange::Drop(name) => out.push(format!("ALTER TABLE {t} DROP COLUMN {};", q(name))),
+            ColChange::Alter { from, to } => {
+                let to = ColDef {
+                    name: to.name.trim().to_string(),
+                    ty: to.ty.trim().to_string(),
+                    default: to.default.clone().map(|d| d.trim().to_string()).filter(|d| !d.is_empty()),
+                    ..to.clone()
+                };
+                if to.name.is_empty() || to.ty.is_empty() {
+                    bail!("column {} needs a name and a type", from.name);
+                }
+                let renamed = to.name != from.name;
+                let retyped = !to.ty.eq_ignore_ascii_case(&from.ty);
+                let null_changed = to.nullable != from.nullable;
+                let default_changed = to.default != from.default;
+                if renamed {
+                    out.push(format!(
+                        "ALTER TABLE {t} RENAME COLUMN {} TO {};",
+                        q(&from.name),
+                        q(&to.name)
+                    ));
+                }
+                let col = q(&to.name);
+                match driver {
+                    Driver::Postgres => {
+                        if retyped {
+                            out.push(format!(
+                                "ALTER TABLE {t} ALTER COLUMN {col} TYPE {} USING {col}::{};",
+                                to.ty, to.ty
+                            ));
+                        }
+                        if null_changed {
+                            let verb = if to.nullable { "DROP" } else { "SET" };
+                            out.push(format!("ALTER TABLE {t} ALTER COLUMN {col} {verb} NOT NULL;"));
+                        }
+                        if default_changed {
+                            out.push(match &to.default {
+                                Some(d) => format!("ALTER TABLE {t} ALTER COLUMN {col} SET DEFAULT {d};"),
+                                None => format!("ALTER TABLE {t} ALTER COLUMN {col} DROP DEFAULT;"),
+                            });
+                        }
+                    }
+                    // MODIFY restates the whole column definition.
+                    Driver::MySql => {
+                        if retyped || null_changed || default_changed {
+                            out.push(format!(
+                                "ALTER TABLE {t} MODIFY COLUMN {};",
+                                column_sql(driver, &to)?
+                            ));
+                        }
+                    }
+                    _ => {
+                        if retyped || null_changed || default_changed {
+                            bail!(
+                                "SQLite can't change a column's type, NULL setting or default in place \
+                                 (column {}). Create a new table and copy the rows instead.",
+                                from.name
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The statements as one script; transactional where the server rolls DDL
+/// back on failure (Postgres, SQLite).
+pub fn script(driver: Driver, stmts: &[String]) -> String {
+    let body = stmts.join("\n");
+    match driver {
+        Driver::Postgres | Driver::Sqlite => format!("BEGIN;\n{body}\nCOMMIT;"),
+        _ => body,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn col(name: &str, ty: &str, nullable: bool, default: Option<&str>, pk: bool) -> ColDef {
+        ColDef {
+            name: name.into(),
+            ty: ty.into(),
+            nullable,
+            default: default.map(String::from),
+            pk,
+        }
+    }
+
+    #[test]
+    fn create_table_per_dialect() {
+        let cols = [
+            col("id", "integer", false, None, true),
+            col("name", "varchar(100)", true, Some("'anon'"), false),
+        ];
+        assert_eq!(
+            create_table(Driver::Postgres, Some("app"), "people", &cols).unwrap(),
+            "CREATE TABLE \"app\".\"people\" (\n  \"id\" integer NOT NULL,\n  \"name\" varchar(100) DEFAULT 'anon',\n  PRIMARY KEY (\"id\")\n);"
+        );
+        assert!(create_table(Driver::MySql, None, "people", &cols)
+            .unwrap()
+            .starts_with("CREATE TABLE `people` (\n  `id` integer NOT NULL"));
+        assert!(create_table(Driver::Sqlite, None, "", &cols).is_err());
+        assert!(create_table(Driver::Sqlite, None, "t", &[col("a", "", true, None, false)]).is_err());
+    }
+
+    #[test]
+    fn alter_table_per_dialect() {
+        let from = col("name", "text", true, None, false);
+        let to = col("full_name", "varchar(200)", false, Some("''"), false);
+        let changes = [
+            ColChange::Add(col("age", "int", true, None, false)),
+            ColChange::Alter { from: from.clone(), to: to.clone() },
+            ColChange::Drop("legacy".into()),
+        ];
+        assert_eq!(
+            alter_table(Driver::Postgres, None, "people", &changes).unwrap(),
+            [
+                "ALTER TABLE \"people\" ADD COLUMN \"age\" int;",
+                "ALTER TABLE \"people\" RENAME COLUMN \"name\" TO \"full_name\";",
+                "ALTER TABLE \"people\" ALTER COLUMN \"full_name\" TYPE varchar(200) USING \"full_name\"::varchar(200);",
+                "ALTER TABLE \"people\" ALTER COLUMN \"full_name\" SET NOT NULL;",
+                "ALTER TABLE \"people\" ALTER COLUMN \"full_name\" SET DEFAULT '';",
+                "ALTER TABLE \"people\" DROP COLUMN \"legacy\";",
+            ]
+        );
+        assert_eq!(
+            alter_table(Driver::MySql, None, "people", &changes[1..2]).unwrap(),
+            [
+                "ALTER TABLE `people` RENAME COLUMN `name` TO `full_name`;",
+                "ALTER TABLE `people` MODIFY COLUMN `full_name` varchar(200) NOT NULL DEFAULT '';",
+            ]
+        );
+        // SQLite: renames work, retyping doesn't.
+        let rename = ColChange::Alter {
+            from: from.clone(),
+            to: ColDef { name: "n".into(), ..from.clone() },
+        };
+        assert_eq!(alter_table(Driver::Sqlite, None, "t", &[rename]).unwrap().len(), 1);
+        assert!(alter_table(Driver::Sqlite, None, "t", &changes[1..2]).is_err());
+        // Unchanged columns produce nothing.
+        let same = ColChange::Alter { from: from.clone(), to: from };
+        assert!(alter_table(Driver::Postgres, None, "t", &[same]).unwrap().is_empty());
+    }
+}

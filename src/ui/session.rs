@@ -801,6 +801,16 @@ impl Session {
         ))
         .separator()
         .item(item(
+            "Edit Columns…",
+            Rc::new(|s, o, w, cx| {
+                if s.is_sql() {
+                    s.edit_columns(o.clone(), w, cx)
+                }
+            }),
+        ))
+        .item(item("New Table…", Rc::new(|s, _, w, cx| s.new_table(w, cx))))
+        .separator()
+        .item(item(
             "Truncate…",
             Rc::new(|s, o, w, cx| s.confirm_destructive(o.clone(), false, w, cx)),
         ))
@@ -808,6 +818,94 @@ impl Session {
             "Drop…",
             Rc::new(|s, o, w, cx| s.confirm_destructive(o.clone(), true, w, cx)),
         ))
+    }
+
+    fn is_sql(&self) -> bool {
+        !matches!(self.shared.cfg.driver, Driver::Redis | Driver::Mongo)
+    }
+
+    /// New Table…: opens the table editor; the sidebar reloads afterwards.
+    pub fn new_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_sql() {
+            return;
+        }
+        let me = cx.entity().downgrade();
+        let on_done: super::table_editor::OnDone = Rc::new(move |window, cx| {
+            me.update(cx, |s, cx| s.load_objects(window, cx)).ok();
+        });
+        super::table_editor::TableEditor::open(
+            self.shared.clone(),
+            None,
+            vec![],
+            self.schema.clone(),
+            on_done,
+            window,
+            cx,
+        );
+    }
+
+    #[cfg(test)]
+    pub fn new_table_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<super::table_editor::TableEditor> {
+        let me = cx.entity().downgrade();
+        let on_done: super::table_editor::OnDone = Rc::new(move |window, cx| {
+            me.update(cx, |s, cx| s.load_objects(window, cx)).ok();
+        });
+        super::table_editor::TableEditor::open(
+            self.shared.clone(),
+            None,
+            vec![],
+            None,
+            on_done,
+            window,
+            cx,
+        )
+    }
+
+    /// Edit Columns… from the sidebar: loads the columns, then opens the editor.
+    fn edit_columns(&mut self, obj: DbObject, window: &mut Window, cx: &mut Context<Self>) {
+        let conn = self.shared.conn.clone();
+        let o = obj.clone();
+        let task = runtime::spawn(async move { conn.read().await.structure(&o).await });
+        cx.spawn_in(window, async move |this, cx| {
+            let res = task.await;
+            this.update_in(cx, |s, window, cx| match res {
+                Ok(st) => {
+                    let me = cx.entity().downgrade();
+                    let o2 = obj.clone();
+                    let on_done: super::table_editor::OnDone = Rc::new(move |window, cx| {
+                        me.update(cx, |s, cx| s.reload_table_tabs(&o2, window, cx)).ok();
+                    });
+                    super::table_editor::TableEditor::open(
+                        s.shared.clone(),
+                        Some(obj),
+                        st.columns,
+                        None,
+                        on_done,
+                        window,
+                        cx,
+                    );
+                }
+                Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// After a structure change: open tabs of `obj` reload their columns.
+    fn reload_table_tabs(&mut self, obj: &DbObject, window: &mut Window, cx: &mut Context<Self>) {
+        for t in &self.tabs {
+            if let TabItem::Table(e) = t
+                && e.read(cx).object == *obj
+            {
+                e.update(cx, |t, cx| t.reload_structure(cx));
+            }
+        }
+        self.load_objects(window, cx);
     }
 
     fn confirm_destructive(
@@ -945,6 +1043,22 @@ impl Session {
                     }),
                 ),
             )
+            .when(self.is_sql(), |d| {
+                d.child(
+                    h_flex()
+                        .p_1()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            Button::new("new-table")
+                                .icon(IconName::Plus)
+                                .label("New Table")
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(|s, _, window, cx| s.new_table(window, cx))),
+                        ),
+                )
+            })
     }
 
     fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {

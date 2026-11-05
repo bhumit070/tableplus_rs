@@ -244,6 +244,14 @@ impl TableTab {
     }
 
     #[cfg(test)]
+    pub fn column_names(&self) -> Vec<String> {
+        self.structure
+            .iter()
+            .flat_map(|s| s.columns.iter().map(|c| c.name.clone()))
+            .collect()
+    }
+
+    #[cfg(test)]
     pub fn has_structure(&self) -> bool {
         self.structure.is_some()
     }
@@ -474,6 +482,51 @@ impl TableTab {
             cx.notify();
         });
         cx.notify();
+    }
+
+    /// After the columns changed: fetch the structure again with the rows.
+    pub fn reload_structure(&mut self, cx: &mut Context<Self>) {
+        self.structure = None;
+        self.reload(cx);
+    }
+
+    fn edit_columns(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(st) = &self.structure else { return };
+        let me = cx.entity().downgrade();
+        let on_done: super::table_editor::OnDone = Rc::new(move |_, cx| {
+            me.update(cx, |t, cx| t.reload_structure(cx)).ok();
+        });
+        super::table_editor::TableEditor::open(
+            self.shared.clone(),
+            Some(self.object.clone()),
+            st.columns.clone(),
+            None,
+            on_done,
+            window,
+            cx,
+        );
+    }
+
+    #[cfg(test)]
+    pub fn edit_columns_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<super::table_editor::TableEditor>> {
+        let st = self.structure.as_ref()?;
+        let me = cx.entity().downgrade();
+        let on_done: super::table_editor::OnDone = Rc::new(move |_, cx| {
+            me.update(cx, |t, cx| t.reload_structure(cx)).ok();
+        });
+        Some(super::table_editor::TableEditor::open(
+            self.shared.clone(),
+            Some(self.object.clone()),
+            st.columns.clone(),
+            None,
+            on_done,
+            window,
+            cx,
+        ))
     }
 
     /// → on a foreign-key cell: open the referenced table filtered to the
@@ -1201,7 +1254,28 @@ impl Render for TableTab {
                 .map(|s| s.ddl.clone())
                 .unwrap_or_default();
             let content = match section {
-                0 => data_table(&self.struct_cols, cx).into_any_element(),
+                0 => v_flex()
+                    .size_full()
+                    .when(
+                        !matches!(self.shared.cfg.driver, crate::db::Driver::Redis | crate::db::Driver::Mongo)
+                            && self.object.kind == crate::db::ObjectKind::Table,
+                        |d| {
+                            d.child(
+                                h_flex().p_1().child(
+                                    Button::new("edit-columns")
+                                        .icon(IconName::Replace)
+                                        .label("Edit Columns…")
+                                        .ghost()
+                                        .xsmall()
+                                        .on_click(cx.listener(|t, _, window, cx| {
+                                            t.edit_columns(window, cx)
+                                        })),
+                                ),
+                            )
+                        },
+                    )
+                    .child(div().flex_1().min_h_0().child(data_table(&self.struct_cols, cx)))
+                    .into_any_element(),
                 1 => data_table(&self.struct_idx, cx).into_any_element(),
                 2 => data_table(&self.struct_fks, cx).into_any_element(),
                 _ => v_flex()

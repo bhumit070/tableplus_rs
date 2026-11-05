@@ -1412,6 +1412,54 @@ mod tests {
         }
     }
 
+    /// New Table creates it (sidebar updates); Edit Columns adds and drops
+    /// columns on the open tab.
+    #[gpui::test]
+    fn table_editor(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-ddl-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        let ed = session.update_in(&mut cx, |s, w, cx| s.new_table_for_test(w, cx));
+        ed.update_in(&mut cx, |e, w, cx| {
+            e.set_name("books", w, cx);
+            e.set_row(1, "title", "text", w, cx);
+            e.set_row(2, "legacy", "int", w, cx);
+            e.apply_for_test(w, cx);
+        });
+        wait_until(&mut cx, "created", |cx| {
+            session.read_with(cx, |s, _| s.object_index("books").is_some())
+        });
+        assert!(!cx.update(|w, cx| w.has_active_dialog(cx)), "dialog closed");
+
+        session.update_in(&mut cx, |s, w, cx| {
+            let i = s.object_index("books").unwrap();
+            s.open_object(i, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "structure", |cx| tab.read_with(cx, |t, _| t.has_structure()));
+        assert_eq!(tab.read_with(&cx, |t, _| t.column_names()), ["id", "title", "legacy"]);
+        let ed = tab
+            .update_in(&mut cx, |t, w, cx| t.edit_columns_for_test(w, cx))
+            .unwrap();
+        ed.update_in(&mut cx, |e, w, cx| {
+            e.drop_row(2);
+            e.set_row(3, "year", "integer", w, cx);
+            e.apply_for_test(w, cx);
+        });
+        wait_until(&mut cx, "altered", |cx| {
+            tab.read_with(cx, |t, _| t.column_names() == ["id", "title", "year"])
+        });
+        let _ = std::fs::remove_file(file);
+    }
+
     /// ⌘1/⌘2 switch connections; ⌘N opens the connection picker, which
     /// switches to an open connection or offers "New Connection…".
     #[gpui::test]

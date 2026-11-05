@@ -2,6 +2,7 @@
 //! common, string-based API the UI can render directly.
 
 pub mod cancel;
+pub mod ddl;
 pub mod format;
 #[cfg(test)]
 mod it;
