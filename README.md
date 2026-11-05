@@ -5,6 +5,10 @@ A fast, native database client in the spirit of TablePlus, written in Rust with
 [gpui-component](https://github.com/longbridge/gpui-component). Open as many
 connections as you like: each one gets an icon in the left rail.
 
+📖 **Documentation: <https://bhumit070.github.io/tableplus_rs/>**: installing,
+features, shortcuts, and how it's built (architecture, every source file and
+dependency, development and releases).
+
 ## Supported databases
 
 | Database | Browse & edit | Query editor |
@@ -18,7 +22,8 @@ connections as you like: each one gets an icon in the left rail.
 ## Features
 
 - **Connections:** saved list with environment tags (local → production) and
-  passwords in the macOS Keychain. Last session's connections and tabs
+  passwords in the OS keychain (Keychain, Credential Manager, Secret
+  Service). Last session's connections and tabs
   (including unsaved query text) reopen at launch.
 - **SSH tunnels:** password, private key (with passphrase) or ssh-agent.
   Host keys are checked against `~/.ssh/known_hosts`; a new host asks to be
@@ -128,8 +133,9 @@ sudo apt-get install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvul
   libssl-dev libasound2-dev pkg-config clang cmake
 ```
 
-Settings and saved connections live in
-`~/Library/Application Support/tabula/` (`settings.json`,
+Settings and saved connections live in the config folder
+(`~/Library/Application Support/tabula/` on macOS, `~/.config/tabula/` on
+Linux, `%APPDATA%\tabula\` on Windows: `settings.json`,
 `connections.json`, `saved_queries.json`, `history.db`, `session.json`,
 `known_hosts`). Passwords are never written there.
 
@@ -149,6 +155,13 @@ docker run -d --rm --name tabula-test-redis -p 56379:6379 redis:7-alpine
 docker run -d --rm --name tabula-test-mongo -p 57017:27017 mongo:7
 docker exec tabula-test-pg createdb -U postgres tabula_it_other
 ```
+
+## Documentation
+
+The docs site is built from [`docs/`](docs/) with MkDocs Material and
+published to GitHub Pages by `.github/workflows/docs.yml` whenever `docs/`
+or `mkdocs.yml` changes on `main`. Preview locally with
+`pip install -r docs/requirements.txt && mkdocs serve`.
 
 ## Not yet supported
 

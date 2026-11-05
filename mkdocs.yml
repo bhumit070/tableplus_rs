@@ -1,0 +1,75 @@
+site_name: Tabula
+site_description: A fast, native database client written in Rust, with no connection limit.
+site_url: https://bhumit070.github.io/tableplus_rs/
+repo_url: https://github.com/bhumit070/tableplus_rs
+repo_name: bhumit070/tableplus_rs
+edit_uri: edit/main/docs/
+
+# Broken links, including to a #section, fail `mkdocs build --strict`.
+exclude_docs: requirements.txt
+
+validation:
+  anchors: warn
+  unrecognized_links: warn
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Home: index.md
+  - Using Tabula:
+      - Getting started: getting-started.md
+      - Features: features.md
+      - Keyboard shortcuts: shortcuts.md
+  - Architecture:
+      - Overview: architecture/overview.md
+      - User interface: architecture/ui.md
+      - Database layer: architecture/database.md
+      - SSH tunnels: architecture/ssh.md
+      - Storage and settings: architecture/storage.md
+      - Safety and security: architecture/safety.md
+  - Reference:
+      - Source files: modules.md
+      - Dependencies: dependencies.md
+  - Development:
+      - Building and testing: development.md
+      - Releases and CI: releases.md
