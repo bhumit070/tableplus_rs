@@ -940,40 +940,50 @@ async fn mysql_ddl() {
 }
 
 /// Backup with pg_dump, then restore with psql into another database.
+/// Uses its own throwaway databases, so parallel tests can't interfere.
 #[tokio::test]
 async fn postgres_backup_restore() {
     if !it_enabled() || backup::find_tool(&["pg_dump"]).is_none() {
         return;
     }
-    let c = Connection::connect(&cfg(Driver::Postgres)).await.unwrap();
-    c.execute("drop table if exists it_backup; create table it_backup (id int primary key, note text); insert into it_backup values (1, 'it''s'), (2, null)")
+    let admin = Connection::connect(&cfg(Driver::Postgres)).await.unwrap();
+    let tag = uuid::Uuid::new_v4().simple().to_string();
+    // Named to sort before "postgres", so the ⌘K picker test (which steps
+    // from postgres to the next database) isn't thrown off meanwhile.
+    let (src, dst) = (format!("_tabula_bk_{}", &tag[..8]), format!("_tabula_rs_{}", &tag[..8]));
+    for db in [&src, &dst] {
+        admin.execute(&format!("create database {db}")).await.unwrap();
+    }
+    let at = |db: &str| {
+        let mut c = cfg(Driver::Postgres);
+        c.database = db.into();
+        c
+    };
+    let c = Connection::connect(&at(&src)).await.unwrap();
+    c.execute("create table it_backup (id int primary key, note text); insert into it_backup values (1, 'it''s'), (2, null)")
         .await
         .unwrap();
     let (host, port) = c.endpoint();
-    let t = backup::Target {
-        cfg: cfg(Driver::Postgres),
-        host,
-        port,
-        database: "postgres".into(),
-    };
-    let file = std::env::temp_dir().join(format!("tabula-it-{}.sql", uuid::Uuid::new_v4()));
+    let t = backup::Target { cfg: at(&src), host, port, database: src.clone() };
+    let file = std::env::temp_dir().join(format!("tabula-it-{tag}.sql"));
     backup::dump(&t, backup::Scope::Everything, &file).await.unwrap();
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.contains("CREATE TABLE public.it_backup"), "schema dumped");
 
-    // Restore into the spare database.
-    let mut other = cfg(Driver::Postgres);
-    other.database = "tabula_it_other".into();
-    let o = Connection::connect(&other).await.unwrap();
-    o.execute("drop table if exists it_backup").await.unwrap();
-    let t2 = backup::Target { cfg: other.clone(), database: "tabula_it_other".into(), ..t.clone() };
+    let t2 = backup::Target { cfg: at(&dst), database: dst.clone(), ..t.clone() };
     backup::restore(&t2, &file).await.unwrap();
+    let o = Connection::connect(&at(&dst)).await.unwrap();
     let r = o.execute("select note from it_backup order by id").await.unwrap();
     assert_eq!(r[0].rows, vec![vec![Some("it's".to_string())], vec![None]]);
     // A second restore fails (table exists) and, being one transaction, changes nothing.
     assert!(backup::restore(&t2, &file).await.is_err());
-    o.execute("drop table it_backup").await.unwrap();
-    c.execute("drop table it_backup").await.unwrap();
+    let r = o.execute("select count(*) from it_backup").await.unwrap();
+    assert_eq!(r[0].rows[0][0].as_deref(), Some("2"));
+    c.close().await;
+    o.close().await;
+    for db in [&src, &dst] {
+        admin.execute(&format!("drop database {db} with (force)")).await.unwrap();
+    }
     let _ = std::fs::remove_file(file);
 }
 
@@ -990,4 +1000,82 @@ async fn sqlite_backup() {
     let b = Connection::connect(&copy).await.unwrap();
     assert_eq!(b.execute("select a from t").await.unwrap()[0].rows[0][0].as_deref(), Some("7"));
     let _ = std::fs::remove_file(file);
+}
+
+/// Real servers' plans parse into a tree.
+async fn explain_scenario(driver: Driver) {
+    let c = Connection::connect(&cfg(driver)).await.unwrap();
+    let int = if driver == Driver::MySql { "int" } else { "integer" };
+    c.execute(&format!(
+        "drop table if exists it_ex; create table it_ex (id {int} primary key, v int); insert into it_ex values (1, 1), (2, 2)"
+    ))
+    .await
+    .unwrap();
+    for analyze in [false, true] {
+        let sql = explain::explain_sql(driver, "select * from it_ex where id = 1 or v > 1;", analyze).unwrap();
+        let r = c.execute(&sql).await.unwrap();
+        let plan = explain::parse(driver, &r[0]).unwrap_or_else(|e| panic!("{driver:?}: {e:#} {r:?}"));
+        assert!(!plan.flatten().is_empty());
+        let text = format!("{plan:?}");
+        assert!(text.contains("it_ex"), "{driver:?}: {text}");
+        if analyze && driver != Driver::Sqlite {
+            assert!(plan.actual_ms.is_some(), "{driver:?}: {text}");
+        }
+    }
+    c.execute("drop table it_ex").await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_explain() {
+    explain_scenario(Driver::Sqlite).await;
+}
+
+#[tokio::test]
+async fn postgres_explain() {
+    if it_enabled() {
+        explain_scenario(Driver::Postgres).await;
+    }
+}
+
+#[tokio::test]
+async fn mysql_explain() {
+    if it_enabled() {
+        explain_scenario(Driver::MySql).await;
+    }
+}
+
+/// EXPLAIN ANALYZE of a write measures it without keeping it.
+async fn analyze_rolls_back(driver: Driver) {
+    let c = Connection::connect(&cfg(driver)).await.unwrap();
+    c.execute("drop table if exists it_an; create table it_an (id int primary key); insert into it_an values (1), (2)")
+        .await
+        .unwrap();
+    let script = explain::explain_script(driver, "delete from it_an", true).unwrap();
+    let rs = c.execute(&script).await.unwrap();
+    let r = rs.iter().find(|r| r.statement.to_uppercase().starts_with("EXPLAIN")).unwrap();
+    match driver {
+        // MySQL only analyzes reads, and says so.
+        Driver::MySql => {
+            let e = explain::parse(driver, r).unwrap_err();
+            assert!(format!("{e:#}").contains("only EXPLAIN ANALYZE"));
+        }
+        _ => assert!(explain::parse(driver, r).unwrap().actual_ms.is_some(), "{driver:?}"),
+    }
+    let n = c.execute("select count(*) from it_an").await.unwrap();
+    assert_eq!(n[0].rows[0][0].as_deref(), Some("2"), "{driver:?}: delete rolled back");
+    c.execute("drop table it_an").await.unwrap();
+}
+
+#[tokio::test]
+async fn postgres_analyze_rolls_back() {
+    if it_enabled() {
+        analyze_rolls_back(Driver::Postgres).await;
+    }
+}
+
+#[tokio::test]
+async fn mysql_analyze_rolls_back() {
+    if it_enabled() {
+        analyze_rolls_back(Driver::MySql).await;
+    }
 }

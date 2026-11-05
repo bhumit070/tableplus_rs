@@ -54,6 +54,7 @@ fn menus() -> Vec<Menu> {
                 I::action("Run", ui::RunQuery),
                 I::action("Cancel Running Query", ui::CancelQuery),
                 I::action("Format SQL", ui::FormatSql),
+                I::action("Explain", ui::ExplainQuery),
                 I::separator(),
                 I::action("Save Query…", ui::SaveQuery),
                 I::action("Saved Queries…", ui::SavedQueries),

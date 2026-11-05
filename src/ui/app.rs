@@ -27,7 +27,7 @@ use super::table_tab::TableTab;
 use super::{
     AddRow, CloseTab, Commit, Connection1, Connection2, Connection3, Connection4, Connection5,
     Connection6, Connection7, Connection8, Connection9, DeleteRows, Discard, GoHome, NewQuery,
-    CancelQuery, ExportData, FormatSql, BackupDatabase, RestoreDatabase, SaveQuery, SavedQueries, ShowProcesses, ToggleRowDetail, NextTab, QueryHistory, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
+    CancelQuery, ExportData, FormatSql, BackupDatabase, ExplainQuery, RestoreDatabase, SaveQuery, SavedQueries, ShowProcesses, ToggleRowDetail, NextTab, QueryHistory, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
     ToggleFilter, ToggleTheme, tag_color,
 };
 use crate::db::ssh::UnknownHostKey;
@@ -580,6 +580,13 @@ pub fn register_actions(cx: &mut App) {
     });
 
     cx.on_action(|_: &QueryHistory, cx| with_session(cx, |s, w, cx| s.open_history(w, cx)));
+    cx.on_action(|_: &ExplainQuery, cx| {
+        with_session(cx, |s, w, cx| {
+            if let Some(q) = s.active_query() {
+                q.update(cx, |q, cx| q.explain(false, w, cx));
+            }
+        })
+    });
     cx.on_action(|_: &BackupDatabase, cx| with_session(cx, |s, w, cx| s.backup(w, cx)));
     cx.on_action(|_: &RestoreDatabase, cx| with_session(cx, |s, w, cx| s.restore(w, cx)));
     cx.on_action(|_: &ShowProcesses, cx| {
@@ -1294,6 +1301,15 @@ mod tests {
             q.read_with(&cx, |q, cx| q.text(cx)),
             "select a, b from t where a = 1"
         );
+
+        // ⌘E shows the plan of the editor's statement.
+        q.update_in(&mut cx, |q, w, cx| q.run_for_test("create table t (a int, b int)", w, cx));
+        wait_until(&mut cx, "table", |cx| q.read_with(cx, |q, _| !q.running()));
+        cx.simulate_keystrokes("cmd-e");
+        wait_until(&mut cx, "plan", |cx| {
+            q.read_with(cx, |q, _| !q.plan_labels().is_empty())
+        });
+        assert!(q.read_with(&cx, |q, _| q.plan_labels().iter().any(|l| l.contains("SCAN t"))));
         let _ = std::fs::remove_file(file);
     }
 

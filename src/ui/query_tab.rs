@@ -53,6 +53,8 @@ pub struct QueryTab {
     edit_sub: Option<Subscription>,
     /// Row detail panel beside the results.
     pub show_detail: bool,
+    /// The last EXPLAIN, shown instead of results until the next run.
+    plan: Option<crate::db::explain::PlanNode>,
     /// Set once this tab's text is a saved query; ⌘⇧S then updates it.
     saved: Option<crate::saved::SavedQuery>,
     _subs: Vec<Subscription>,
@@ -180,6 +182,7 @@ impl QueryTab {
             cancel: None,
             show_detail: false,
             saved: None,
+            plan: None,
             error: None,
             elapsed: 0,
             focus: cx.focus_handle(),
@@ -224,7 +227,161 @@ impl QueryTab {
         }
     }
 
+    /// ⌘E: the plan of the selected / first statement. `analyze` runs it
+    /// (inside a transaction that's rolled back, so writes don't stick).
+    pub fn explain(&mut self, analyze: bool, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::db::explain;
+        if self.running {
+            return;
+        }
+        let driver = self.shared.cfg.driver;
+        if !matches!(driver, Driver::Postgres | Driver::MySql | Driver::Sqlite) {
+            window.push_notification("EXPLAIN is available for Postgres, MySQL and SQLite", cx);
+            return;
+        }
+        let e = self.editor.read(cx);
+        let sel = e.selected_value().to_string();
+        let text = if sel.trim().is_empty() { e.value().to_string() } else { sel };
+        let stmts = crate::db::split::split_statements(&text, driver == Driver::MySql);
+        let Some(stmt) = stmts.into_iter().find(|s| !s.trim().is_empty()) else {
+            return;
+        };
+        let Ok(wrapped) = explain::explain_script(driver, &stmt, analyze) else {
+            return;
+        };
+        // ANALYZE executes the statement: the safe mode decides as for a run.
+        if analyze {
+            let gate = crate::db::safety::gate_query(&self.shared.cfg, &stmt);
+            let weak = cx.entity().downgrade();
+            let w2 = wrapped.clone();
+            if !super::guarded(gate, &self.shared.cfg, "Run EXPLAIN ANALYZE", stmt.clone(), window, cx, move |w, cx| {
+                weak.update(cx, |t, cx| t.run_explain(w2.clone(), w, cx)).ok();
+            }) {
+                return;
+            }
+        }
+        self.run_explain(wrapped, window, cx);
+    }
+
+    fn run_explain(&mut self, sql: String, window: &mut Window, cx: &mut Context<Self>) {
+        let driver = self.shared.cfg.driver;
+        self.running = true;
+        self.error = None;
+        cx.notify();
+        let conn = self.shared.conn.clone();
+        let cancel = Arc::new(Cancel::default());
+        self.cancel = Some(cancel.clone());
+        let task = runtime::spawn(async move {
+            let rs = conn.read().await.execute_cancellable(&sql, &cancel).await?;
+            let r = rs
+                .iter()
+                .find(|r| r.statement.trim_start().to_ascii_uppercase().starts_with("EXPLAIN"))
+                .cloned()
+                .unwrap_or_default();
+            crate::db::explain::parse(driver, &r)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let res = task.await;
+            this.update(cx, |this, cx| {
+                this.running = false;
+                this.cancel = None;
+                match res {
+                    Ok(p) => this.plan = Some(p),
+                    Err(e) => this.error = Some(format!("{e:#}")),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn render_plan(&self, plan: &crate::db::explain::PlanNode, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = cx.theme().clone();
+        let nodes = plan.flatten();
+        let max = nodes
+            .iter()
+            .map(|(_, n)| n.self_weight())
+            .fold(0.0_f64, f64::max)
+            .max(f64::EPSILON);
+        let fmt = |v: f64| {
+            if v >= 100.0 { format!("{v:.0}") } else { format!("{v:.2}") }
+        };
+        div()
+            .id("plan")
+            .size_full()
+            .overflow_y_scroll()
+            .p_2()
+            .child(v_flex().gap_1().children(nodes.into_iter().map(|(depth, n)| {
+                let share = n.self_weight() / max;
+                let bar = if share > 0.66 {
+                    theme.danger
+                } else if share > 0.33 {
+                    theme.warning
+                } else {
+                    theme.success
+                };
+                let mut stats = vec![];
+                if let Some(c) = n.cost {
+                    stats.push(format!("cost {}", fmt(c)));
+                }
+                if let Some(r) = n.rows {
+                    stats.push(format!("est. rows {}", fmt(r)));
+                }
+                if let Some(t) = n.actual_ms {
+                    stats.push(format!("{} ms", fmt(t)));
+                }
+                if let Some(r) = n.actual_rows {
+                    stats.push(format!("rows {}", fmt(r)));
+                }
+                h_flex()
+                    .pl(px(16. * depth as f32))
+                    .gap_2()
+                    .items_start()
+                    .child(
+                        div()
+                            .mt(px(6.))
+                            .w(px(48.))
+                            .h(px(6.))
+                            .flex_none()
+                            .rounded_sm()
+                            .bg(theme.border)
+                            .child(div().h_full().rounded_sm().w(px(48. * share as f32)).bg(bar)),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .child(n.label.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme.muted_foreground)
+                                            .child(stats.join(" · ")),
+                                    ),
+                            )
+                            .children(n.details.iter().map(|d| {
+                                div()
+                                    .text_xs()
+                                    .font_family(theme.mono_font_family.clone())
+                                    .text_color(theme.muted_foreground)
+                                    .child(d.clone())
+                            })),
+                    )
+            })))
+            .into_any_element()
+    }
+
     fn execute(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.plan = None;
         self.last_run = text.clone();
         self.running = true;
         self.error = None;
@@ -519,6 +676,14 @@ impl QueryTab {
 
     #[cfg(test)]
     #[cfg(test)]
+    pub fn plan_labels(&self) -> Vec<String> {
+        self.plan
+            .iter()
+            .flat_map(|p| p.flatten().into_iter().map(|(_, n)| n.label.clone()))
+            .collect()
+    }
+
+    #[cfg(test)]
     pub fn text(&self, cx: &App) -> String {
         self.editor.read(cx).value().to_string()
     }
@@ -616,6 +781,7 @@ impl QueryTab {
         let current = self.results.get(self.active);
         let summary = match current {
             _ if self.running => "Running…".to_string(),
+            _ if self.plan.is_some() => "Query plan · bars show each step's share of the cost / time".to_string(),
             None => "⌘↵ to run".to_string(),
             Some(r) if r.columns.is_empty() => {
                 format!(
@@ -626,7 +792,9 @@ impl QueryTab {
             }
             Some(r) => format!("{} row(s) · {} ms", r.rows.len(), r.elapsed_ms),
         };
-        let body = if let Some(e) = &self.error {
+        let body = if let (Some(p), None) = (&self.plan, &self.error) {
+            self.render_plan(p, cx)
+        } else if let Some(e) = &self.error {
             div()
                 .size_full()
                 .p_3()
@@ -832,6 +1000,31 @@ impl Render for QueryTab {
                     .tooltip("Run selection or all (⌘↵)")
                     .on_click(cx.listener(|this, _, window, cx| this.run(&RunQuery, window, cx)))
             })
+            .when(
+                matches!(self.shared.cfg.driver, Driver::Postgres | Driver::MySql | Driver::Sqlite),
+                |d| {
+                    d.child(
+                        Button::new("explain")
+                            .label("Explain")
+                            .ghost()
+                            .small()
+                            .tooltip("Show the query plan (⌘E)")
+                            .on_click(cx.listener(|this, _, window, cx| this.explain(false, window, cx))),
+                    )
+                    .when(self.shared.cfg.driver != Driver::Sqlite, |d| {
+                        d.child(
+                            Button::new("analyze")
+                                .label("Analyze")
+                                .ghost()
+                                .small()
+                                .tooltip("Run it and show actual times (rolled back afterwards)")
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.explain(true, window, cx)),
+                                ),
+                        )
+                    })
+                },
+            )
             .child(
                 Button::new("save-query")
                     .label("Save")

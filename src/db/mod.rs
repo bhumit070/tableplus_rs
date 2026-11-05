@@ -4,6 +4,7 @@
 pub mod backup;
 pub mod cancel;
 pub mod ddl;
+pub mod explain;
 pub mod format;
 #[cfg(test)]
 mod it;

@@ -37,6 +37,7 @@ gpui::actions!(
         ShowProcesses,
         BackupDatabase,
         RestoreDatabase,
+        ExplainQuery,
         EditCell,
         CancelCellEdit,
         NextCell,
@@ -167,6 +168,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new(sec!("shift-s"), SaveQuery, None),
         KeyBinding::new(sec!("shift-o"), SavedQueries, None),
         KeyBinding::new(sec!("shift-p"), ShowProcesses, None),
+        KeyBinding::new(sec!("e"), ExplainQuery, None),
         KeyBinding::new(sec!("k"), SwitchDatabase, None),
         KeyBinding::new(sec!("s"), Commit, None),
         KeyBinding::new(sec!("shift-backspace"), Discard, None),
@@ -263,6 +265,7 @@ mod tests {
             (sec!("shift-s"), is::<SaveQuery>),
             (sec!("shift-o"), is::<SavedQueries>),
             (sec!("shift-p"), is::<ShowProcesses>),
+            (sec!("e"), is::<ExplainQuery>),
             (sec!("f"), is::<ToggleFilter>),
         ] {
             assert!(ok(resolve(vec![], key, &["Root"])), "{key} with no focus");
