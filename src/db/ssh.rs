@@ -298,6 +298,62 @@ impl Tunnel {
     }
 }
 
+/// The running ssh-agent: `SSH_AUTH_SOCK` on macOS / Linux; on Windows
+/// the OpenSSH agent's pipe, else Pageant.
+#[cfg(unix)]
+async fn agent_login(session: &mut client::Handle<Client>, user: &str) -> Result<bool> {
+    let agent = russh::keys::agent::client::AgentClient::connect_env()
+        .await
+        .context("SSH: couldn't reach ssh-agent (is SSH_AUTH_SOCK set?)")?;
+    try_agent_keys(session, user, agent).await
+}
+
+#[cfg(windows)]
+async fn agent_login(session: &mut client::Handle<Client>, user: &str) -> Result<bool> {
+    use russh::keys::agent::client::AgentClient;
+    match AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await {
+        Ok(agent) => try_agent_keys(session, user, agent).await,
+        Err(_) => {
+            let agent = AgentClient::connect_pageant()
+                .await
+                .context("SSH: no agent found (start the OpenSSH Authentication Agent service, or Pageant)")?;
+            try_agent_keys(session, user, agent).await
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+async fn agent_login(_: &mut client::Handle<Client>, _: &str) -> Result<bool> {
+    bail!("SSH agent login isn't available on this platform")
+}
+
+/// Offers each key the agent holds until the server accepts one.
+async fn try_agent_keys<S>(
+    session: &mut client::Handle<Client>,
+    user: &str,
+    mut agent: russh::keys::agent::client::AgentClient<S>,
+) -> Result<bool>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    russh::keys::agent::client::AgentClient<S>: russh::Signer,
+{
+    let ids = agent.request_identities().await?;
+    let hash = session.best_supported_rsa_hash().await?.flatten();
+    for id in ids {
+        let russh::keys::agent::AgentIdentity::PublicKey { key, .. } = id else {
+            continue;
+        };
+        if let Ok(r) = session
+            .authenticate_publickey_with(user.to_string(), key, hash, &mut agent)
+            .await
+            && r.success()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 async fn authenticate(session: &mut client::Handle<Client>, ssh: &SshConfig) -> Result<()> {
     let user = ssh.user.clone();
     let ok = match ssh.auth {
@@ -337,28 +393,7 @@ async fn authenticate(session: &mut client::Handle<Client>, ssh: &SshConfig) -> 
             }
             ok
         }
-        SshAuth::Agent => {
-            let mut agent = russh::keys::agent::client::AgentClient::connect_env()
-                .await
-                .context("SSH: couldn't reach ssh-agent (is SSH_AUTH_SOCK set?)")?;
-            let ids = agent.request_identities().await?;
-            let hash = session.best_supported_rsa_hash().await?.flatten();
-            let mut ok = false;
-            for id in ids {
-                let russh::keys::agent::AgentIdentity::PublicKey { key, .. } = id else {
-                    continue;
-                };
-                if let Ok(r) = session
-                    .authenticate_publickey_with(user.clone(), key, hash, &mut agent)
-                    .await
-                    && r.success()
-                {
-                    ok = true;
-                    break;
-                }
-            }
-            ok
-        }
+        SshAuth::Agent => agent_login(session, &user).await?,
     };
     if !ok {
         bail!("SSH: authentication failed for user {}", ssh.user);
