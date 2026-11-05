@@ -55,7 +55,7 @@ fn load_from(p: &std::path::Path) -> (Vec<ConnectionConfig>, Option<String>) {
 }
 
 /// Passwords are read lazily, only when a connection is opened.
-pub fn password(id: &str) -> String {
+fn password(id: &str) -> String {
     // Tests never touch the real Keychain.
     if cfg!(test) {
         return String::new();
@@ -63,6 +63,31 @@ pub fn password(id: &str) -> String {
     keyring::Entry::new(SERVICE, id)
         .and_then(|e| e.get_password())
         .unwrap_or_default()
+}
+
+/// Keychain account for a connection's SSH password / key passphrase.
+fn ssh_account(id: &str) -> String {
+    format!("{id}:ssh")
+}
+
+/// Fills in a connection's secrets (database password, SSH password or
+/// passphrase) from the keychain, where they aren't set already.
+pub fn load_secrets(cfg: &mut ConnectionConfig) {
+    if cfg.password.is_empty() {
+        cfg.password = password(&cfg.id);
+    }
+    if let Some(ssh) = &mut cfg.ssh
+        && ssh.secret.is_empty()
+    {
+        ssh.secret = password(&ssh_account(&cfg.id));
+    }
+}
+
+/// Stores a connection's secrets in the keychain (empty ones are removed).
+pub fn save_secrets(cfg: &ConnectionConfig) -> Result<()> {
+    set_password(&cfg.id, &cfg.password)?;
+    let ssh = cfg.ssh.as_ref().map(|s| s.secret.as_str()).unwrap_or("");
+    set_password(&ssh_account(&cfg.id), ssh)
 }
 
 pub fn save_all(list: &[ConnectionConfig]) -> Result<()> {
@@ -81,7 +106,7 @@ fn save_to(p: &std::path::Path, list: &[ConnectionConfig]) -> Result<()> {
     Ok(())
 }
 
-pub fn set_password(id: &str, password: &str) -> Result<()> {
+fn set_password(id: &str, password: &str) -> Result<()> {
     if cfg!(test) {
         return Ok(());
     }
@@ -98,8 +123,10 @@ pub fn delete_password(id: &str) {
     if cfg!(test) {
         return;
     }
-    if let Ok(e) = keyring::Entry::new(SERVICE, id) {
-        let _ = e.delete_credential();
+    for account in [id.to_string(), ssh_account(id)] {
+        if let Ok(e) = keyring::Entry::new(SERVICE, &account) {
+            let _ = e.delete_credential();
+        }
     }
 }
 

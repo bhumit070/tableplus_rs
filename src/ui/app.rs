@@ -1,12 +1,13 @@
 //! Window root: title bar, the connection rail on the left (home + one icon
 //! per open connection, no limit), and the active view.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
     AnyWindowHandle, App, Context, Entity, FocusHandle, Global, InteractiveElement, IntoElement,
-    ParentElement, Render, Styled, WeakEntity, Window, div, prelude::*, px,
+    ParentElement, Render, SharedString, Styled, WeakEntity, Window, div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::notification::Notification;
@@ -29,6 +30,7 @@ use super::{
     CancelQuery, ExportData, NextTab, QueryHistory, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
     ToggleFilter, ToggleTheme, tag_color,
 };
+use crate::db::ssh::UnknownHostKey;
 use crate::db::{Connection, ConnectionConfig};
 use crate::runtime;
 use crate::settings;
@@ -72,6 +74,13 @@ impl AppView {
         cx.spawn_in(window, async move |this, cx| {
             let res = task.await;
             this.update_in(cx, |this, window, cx| {
+                // A new SSH host: ask before trusting its key, then retry.
+                if let Err(e) = &res
+                    && let Some(unknown) = e.downcast_ref::<UnknownHostKey>()
+                {
+                    this.confirm_host_key(unknown.clone(), cfg, window, cx, done);
+                    return;
+                }
                 done(res.is_ok(), window, cx);
                 match res {
                     Ok(conn) => {
@@ -95,6 +104,53 @@ impl AppView {
             .ok();
         })
         .detach();
+    }
+
+    fn confirm_host_key(
+        &mut self,
+        unknown: UnknownHostKey,
+        cfg: ConnectionConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(bool, &mut Window, &mut App) + 'static,
+    ) {
+        type Done = Box<dyn FnOnce(bool, &mut Window, &mut App)>;
+        let done: Rc<RefCell<Option<Done>>> = Rc::new(RefCell::new(Some(Box::new(done))));
+        let me = cx.entity().downgrade();
+        let body: SharedString = format!(
+            "{}\n\nTrust it only if this fingerprint is the server's. Tabula will remember it.",
+            unknown
+        )
+        .into();
+        window.open_alert_dialog(cx, move |d, _, _| {
+            let (me, unknown, cfg) = (me.clone(), unknown.clone(), cfg.clone());
+            let (done_ok, done_cancel) = (done.clone(), done.clone());
+            d.title("Trust this SSH host?")
+                .description(body.clone())
+                .show_cancel(true)
+                .on_ok(move |_, window, cx| {
+                    let Some(done) = done_ok.borrow_mut().take() else {
+                        return true;
+                    };
+                    if let Err(e) = unknown.trust() {
+                        window.push_notification(
+                            Notification::error(format!("Couldn't save the host key: {e:#}")),
+                            cx,
+                        );
+                        done(false, window, cx);
+                        return true;
+                    }
+                    let cfg = cfg.clone();
+                    me.update(cx, |a, cx| a.connect(cfg, window, cx, done)).ok();
+                    true
+                })
+                .on_cancel(move |_, window, cx| {
+                    if let Some(done) = done_cancel.borrow_mut().take() {
+                        done(false, window, cx);
+                    }
+                    true
+                })
+        });
     }
 
     fn close_session(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {

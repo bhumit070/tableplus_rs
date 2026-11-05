@@ -9,6 +9,7 @@ mod redis_kv;
 pub mod safety;
 pub mod split;
 mod sql;
+pub mod ssh;
 pub mod target;
 
 use std::time::Instant;
@@ -147,6 +148,9 @@ pub struct ConnectionConfig {
     /// Lives in the OS keychain, never in the JSON file.
     #[serde(skip)]
     pub password: String,
+    /// Connect through an SSH tunnel.
+    #[serde(default)]
+    pub ssh: Option<ssh::SshConfig>,
 }
 
 impl ConnectionConfig {
@@ -164,6 +168,7 @@ impl ConnectionConfig {
             ssl: false,
             ssl_verify: false,
             password: String::new(),
+            ssh: None,
         }
     }
 
@@ -324,44 +329,67 @@ pub enum Change {
     },
 }
 
-pub enum Connection {
+enum Conn {
     Sql(sql::SqlConn),
     Redis(redis_kv::RedisConn),
     Mongo(mongo::MongoConn),
 }
 
+/// An open connection. With SSH, the drivers talk to a local port that the
+/// tunnel forwards; the tunnel closes when this is dropped.
+pub struct Connection {
+    inner: Conn,
+    _tunnel: Option<ssh::Tunnel>,
+}
+
 impl Connection {
     pub async fn connect(cfg: &ConnectionConfig) -> Result<Self> {
-        Ok(match cfg.driver {
-            Driver::Postgres | Driver::MySql | Driver::Sqlite => {
-                Connection::Sql(sql::SqlConn::connect(cfg).await?)
+        // Over SSH, the driver connects to the tunnel's local end instead.
+        let (tunnel, cfg) = match &cfg.ssh {
+            Some(ssh) if cfg.driver != Driver::Sqlite => {
+                let t = ssh::Tunnel::open(ssh, &cfg.host, cfg.port).await?;
+                let mut local = cfg.clone();
+                local.host = "127.0.0.1".into();
+                local.port = t.port;
+                (Some(t), local)
             }
-            Driver::Redis => Connection::Redis(redis_kv::RedisConn::connect(cfg).await?),
-            Driver::Mongo => Connection::Mongo(mongo::MongoConn::connect(cfg).await?),
+            _ => (None, cfg.clone()),
+        };
+        let cfg = &cfg;
+        let inner = match cfg.driver {
+            Driver::Postgres | Driver::MySql | Driver::Sqlite => {
+                Conn::Sql(sql::SqlConn::connect(cfg).await?)
+            }
+            Driver::Redis => Conn::Redis(redis_kv::RedisConn::connect(cfg).await?),
+            Driver::Mongo => Conn::Mongo(mongo::MongoConn::connect(cfg).await?),
+        };
+        Ok(Connection {
+            inner,
+            _tunnel: tunnel,
         })
     }
 
     pub async fn list_objects(&self) -> Result<Vec<DbObject>> {
-        match self {
-            Connection::Sql(c) => c.list_objects().await,
-            Connection::Redis(c) => c.list_objects().await,
-            Connection::Mongo(c) => c.list_objects().await,
+        match &self.inner {
+            Conn::Sql(c) => c.list_objects().await,
+            Conn::Redis(c) => c.list_objects().await,
+            Conn::Mongo(c) => c.list_objects().await,
         }
     }
 
     /// Every (table, column) in the current database, for autocomplete.
     /// Only SQL backends have a fixed schema; the others return nothing.
     pub async fn all_columns(&self) -> Result<Vec<(String, String, String)>> {
-        match self {
-            Connection::Sql(c) => c.all_columns().await,
-            Connection::Redis(_) | Connection::Mongo(_) => Ok(vec![]),
+        match &self.inner {
+            Conn::Sql(c) => c.all_columns().await,
+            Conn::Redis(_) | Conn::Mongo(_) => Ok(vec![]),
         }
     }
 
     /// The Postgres schema chosen with `set_schema`, if any.
     pub fn current_schema(&self) -> Option<String> {
-        match self {
-            Connection::Sql(c) => c.current_schema(),
+        match &self.inner {
+            Conn::Sql(c) => c.current_schema(),
             _ => None,
         }
     }
@@ -369,52 +397,52 @@ impl Connection {
     /// Postgres: make `schema` the default for unqualified names (None =
     /// server default). No-op for other databases.
     pub async fn set_schema(&mut self, schema: Option<String>) -> Result<()> {
-        match self {
-            Connection::Sql(c) => c.set_schema(schema).await,
+        match &mut self.inner {
+            Conn::Sql(c) => c.set_schema(schema).await,
             _ => Ok(()),
         }
     }
 
     pub async fn databases(&self) -> Result<Vec<String>> {
-        match self {
-            Connection::Sql(c) => c.databases().await,
-            Connection::Redis(c) => c.databases().await,
-            Connection::Mongo(c) => c.databases().await,
+        match &self.inner {
+            Conn::Sql(c) => c.databases().await,
+            Conn::Redis(c) => c.databases().await,
+            Conn::Mongo(c) => c.databases().await,
         }
     }
 
     /// Switch the active database / schema (like ⌘K in TablePlus).
     pub async fn use_database(&mut self, name: &str) -> Result<()> {
-        match self {
-            Connection::Sql(c) => c.use_database(name).await,
-            Connection::Redis(c) => c.use_database(name).await,
-            Connection::Mongo(c) => c.use_database(name),
+        match &mut self.inner {
+            Conn::Sql(c) => c.use_database(name).await,
+            Conn::Redis(c) => c.use_database(name).await,
+            Conn::Mongo(c) => c.use_database(name),
         }
     }
 
     pub fn current_database(&self) -> String {
-        match self {
-            Connection::Sql(c) => c.current_database(),
-            Connection::Redis(c) => c.current_database(),
-            Connection::Mongo(c) => c.current_database(),
+        match &self.inner {
+            Conn::Sql(c) => c.current_database(),
+            Conn::Redis(c) => c.current_database(),
+            Conn::Mongo(c) => c.current_database(),
         }
     }
 
     pub async fn structure(&self, obj: &DbObject) -> Result<Structure> {
-        match self {
-            Connection::Sql(c) => c.structure(obj).await,
-            Connection::Redis(c) => c.structure(obj),
-            Connection::Mongo(c) => c.structure(obj).await,
+        match &self.inner {
+            Conn::Sql(c) => c.structure(obj).await,
+            Conn::Redis(c) => c.structure(obj),
+            Conn::Mongo(c) => c.structure(obj).await,
         }
     }
 
     /// Returns the page of rows plus the total row count (for the pager).
     pub async fn fetch_table(&self, q: &TableQuery) -> Result<(QueryResult, Option<u64>)> {
         let start = Instant::now();
-        let (mut res, total) = match self {
-            Connection::Sql(c) => c.fetch_table(q).await?,
-            Connection::Redis(c) => c.fetch_table(q).await?,
-            Connection::Mongo(c) => c.fetch_table(q).await?,
+        let (mut res, total) = match &self.inner {
+            Conn::Sql(c) => c.fetch_table(q).await?,
+            Conn::Redis(c) => c.fetch_table(q).await?,
+            Conn::Mongo(c) => c.fetch_table(q).await?,
         };
         res.elapsed_ms = start.elapsed().as_millis();
         Ok((res, total))
@@ -433,10 +461,10 @@ impl Connection {
         cancel: &Cancel,
     ) -> Result<Vec<QueryResult>> {
         let run = async {
-            match self {
-                Connection::Sql(c) => c.execute(text, cancel).await,
-                Connection::Redis(c) => c.execute(text).await,
-                Connection::Mongo(c) => c.execute(text).await,
+            match &self.inner {
+                Conn::Sql(c) => c.execute(text, cancel).await,
+                Conn::Redis(c) => c.execute(text).await,
+                Conn::Mongo(c) => c.execute(text).await,
             }
         };
         // SQL batches watch `cancel` themselves, to clean up the connection.
@@ -448,10 +476,10 @@ impl Connection {
 
     /// Human-readable preview of what `commit` will run.
     pub fn preview(&self, obj: &DbObject, columns: &[ColumnInfo], changes: &[Change]) -> String {
-        match self {
-            Connection::Sql(c) => c.preview(obj, columns, changes),
-            Connection::Redis(_) => redis_kv::preview(changes),
-            Connection::Mongo(_) => mongo::preview(obj, changes),
+        match &self.inner {
+            Conn::Sql(c) => c.preview(obj, columns, changes),
+            Conn::Redis(_) => redis_kv::preview(changes),
+            Conn::Mongo(_) => mongo::preview(obj, changes),
         }
     }
 
@@ -462,39 +490,39 @@ impl Connection {
         columns: &[ColumnInfo],
         changes: &[Change],
     ) -> Result<()> {
-        match self {
-            Connection::Sql(c) => c.commit(obj, columns, changes).await,
-            Connection::Redis(c) => c.commit(changes).await,
-            Connection::Mongo(c) => c.commit(obj, changes).await,
+        match &self.inner {
+            Conn::Sql(c) => c.commit(obj, columns, changes).await,
+            Conn::Redis(c) => c.commit(changes).await,
+            Conn::Mongo(c) => c.commit(obj, changes).await,
         }
     }
 
     /// Whether `commit` is all-or-nothing. MongoDB (standalone) isn't: a
     /// failed commit may have saved some changes.
     pub fn commits_atomically(&self) -> bool {
-        !matches!(self, Connection::Mongo(_))
+        !matches!(self.inner, Conn::Mongo(_))
     }
 
     pub async fn drop_object(&self, obj: &DbObject) -> Result<()> {
-        match self {
-            Connection::Sql(c) => c.drop_object(obj).await,
-            Connection::Redis(_) => anyhow::bail!("not supported for Redis"),
-            Connection::Mongo(c) => c.drop_object(obj).await,
+        match &self.inner {
+            Conn::Sql(c) => c.drop_object(obj).await,
+            Conn::Redis(_) => anyhow::bail!("not supported for Redis"),
+            Conn::Mongo(c) => c.drop_object(obj).await,
         }
     }
 
     pub async fn truncate(&self, obj: &DbObject) -> Result<()> {
-        match self {
-            Connection::Sql(c) => c.truncate(obj).await,
-            Connection::Redis(_) => anyhow::bail!("not supported for Redis"),
-            Connection::Mongo(c) => c.truncate(obj).await,
+        match &self.inner {
+            Conn::Sql(c) => c.truncate(obj).await,
+            Conn::Redis(_) => anyhow::bail!("not supported for Redis"),
+            Conn::Mongo(c) => c.truncate(obj).await,
         }
     }
 
     pub async fn close(&self) {
-        match self {
-            Connection::Sql(c) => c.close().await,
-            Connection::Redis(_) | Connection::Mongo(_) => {}
+        match &self.inner {
+            Conn::Sql(c) => c.close().await,
+            Conn::Redis(_) | Conn::Mongo(_) => {}
         }
     }
 }

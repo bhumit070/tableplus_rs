@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+use crate::db::ssh::{SshAuth, SshConfig};
 use crate::db::{ConnectionConfig, Driver, EnvTag};
 use crate::rncryptor;
 
@@ -20,8 +21,9 @@ pub struct ImportReport {
     pub existing: usize,
     /// Drivers Tabula doesn't support yet, e.g. "SQLServer".
     pub unsupported: Vec<String>,
-    /// Imported, but they connect over SSH, which isn't supported yet.
-    pub needs_ssh: Vec<String>,
+    /// Imported SSH connections that log in with a private key: TablePlus
+    /// exports don't include the key, so the default ~/.ssh keys are used.
+    pub ssh_key: Vec<String>,
 }
 
 pub fn tableplus_store() -> PathBuf {
@@ -113,7 +115,25 @@ fn convert(d: &Map<String, Value>) -> std::result::Result<(ConnectionConfig, boo
         .unwrap_or_default()
         .to_string();
     c.id = stable_id(d, &c);
-    Ok((c, int(d, "isOverSSH") != 0))
+    let key = int(d, "isUsePrivateKey") != 0;
+    if int(d, "isOverSSH") != 0 {
+        c.ssh = Some(SshConfig {
+            host: s(d, "ServerAddress"),
+            port: s(d, "ServerPort").parse().unwrap_or(22),
+            user: s(d, "ServerUser"),
+            auth: if key { SshAuth::Key } else { SshAuth::Password },
+            key_path: String::new(),
+            secret: if key {
+                String::new()
+            } else {
+                d.get("ServerPassword")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            },
+        });
+    }
+    Ok((c, key && int(d, "isOverSSH") != 0))
 }
 
 /// Normalizes JSON or plist (a list of connections, or one) to JSON objects.
@@ -197,7 +217,7 @@ pub fn parse(
                     continue;
                 }
                 if ssh {
-                    report.needs_ssh.push(c.display_name());
+                    report.ssh_key.push(c.display_name());
                 }
                 report.added.push(c);
             }
@@ -231,10 +251,10 @@ impl ImportReport {
                 kinds.join(", ")
             ));
         }
-        if !self.needs_ssh.is_empty() {
+        if !self.ssh_key.is_empty() {
             parts.push(format!(
-                "{} use SSH, which isn't supported yet",
-                self.needs_ssh.len()
+                "{} use an SSH key: pick the key file when editing them (default: ~/.ssh)",
+                self.ssh_key.len()
             ));
         }
         let mut out = parts.join(" · ") + ".";
@@ -272,7 +292,9 @@ mod tests {
             ),
             conn(
                 "MySQL",
-                json!({"isOverSSH": 1, "tLSMode": 0, "DatabasePort": 3307})
+                json!({"isOverSSH": 1, "tLSMode": 0, "DatabasePort": 3307,
+                    "ServerAddress": "bastion.example.test", "ServerPort": "2222",
+                    "ServerUser": "ops", "ServerPassword": "tunnel-pw", "isUsePrivateKey": 0})
             ),
             conn("SQLServer", json!({})),
         ]);
@@ -290,11 +312,19 @@ mod tests {
         assert_eq!(pg.password, "s3cret");
         assert_eq!(r.added[1].file, "/tmp/x.db");
         assert_eq!((r.added[2].port, r.added[2].ssl), (3307, false));
-        assert_eq!(r.needs_ssh, vec!["MySQL conn"]);
+        let ssh = r.added[2].ssh.as_ref().expect("ssh imported");
+        assert_eq!(
+            (ssh.host.as_str(), ssh.port, ssh.user.as_str(), ssh.auth),
+            ("bastion.example.test", 2222, "ops", SshAuth::Password)
+        );
+        assert_eq!(ssh.secret, "tunnel-pw");
+        assert!(r.ssh_key.is_empty());
+        assert!(r.added[0].ssh.is_none());
         assert_eq!(r.unsupported, vec!["SQLServer"]);
         assert!(r.summary().contains("1 password(s) saved"));
         // Passwords never reach connections.json.
-        assert!(!serde_json::to_string(&r.added).unwrap().contains("s3cret"));
+        let json = serde_json::to_string(&r.added).unwrap();
+        assert!(!json.contains("s3cret") && !json.contains("tunnel-pw"));
     }
 
     #[test]

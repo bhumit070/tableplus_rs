@@ -720,3 +720,30 @@ async fn mysql_foreign_keys() {
         fk_scenario(Driver::MySql).await;
     }
 }
+
+/// Postgres through an SSH tunnel (in-process SSH server → the test container).
+#[tokio::test]
+async fn postgres_over_ssh() {
+    if !it_enabled() {
+        return;
+    }
+    let (ssh_port, _) = ssh::test_server::start(None).await;
+    let mut c = cfg(Driver::Postgres);
+    c.ssh = Some(ssh::SshConfig {
+        host: "127.0.0.1".into(),
+        port: ssh_port,
+        user: ssh::test_server::USER.into(),
+        auth: ssh::SshAuth::Password,
+        key_path: String::new(),
+        secret: ssh::test_server::PASSWORD.into(),
+    });
+    let err = Connection::connect(&c).await.err().expect("host not trusted yet");
+    err.downcast_ref::<ssh::UnknownHostKey>().unwrap().trust().unwrap();
+    let conn = Connection::connect(&c).await.expect("connect over ssh");
+    let r = conn.execute("select 40 + 2").await.unwrap();
+    assert_eq!(r[0].rows[0][0].as_deref(), Some("42"));
+    // The pool opens several connections through the same tunnel.
+    let (a, b) = tokio::join!(conn.execute("select 1"), conn.execute("select 2"));
+    assert!(a.is_ok() && b.is_ok());
+    conn.close().await;
+}

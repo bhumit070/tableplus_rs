@@ -59,7 +59,7 @@ impl Home {
     }
 
     fn upsert(&mut self, cfg: &ConnectionConfig, window: &mut Window, cx: &mut Context<Self>) {
-        if let Err(e) = store::set_password(&cfg.id, &cfg.password) {
+        if let Err(e) = store::save_secrets(cfg) {
             window.push_notification(
                 Notification::warning(format!("Couldn't store password in Keychain: {e:#}")),
                 cx,
@@ -81,8 +81,8 @@ impl Home {
     ) {
         let is_new = cfg.is_none();
         let mut cfg = cfg.unwrap_or_else(|| ConnectionConfig::new(Driver::Postgres));
-        if !is_new && cfg.password.is_empty() {
-            cfg.password = store::password(&cfg.id);
+        if !is_new {
+            store::load_secrets(&mut cfg);
         }
         let form = cx.new(|cx| ConnForm::new(cfg, window, cx));
         let home = cx.entity().downgrade();
@@ -137,9 +137,7 @@ impl Home {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if cfg.password.is_empty() {
-            cfg.password = store::password(&cfg.id);
-        }
+        store::load_secrets(&mut cfg);
         self.connecting = Some(cfg.id.clone());
         cx.notify();
         let home = cx.entity().downgrade();
@@ -203,16 +201,19 @@ impl Home {
             }
         };
         for c in &report.added {
-            if !c.password.is_empty() {
-                if let Err(e) = store::set_password(&c.id, &c.password) {
-                    window.push_notification(Notification::warning(format!("Keychain: {e:#}")), cx);
-                }
+            let has_secret =
+                !c.password.is_empty() || c.ssh.as_ref().is_some_and(|s| !s.secret.is_empty());
+            if has_secret && let Err(e) = store::save_secrets(c) {
+                window.push_notification(Notification::warning(format!("Keychain: {e:#}")), cx);
             }
         }
         // Drop passwords from memory; they're read from the Keychain on connect.
         self.connections
             .extend(report.added.iter().cloned().map(|mut c| {
                 c.password.clear();
+                if let Some(ssh) = &mut c.ssh {
+                    ssh.secret.clear();
+                }
                 c
             }));
         self.persist(window, cx);
@@ -309,9 +310,9 @@ impl Home {
 
     fn duplicate(&mut self, cfg: &ConnectionConfig, window: &mut Window, cx: &mut Context<Self>) {
         let mut copy = cfg.clone();
+        store::load_secrets(&mut copy);
         copy.id = uuid::Uuid::new_v4().to_string();
         copy.name = format!("{} copy", cfg.display_name());
-        copy.password = store::password(&cfg.id);
         self.upsert(&copy, window, cx);
     }
 
