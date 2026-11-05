@@ -23,6 +23,8 @@ pub struct Home {
     pub connections: Vec<ConnectionConfig>,
     search: Entity<InputState>,
     pub connecting: Option<String>,
+    /// Set when connections.json couldn't be read (it's kept aside).
+    load_warning: Option<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -36,9 +38,11 @@ impl Home {
                 }
             }),
         ];
+        let (connections, load_warning) = store::load();
         Self {
             app,
-            connections: store::load(),
+            connections,
+            load_warning,
             search,
             connecting: None,
             _subs: subs,
@@ -590,6 +594,17 @@ impl Render for Home {
                                 .on_click(cx.listener(|this, _, window, cx| this.open_form(None, window, cx))),
                         ),
                 )
+                .when_some(self.load_warning.clone(), |d, w| {
+                    d.child(
+                        div()
+                            .p_3()
+                            .rounded_md()
+                            .text_sm()
+                            .bg(theme.warning.opacity(0.15))
+                            .text_color(theme.warning)
+                            .child(w),
+                    )
+                })
                 .child(list),
         )
     }

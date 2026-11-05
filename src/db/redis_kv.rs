@@ -351,10 +351,25 @@ impl RedisConn {
         };
         let mut pipe = redis::pipe();
         pipe.atomic();
+        // Keys this commit will create, so two changes can't claim one name.
+        let mut claimed = std::collections::HashSet::new();
+        let mut ensure_free = async |k: &str, con: &mut MultiplexedConnection| -> Result<()> {
+            if k.is_empty() {
+                bail!("keys can't be empty");
+            }
+            let exists: bool = redis::cmd("EXISTS").arg(k).query_async(con).await?;
+            if exists || !claimed.insert(k.to_string()) {
+                bail!("key {k:?} already exists; nothing was changed");
+            }
+            Ok(())
+        };
         for ch in changes {
             match ch {
                 Change::Update { key, set } => {
                     let k = key_of(key);
+                    // Value / TTL edits apply to the current name; the rename
+                    // goes last, or they'd land on the old (now gone) key.
+                    let mut rename_to = None;
                     for (col, v) in set {
                         match col.as_str() {
                             "value" => {
@@ -378,13 +393,14 @@ impl RedisConn {
                                     pipe.cmd("PERSIST").arg(&k);
                                 }
                             },
-                            "key" => {
-                                pipe.cmd("RENAME")
-                                    .arg(&k)
-                                    .arg(v.clone().unwrap_or_default());
-                            }
+                            "key" => rename_to = Some(v.clone().unwrap_or_default()),
                             _ => bail!("column {col} is read-only"),
                         }
+                    }
+                    if let Some(new) = rename_to.filter(|n| *n != k) {
+                        ensure_free(&new, &mut con).await?;
+                        // NX: never overwrite, even if the key appeared just now.
+                        pipe.cmd("RENAMENX").arg(&k).arg(&new);
                     }
                 }
                 Change::Insert { values } => {
@@ -397,9 +413,11 @@ impl RedisConn {
                     let Some(k) = get("key") else {
                         bail!("new rows need a key")
                     };
+                    ensure_free(&k, &mut con).await?;
                     pipe.cmd("SET")
                         .arg(&k)
-                        .arg(get("value").unwrap_or_default());
+                        .arg(get("value").unwrap_or_default())
+                        .arg("NX");
                     if let Some(n) = get("ttl")
                         .and_then(|s| s.parse::<i64>().ok())
                         .filter(|n| *n > 0)
@@ -428,14 +446,17 @@ pub fn preview(changes: &[Change]) -> String {
     for ch in changes {
         match ch {
             Change::Update { key, set } => {
+                // Same order as `commit`: the rename goes last.
+                let mut rename = None;
                 for (col, v) in set {
                     let v = v.clone().unwrap_or_default();
-                    lines.push(match col.as_str() {
-                        "value" => format!("SET {:?} {v:?} KEEPTTL", key_of(key)),
-                        "ttl" => format!("EXPIRE {:?} {v}", key_of(key)),
-                        _ => format!("RENAME {:?} {v:?}", key_of(key)),
-                    });
+                    match col.as_str() {
+                        "value" => lines.push(format!("SET {:?} {v:?} KEEPTTL", key_of(key))),
+                        "ttl" => lines.push(format!("EXPIRE {:?} {v}", key_of(key))),
+                        _ => rename = Some(format!("RENAMENX {:?} {v:?}", key_of(key))),
+                    }
                 }
+                lines.extend(rename);
             }
             Change::Insert { values } => {
                 let get = |c: &str| {
@@ -445,7 +466,7 @@ pub fn preview(changes: &[Change]) -> String {
                         .and_then(|(_, v)| v.clone())
                         .unwrap_or_default()
                 };
-                lines.push(format!("SET {:?} {:?}", get("key"), get("value")));
+                lines.push(format!("SET {:?} {:?} NX", get("key"), get("value")));
             }
             Change::Delete { key } => lines.push(format!("DEL {:?}", key_of(key))),
         }

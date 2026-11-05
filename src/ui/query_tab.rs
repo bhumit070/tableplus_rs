@@ -5,22 +5,23 @@ use std::rc::Rc;
 
 use gpui::{
     App, ClipboardItem, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement,
-    Render, SharedString, Styled, Window, div, prelude::*, px, rems,
+    Render, SharedString, Styled, Subscription, Window, div, prelude::*, px, rems,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Editor, EditorState};
 use gpui_component::menu::PopupMenuItem;
 use gpui_component::notification::Notification;
 use gpui_component::tab::{Tab, TabBar};
-use gpui_component::table::TableState;
+use gpui_component::table::{TableEvent, TableState};
 use gpui_component::{
     ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, resizable_panel, v_flex, v_resizable,
 };
 use gpui_kit_assets::IconName;
 
+use super::cell_edit::{self, EditStart};
 use super::grid::{Grid, data_table};
-use super::{RunQuery, Shared, is_read_only};
-use crate::db::{Driver, EnvTag, QueryResult};
+use super::{RunQuery, Shared};
+use crate::db::{ColumnInfo, DbObject, Driver, EnvTag, ObjectKind, QueryResult};
 use crate::runtime;
 
 pub struct QueryTab {
@@ -34,6 +35,57 @@ pub struct QueryTab {
     error: Option<String>,
     elapsed: u128,
     focus: FocusHandle,
+    /// The text last run, re-run after committing edits.
+    last_run: String,
+    /// Set when the shown result comes from one table and can be edited.
+    target: Option<EditTarget>,
+    /// Why the shown result is read-only, if it is.
+    edit_note: Option<String>,
+    /// Bumped per shown result; drops stale table lookups.
+    edit_gen: u64,
+    edit_sub: Option<Subscription>,
+    _subs: Vec<Subscription>,
+}
+
+#[derive(Clone)]
+struct EditTarget {
+    obj: DbObject,
+    columns: Vec<ColumnInfo>,
+}
+
+/// Which result columns are real table columns (editable), and which are
+/// primary-key columns; or why the result can't be edited.
+fn map_columns(
+    result_cols: &[String],
+    table: &str,
+    table_cols: &[ColumnInfo],
+) -> Result<(Vec<bool>, Vec<bool>), String> {
+    if table_cols.is_empty() {
+        return Err(format!("Read-only: couldn't find table {table}"));
+    }
+    let pks: Vec<&str> = table_cols
+        .iter()
+        .filter(|c| c.is_pk)
+        .map(|c| c.name.as_str())
+        .collect();
+    if pks.is_empty() {
+        return Err(format!("Read-only: {table} has no primary key"));
+    }
+    if let Some(missing) = pks.iter().find(|pk| !result_cols.iter().any(|c| c == *pk)) {
+        return Err(format!(
+            "Read-only: select the primary key ({missing}) to edit"
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let editable = result_cols
+        .iter()
+        .map(|c| table_cols.iter().any(|t| &t.name == c) && seen.insert(c.clone()))
+        .collect();
+    let pk = result_cols
+        .iter()
+        .map(|c| pks.contains(&c.as_str()))
+        .collect();
+    Ok((editable, pk))
 }
 
 fn placeholder(d: Driver) -> &'static str {
@@ -101,6 +153,13 @@ impl QueryTab {
                 .col_resizable(true)
                 .sortable(true)
         });
+        let subs = vec![
+            cx.subscribe_in(&grid, window, |this, _, ev: &TableEvent, window, cx| {
+                if let TableEvent::DoubleClickedCell(r, c) = ev {
+                    cell_edit::start_edit(this, *r, *c, EditStart::Keep, window, cx);
+                }
+            }),
+        ];
         Self {
             shared,
             title: format!("Query {n}"),
@@ -112,6 +171,12 @@ impl QueryTab {
             error: None,
             elapsed: 0,
             focus: cx.focus_handle(),
+            last_run: String::new(),
+            target: None,
+            edit_note: None,
+            edit_gen: 0,
+            edit_sub: None,
+            _subs: subs,
         }
     }
 
@@ -134,7 +199,12 @@ impl QueryTab {
         if text.trim().is_empty() {
             return;
         }
-        if self.shared.cfg.tag == EnvTag::Production && !is_read_only(&text) {
+        if self.blocked_by_edits(window, cx) {
+            return;
+        }
+        if self.shared.cfg.tag == EnvTag::Production
+            && !crate::db::safety::is_read_only(self.shared.cfg.driver, &text)
+        {
             let weak = cx.entity().downgrade();
             let shown: SharedString = text.chars().take(600).collect::<String>().into();
             window.open_alert_dialog(cx, move |d, _, _| {
@@ -154,6 +224,7 @@ impl QueryTab {
     }
 
     fn execute(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.last_run = text.clone();
         self.running = true;
         self.error = None;
         cx.notify();
@@ -193,13 +264,199 @@ impl QueryTab {
             let g = t.delegate_mut();
             g.sort = None;
             g.set_result(&res);
+            g.editable.clear();
             t.refresh(cx);
             cx.notify();
         });
+        self.detect_editable(&res, cx);
+    }
+
+    /// A result from a single-table SELECT that includes the primary key
+    /// can be edited like a table (as in TablePlus).
+    fn detect_editable(&mut self, res: &QueryResult, cx: &mut Context<Self>) {
+        self.edit_gen += 1;
+        self.target = None;
+        self.edit_note = None;
+        let driver = self.shared.cfg.driver;
+        if res.columns.is_empty()
+            || !matches!(driver, Driver::Postgres | Driver::MySql | Driver::Sqlite)
+        {
+            return;
+        }
+        let Some((schema, name)) = crate::db::target::single_table(&res.statement, driver) else {
+            self.edit_note = Some("Read-only: only single-table SELECTs can be edited".into());
+            return;
+        };
+        let schema = schema.or_else(|| match driver {
+            Driver::Postgres => Some(
+                self.shared
+                    .conn
+                    .try_read()
+                    .ok()
+                    .and_then(|c| c.current_schema())
+                    .unwrap_or_else(|| "public".into()),
+            ),
+            _ => None,
+        });
+        let obj = DbObject {
+            schema,
+            name,
+            kind: ObjectKind::Table,
+        };
+        let conn = self.shared.conn.clone();
+        let o = obj.clone();
+        let task = runtime::spawn(async move { conn.read().await.structure(&o).await });
+        let (generation, result_cols) = (self.edit_gen, res.columns.clone());
+        cx.spawn(async move |this, cx| {
+            let st = task.await;
+            this.update(cx, |this, cx| {
+                if generation != this.edit_gen {
+                    return;
+                }
+                let cols = st.map(|s| s.columns).unwrap_or_default();
+                match map_columns(&result_cols, &obj.title(), &cols) {
+                    Ok((editable, pk)) => {
+                        this.grid.update(cx, |t, cx| {
+                            let g = t.delegate_mut();
+                            g.editable = editable;
+                            g.pk = pk;
+                            cx.notify();
+                        });
+                        this.target = Some(EditTarget { obj, columns: cols });
+                    }
+                    Err(note) => this.edit_note = Some(note),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    #[cfg(test)]
+    pub fn run_for_test(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.execute(text.into(), window, cx);
+    }
+
+    #[cfg(test)]
+    pub fn is_editable(&self) -> bool {
+        self.target.is_some()
+    }
+
+    #[cfg(test)]
+    pub fn note(&self) -> Option<String> {
+        self.edit_note.clone()
+    }
+
+    #[cfg(test)]
+    pub fn cell(&self, r: usize, c: usize, cx: &App) -> Option<String> {
+        self.grid.read(cx).delegate().cell_string(r, c)
+    }
+
+    #[cfg(test)]
+    pub fn select_cell(&mut self, r: usize, c: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.grid.update(cx, |t, cx| t.set_selected_cell(r, c, cx));
+        let fh = self.grid.focus_handle(cx);
+        window.focus(&fh, cx);
+    }
+
+    #[cfg(test)]
+    pub fn running(&self) -> bool {
+        self.running
+    }
+
+    pub fn is_dirty(&self, cx: &App) -> bool {
+        self.grid.read(cx).delegate().is_dirty()
+    }
+
+    /// Re-running or switching results would drop staged edits.
+    fn blocked_by_edits(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.is_dirty(cx) {
+            window.push_notification(
+                Notification::warning("Commit (⌘S) or discard (⌘⇧⌫) your changes first"),
+                cx,
+            );
+            return true;
+        }
+        false
+    }
+
+    pub fn discard(&mut self, cx: &mut Context<Self>) {
+        self.grid.update(cx, |t, cx| {
+            t.delegate_mut().discard();
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    fn preview(&self, cx: &App) -> String {
+        let Some(t) = &self.target else {
+            return String::new();
+        };
+        let changes = self.grid.read(cx).delegate().changes();
+        self.shared
+            .conn
+            .try_read()
+            .map(|c| c.preview(&t.obj, &t.columns, &changes))
+            .unwrap_or_default()
+    }
+
+    pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cell_edit::finish_edit(self, window, cx);
+        if self.target.is_none() || !self.is_dirty(cx) {
+            return;
+        }
+        if self.shared.cfg.tag == EnvTag::Production {
+            let preview: SharedString = self.preview(cx).into();
+            let weak = cx.entity().downgrade();
+            window.open_alert_dialog(cx, move |d, _, _| {
+                let weak = weak.clone();
+                d.title("Commit to PRODUCTION?")
+                    .description(preview.clone())
+                    .on_ok(move |_, window, cx| {
+                        weak.update(cx, |t, cx| t.do_commit(window, cx)).ok();
+                        true
+                    })
+            });
+        } else {
+            self.do_commit(window, cx);
+        }
+    }
+
+    fn do_commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(t) = self.target.clone() else { return };
+        let changes = self.grid.read(cx).delegate().changes();
+        let n = changes.len();
+        let conn = self.shared.conn.clone();
+        let task =
+            runtime::spawn(
+                async move { conn.read().await.commit(&t.obj, &t.columns, &changes).await },
+            );
+        cx.spawn_in(window, async move |this, cx| {
+            let res = task.await;
+            this.update_in(cx, |this, window, cx| match res {
+                Ok(()) => {
+                    window.push_notification(
+                        Notification::success(format!("Committed {n} change(s)")),
+                        cx,
+                    );
+                    // Show what's saved now.
+                    this.discard(cx);
+                    let text = this.last_run.clone();
+                    this.execute(text, window, cx);
+                }
+                Err(e) => window.push_notification(
+                    Notification::error(format!("{e:#}")).title("Commit failed"),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn render_results(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
+        let theme = cx.theme().clone();
         let current = self.results.get(self.active);
         let summary = match current {
             _ if self.running => "Running…".to_string(),
@@ -232,7 +489,7 @@ impl QueryTab {
                 .child(summary.clone())
                 .into_any_element()
         } else {
-            data_table(&self.grid, cx).into_any_element()
+            cell_edit::editable(data_table(&self.grid, cx), cx).into_any_element()
         };
         v_flex()
             .size_full()
@@ -253,7 +510,10 @@ impl QueryTab {
                                 .collect::<String>();
                             Tab::new().label(format!("{}: {first}", i + 1))
                         }))
-                        .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                        .on_click(cx.listener(|this, ix: &usize, window, cx| {
+                            if *ix == this.active || this.blocked_by_edits(window, cx) {
+                                return;
+                            }
                             this.active = *ix;
                             this.show_active(cx);
                             cx.notify();
@@ -268,10 +528,61 @@ impl QueryTab {
                     .border_t_1()
                     .border_color(theme.border)
                     .bg(theme.title_bar)
+                    .gap_1()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child(summary),
+                    .child(summary)
+                    .child(div().flex_1())
+                    .map(|bar| {
+                        let pending = self.grid.read(cx).delegate().change_count();
+                        if pending > 0 {
+                            bar.child(
+                                Button::new("discard-result")
+                                    .label("Discard")
+                                    .ghost()
+                                    .xsmall()
+                                    .on_click(cx.listener(|this, _, _, cx| this.discard(cx))),
+                            )
+                            .child(
+                                Button::new("preview-result")
+                                    .label("Preview SQL")
+                                    .ghost()
+                                    .xsmall()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        let sql: SharedString = this.preview(cx).into();
+                                        window.open_alert_dialog(cx, move |d, _, _| {
+                                            d.title("Pending changes").description(sql.clone())
+                                        });
+                                    })),
+                            )
+                            .child(
+                                Button::new("commit-result")
+                                    .label(format!("Commit {pending}"))
+                                    .primary()
+                                    .xsmall()
+                                    .tooltip("Commit (⌘S)")
+                                    .on_click(
+                                        cx.listener(|this, _, window, cx| this.commit(window, cx)),
+                                    ),
+                            )
+                        } else {
+                            bar.when_some(self.edit_note.clone(), |b, note| b.child(note))
+                                .when(self.target.is_some(), |b| {
+                                    b.child("Editable · Enter or type to edit a cell")
+                                })
+                        }
+                    }),
             )
+    }
+}
+
+impl cell_edit::CellEditHost for QueryTab {
+    fn grid(&self) -> &Entity<TableState<Grid>> {
+        &self.grid
+    }
+
+    fn edit_sub(&mut self) -> &mut Option<Subscription> {
+        &mut self.edit_sub
     }
 }
 
@@ -325,5 +636,45 @@ impl Render for QueryTab {
                             .child(self.render_results(cx)),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn col(name: &str, pk: bool) -> ColumnInfo {
+        ColumnInfo {
+            name: name.into(),
+            data_type: "text".into(),
+            nullable: true,
+            default: None,
+            is_pk: pk,
+        }
+    }
+
+    #[test]
+    fn maps_result_columns_to_the_table() {
+        let table = [col("id", true), col("a", false), col("b", false)];
+        let cols = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Real columns are editable; computed and repeated ones aren't.
+        let (editable, pk) = map_columns(&cols(&["id", "a", "n", "a"]), "t", &table).unwrap();
+        assert_eq!(editable, [true, true, false, false]);
+        assert_eq!(pk, [true, false, false, false]);
+        assert!(
+            map_columns(&cols(&["a"]), "t", &table)
+                .unwrap_err()
+                .contains("primary key (id)")
+        );
+        assert!(
+            map_columns(&cols(&["a"]), "t", &[col("a", false)])
+                .unwrap_err()
+                .contains("no primary key")
+        );
+        assert!(
+            map_columns(&cols(&["a"]), "t", &[])
+                .unwrap_err()
+                .contains("couldn't find")
+        );
     }
 }

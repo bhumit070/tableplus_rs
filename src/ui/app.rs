@@ -19,13 +19,15 @@ use gpui_kit_assets::IconName;
 use tokio::sync::RwLock;
 
 use super::home::Home;
+use super::picker::{OnPick, PickItem, Picker};
 use super::session::Session;
 use super::settings_view::SettingsView;
 use super::table_tab::TableTab;
 use super::{
-    AddRow, CloseTab, Commit, DeleteRows, Discard, GoHome, NewConnection, NewQuery, NextTab,
-    OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase, ToggleFilter, ToggleTheme,
-    tag_color,
+    AddRow, CloseTab, Commit, Connection1, Connection2, Connection3, Connection4, Connection5,
+    Connection6, Connection7, Connection8, Connection9, DeleteRows, Discard, GoHome, NewQuery,
+    NextTab, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
+    ToggleFilter, ToggleTheme, tag_color,
 };
 use crate::db::{Connection, ConnectionConfig};
 use crate::runtime;
@@ -153,7 +155,10 @@ impl AppView {
                 (
                     Some(initials.to_uppercase()),
                     tag_color(cfg),
-                    format!("{} · {}", cfg.display_name(), cfg.driver.label()),
+                    match shortcut_hint(i) {
+                        Some(k) => format!("{} · {} ({k})", cfg.display_name(), cfg.driver.label()),
+                        None => format!("{} · {}", cfg.display_name(), cfg.driver.label()),
+                    },
                 )
             }
         };
@@ -252,8 +257,10 @@ impl Render for AppView {
                     .icon(IconName::Plus)
                     .ghost()
                     .small()
-                    .tooltip("New connection (⌘N)")
-                    .on_click(cx.listener(|this, _, window, cx| this.new_connection(window, cx))),
+                    .tooltip("Open connection (⌘⇧K)")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_connection_picker(window, cx)),
+                    ),
             );
         let dark = theme.mode.is_dark();
         v_flex()
@@ -309,9 +316,101 @@ impl Render for AppView {
     }
 }
 
+/// "⌘1"… for the first nine open connections.
+fn shortcut_hint(i: usize) -> Option<String> {
+    let m = if cfg!(target_os = "macos") {
+        "⌘"
+    } else {
+        "Ctrl+"
+    };
+    (i < 9).then(|| format!("{m}{}", i + 1))
+}
+
 impl AppView {
-    fn new_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.home.update(cx, |h, cx| h.open_form(None, window, cx));
+    /// ⌘1…⌘9: show the n-th open connection (rail order).
+    pub fn activate_session(&mut self, i: usize, cx: &mut Context<Self>) {
+        if i < self.sessions.len() {
+            self.active = Some(i);
+            cx.notify();
+        }
+    }
+
+    /// ⌘N / rail "+" / sidebar header: switch to an open connection, open a
+    /// saved one, or create a new one.
+    pub fn open_connection_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut items = Vec::new();
+        let mut open_ids = Vec::new();
+        for (i, s) in self.sessions.iter().enumerate() {
+            let cfg = &s.read(cx).shared.cfg;
+            open_ids.push(cfg.id.clone());
+            let mut detail = format!("open · {}", cfg.driver.label());
+            if let Some(k) = shortcut_hint(i) {
+                detail.push_str(&format!(" · {k}"));
+            }
+            items.push(PickItem {
+                detail: Some(detail),
+                dot: Some(tag_color(cfg)),
+                current: self.active == Some(i),
+                ..PickItem::new(format!("s:{i}"), cfg.display_name())
+            });
+        }
+        for cfg in &self.home.read(cx).connections {
+            if open_ids.contains(&cfg.id) {
+                continue;
+            }
+            let place = match cfg.driver {
+                crate::db::Driver::Sqlite => cfg.file.clone(),
+                _ => cfg.host.clone(),
+            };
+            items.push(PickItem {
+                detail: Some(format!("{} · {place}", cfg.driver.label())),
+                dot: Some(tag_color(cfg)),
+                ..PickItem::new(format!("c:{}", cfg.id), cfg.display_name())
+            });
+        }
+        items.push(PickItem::new("new", "New Connection…"));
+        let me = cx.entity().downgrade();
+        let on_pick: OnPick = Rc::new(move |id, window, cx| {
+            me.update(cx, |a, cx| a.pick_connection(&id, window, cx))
+                .ok();
+        });
+        Picker::open(
+            "Connections",
+            "Search connections…",
+            IconName::Database,
+            items,
+            on_pick,
+            window,
+            cx,
+        );
+    }
+
+    fn pick_connection(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(i) = id.strip_prefix("s:").and_then(|n| n.parse().ok()) {
+            self.activate_session(i, cx);
+            return;
+        }
+        // Connecting and the form both call back into this view, which is
+        // mid-update here, so run them once this update has finished.
+        let home = self.home.clone();
+        if let Some(cid) = id.strip_prefix("c:") {
+            let cfg = self
+                .home
+                .read(cx)
+                .connections
+                .iter()
+                .find(|c| c.id == cid)
+                .cloned();
+            if let Some(cfg) = cfg {
+                window.defer(cx, move |window, cx| {
+                    home.update(cx, |h, cx| h.connect(cfg, window, cx))
+                });
+            }
+        } else if id == "new" {
+            window.defer(cx, move |window, cx| {
+                home.update(cx, |h, cx| h.open_form(None, window, cx))
+            });
+        }
     }
 }
 
@@ -394,7 +493,19 @@ pub fn register_actions(cx: &mut App) {
             cx.notify();
         })
     });
-    cx.on_action(|_: &NewConnection, cx| with_app(cx, |a, w, cx| a.new_connection(w, cx)));
+    cx.on_action(|_: &OpenConnection, cx| with_app(cx, |a, w, cx| a.open_connection_picker(w, cx)));
+    fn go_to(cx: &mut App, i: usize) {
+        with_app(cx, move |a, _, cx| a.activate_session(i, cx));
+    }
+    cx.on_action(|_: &Connection1, cx| go_to(cx, 0));
+    cx.on_action(|_: &Connection2, cx| go_to(cx, 1));
+    cx.on_action(|_: &Connection3, cx| go_to(cx, 2));
+    cx.on_action(|_: &Connection4, cx| go_to(cx, 3));
+    cx.on_action(|_: &Connection5, cx| go_to(cx, 4));
+    cx.on_action(|_: &Connection6, cx| go_to(cx, 5));
+    cx.on_action(|_: &Connection7, cx| go_to(cx, 6));
+    cx.on_action(|_: &Connection8, cx| go_to(cx, 7));
+    cx.on_action(|_: &Connection9, cx| go_to(cx, 8));
     cx.on_action(|_: &ToggleTheme, cx| with_app(cx, |_, w, cx| toggle_theme(w, cx)));
     cx.on_action(|_: &OpenSettings, cx| with_app(cx, |_, w, cx| SettingsView::open(w, cx)));
 
@@ -412,8 +523,25 @@ pub fn register_actions(cx: &mut App) {
         })
     });
 
-    cx.on_action(|_: &Commit, cx| with_table(cx, |t, w, cx| t.commit(&Commit, w, cx)));
-    cx.on_action(|_: &Discard, cx| with_table(cx, |t, w, cx| t.discard(&Discard, w, cx)));
+    // ⌘S / ⌘⇧⌫ act on the active table, or on an editable query result.
+    cx.on_action(|_: &Commit, cx| {
+        with_session(cx, |s, w, cx| {
+            if let Some(t) = s.active_table() {
+                t.update(cx, |t, cx| t.commit(&Commit, w, cx));
+            } else if let Some(q) = s.active_query() {
+                q.update(cx, |q, cx| q.commit(w, cx));
+            }
+        })
+    });
+    cx.on_action(|_: &Discard, cx| {
+        with_session(cx, |s, w, cx| {
+            if let Some(t) = s.active_table() {
+                t.update(cx, |t, cx| t.discard(&Discard, w, cx));
+            } else if let Some(q) = s.active_query() {
+                q.update(cx, |q, cx| q.discard(cx));
+            }
+        })
+    });
     cx.on_action(|_: &ToggleFilter, cx| {
         with_table(cx, |t, w, cx| t.toggle_filter(&ToggleFilter, w, cx))
     });
@@ -507,6 +635,7 @@ mod tests {
         let (app, mut cx) = open(cx);
         let mut cfg = ConnectionConfig::new(Driver::Sqlite);
         let file = std::env::temp_dir().join(format!("tabula-ui-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
         cfg.file = file.to_string_lossy().into();
         app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
         wait_until(&mut cx, "connection", |cx| {
@@ -592,7 +721,7 @@ mod tests {
         cx.simulate_keystrokes("cmd-k");
         cx.run_until_parked();
         let row = cx
-            .debug_bounds("db-row-postgres")
+            .debug_bounds("pick-row-postgres")
             .expect("postgres row is shown");
         cx.simulate_click(row.center(), gpui::Modifiers::none());
         cx.run_until_parked();
@@ -608,5 +737,331 @@ mod tests {
         wait_until(&mut cx, "arrow + enter switch", |cx| {
             current(cx).as_deref() == Some("tabula_it_other")
         });
+    }
+
+    /// Review #3 / #4: with an uncommitted edit, paging doesn't reload (and
+    /// lose it), and switching database asks first instead of closing the tab.
+    #[gpui::test]
+    fn unsaved_edits_survive_paging_and_db_switch(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-edits-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        futures::executor::block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute("create table t (id integer primary key, a text); insert into t (a) values ('x'), ('y')")
+                .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("t").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let i = s.object_index("t").unwrap();
+            s.open_object(i, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "rows", |cx| {
+            tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 2)
+        });
+
+        tab.update(&mut cx, |t, cx| t.stage_cell(0, 1, "edited", cx));
+        assert!(tab.read_with(&cx, |t, cx| t.is_dirty(cx)));
+
+        tab.update_in(&mut cx, |t, w, cx| t.next_page_for_test(w, cx));
+        cx.run_until_parked();
+        assert_eq!(tab.read_with(&cx, |t, _| t.page()), 0, "page didn't change");
+        assert!(tab.read_with(&cx, |t, cx| t.is_dirty(cx)), "edit kept");
+
+        session.update_in(&mut cx, |s, w, cx| {
+            s.request_switch_for_test("other", w, cx)
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.update(|w, cx| w.has_active_dialog(cx)),
+            "asks before discarding"
+        );
+        assert_eq!(
+            session.read_with(&cx, |s, _| s.current_db().to_string()),
+            "main"
+        );
+        assert!(
+            session.read_with(&cx, |s, _| s.active_table().is_some()),
+            "tab still open"
+        );
+        let _ = std::fs::remove_file(file);
+    }
+
+    /// TablePlus-style inline editing: type to start, Tab to save and move,
+    /// Esc to cancel, Enter to edit the whole value, dialog for multi-line.
+    #[gpui::test]
+    fn inline_cell_editing(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-inline-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        futures::executor::block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute(
+                "create table t (id integer primary key, a text, b text); \
+                 insert into t (a, b) values ('x', 'p'), ('y', 'q'), ('line1' || char(10) || 'line2', 'r')",
+            )
+            .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("t").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let i = s.object_index("t").unwrap();
+            s.open_object(i, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "rows", |cx| {
+            tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 3)
+        });
+        let editing = |cx: &mut VisualTestContext| tab.read_with(cx, |t, cx| t.editing_cell(cx));
+        let staged =
+            |cx: &mut VisualTestContext, r, c| tab.read_with(cx, |t, cx| t.staged(r, c, cx));
+
+        // Typing on a selected cell starts editing with that character.
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(0, 1, w, cx));
+        cx.simulate_keystrokes("z");
+        cx.run_until_parked();
+        assert_eq!(editing(&mut cx), Some((0, 1)));
+        cx.simulate_input("ed");
+        // Tab saves and moves to the next cell.
+        cx.simulate_keystrokes("tab");
+        cx.run_until_parked();
+        assert_eq!(
+            staged(&mut cx, 0, 1),
+            Some(Some("zed".into())),
+            "typed key not doubled"
+        );
+        assert_eq!(editing(&mut cx), Some((0, 2)));
+        // Esc cancels: nothing staged, value unchanged.
+        cx.simulate_input("nope");
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert_eq!(editing(&mut cx), None);
+        assert_eq!(staged(&mut cx, 0, 2), None);
+
+        // Enter edits with the whole value selected, so typing replaces it.
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(1, 1, w, cx));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(editing(&mut cx), Some((1, 1)));
+        cx.simulate_input("Q");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(editing(&mut cx), None);
+        assert_eq!(staged(&mut cx, 1, 1), Some(Some("Q".into())));
+
+        // Shift+Tab goes back a cell.
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(1, 2, w, cx));
+        cx.simulate_keystrokes("enter shift-tab");
+        cx.run_until_parked();
+        assert_eq!(editing(&mut cx), Some((1, 1)));
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+
+        // Multi-line values open a dialog instead of being flattened.
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(2, 1, w, cx));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(editing(&mut cx), None);
+        assert!(
+            cx.update(|w, cx| w.has_active_dialog(cx)),
+            "multi-line editor opened"
+        );
+        let _ = std::fs::remove_file(file);
+    }
+
+    /// Editing query results, TablePlus-style: a single-table SELECT with its
+    /// primary key is editable and ⌘S saves to the table; others are read-only.
+    #[gpui::test]
+    fn query_results_are_editable(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-results-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        let db = cfg.clone();
+        futures::executor::block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute(
+                "create table t (id integer primary key, a text); \
+                 create table u (t_id int, b text); \
+                 insert into t (a) values ('x'), ('y')",
+            )
+            .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        session.update_in(&mut cx, |s, w, cx| s.new_query_for_test(w, cx));
+        let q = session.read_with(&cx, |s, _| s.active_query().unwrap());
+        let run = |cx: &mut VisualTestContext, sql: &'static str| {
+            q.update_in(cx, |q, w, cx| q.run_for_test(sql, w, cx));
+            wait_until(cx, "query", |cx| q.read_with(cx, |q, _| !q.running()));
+        };
+
+        // Read-only cases say why.
+        run(&mut cx, "select t.a, u.b from t join u on u.t_id = t.id");
+        assert!(q.read_with(&cx, |q, _| q.note().unwrap().contains("single-table")));
+        run(&mut cx, "select a from t");
+        wait_until(&mut cx, "note", |cx| {
+            q.read_with(cx, |q, _| q.note().is_some())
+        });
+        assert!(q.read_with(&cx, |q, _| q.note().unwrap().contains("primary key (id)")));
+
+        // Editable: type into a cell, Enter, ⌘S writes to the table.
+        run(&mut cx, "select * from t where id <= 2 order by id");
+        wait_until(&mut cx, "editable", |cx| {
+            q.read_with(cx, |q, _| q.is_editable())
+        });
+        q.update_in(&mut cx, |q, w, cx| q.select_cell(1, 1, w, cx));
+        cx.simulate_keystrokes("z enter");
+        cx.run_until_parked();
+        assert!(q.read_with(&cx, |q, cx| q.is_dirty(cx)), "edit staged");
+        cx.simulate_keystrokes("cmd-s");
+        wait_until(&mut cx, "commit + re-run", |cx| {
+            q.read_with(cx, |q, cx| {
+                !q.is_dirty(cx) && !q.running() && q.cell(1, 1, cx).as_deref() == Some("z")
+            })
+        });
+        let saved = futures::executor::block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&db).await?;
+            let r = c.execute("select a from t where id = 2").await?;
+            Ok(r[0].rows[0][0].clone())
+        }))
+        .unwrap();
+        assert_eq!(saved.as_deref(), Some("z"), "written to the database");
+        let _ = std::fs::remove_file(file);
+    }
+
+    /// ⌘1/⌘2 switch connections; ⌘N opens the connection picker, which
+    /// switches to an open connection or offers "New Connection…".
+    #[gpui::test]
+    fn connection_switching(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let (app, mut cx) = open(cx);
+        let mut files = vec![];
+        for name in ["tabula-ui-alpha", "tabula-ui-beta"] {
+            let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+            cfg.name = name.into();
+            let file = std::env::temp_dir().join(format!("{name}-{}.db", cfg.id));
+            std::fs::write(&file, b"").unwrap();
+            cfg.file = file.to_string_lossy().into();
+            files.push(file);
+            app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        }
+        wait_until(&mut cx, "two connections", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 2)
+        });
+        let active = |cx: &mut VisualTestContext| app.read_with(cx, |a, _| a.active);
+
+        cx.update(|window, cx| window.blur(cx));
+        cx.simulate_keystrokes("cmd-1");
+        cx.run_until_parked();
+        assert_eq!(active(&mut cx), Some(0));
+        cx.simulate_keystrokes("cmd-2");
+        cx.run_until_parked();
+        assert_eq!(active(&mut cx), Some(1));
+        cx.simulate_keystrokes("cmd-9");
+        cx.run_until_parked();
+        assert_eq!(active(&mut cx), Some(1), "no 9th connection: stays put");
+
+        // ⌘⇧K opens the same picker as ⌘N and the rail "+".
+        cx.simulate_keystrokes("cmd-shift-k");
+        cx.run_until_parked();
+        assert!(
+            cx.update(|w, cx| w.has_active_dialog(cx)),
+            "⌘⇧K opens the picker"
+        );
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(!cx.update(|w, cx| w.has_active_dialog(cx)));
+
+        // ⌘N → picker; typing a name and Enter switches to it.
+        cx.simulate_keystrokes("cmd-n");
+        cx.run_until_parked();
+        assert!(cx.update(|w, cx| w.has_active_dialog(cx)));
+        cx.simulate_input("tabula-ui-alpha");
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(active(&mut cx), Some(0));
+        assert!(!cx.update(|w, cx| w.has_active_dialog(cx)));
+
+        // "New Connection…" opens the form.
+        cx.simulate_keystrokes("cmd-n");
+        cx.run_until_parked();
+        cx.simulate_input("New Connection");
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(
+            cx.update(|w, cx| w.has_active_dialog(cx)),
+            "connection form open"
+        );
+        for f in files {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+
+    /// Picking a saved (not yet open) connection opens it. Uses the test
+    /// config folder, never the user's real saved connections.
+    #[gpui::test]
+    fn picker_opens_saved_connection(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        cfg.name = "tabula-ui-saved".into();
+        let file = std::env::temp_dir().join(format!("tabula-ui-saved-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        crate::store::save_all(&[cfg]).unwrap();
+
+        let (app, mut cx) = open(cx);
+        cx.update(|window, cx| window.blur(cx));
+        cx.simulate_keystrokes("cmd-n");
+        cx.run_until_parked();
+        cx.simulate_input("tabula-ui-saved");
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        wait_until(&mut cx, "saved connection opened", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1 && a.active == Some(0))
+        });
+        let _ = std::fs::remove_file(file);
     }
 }

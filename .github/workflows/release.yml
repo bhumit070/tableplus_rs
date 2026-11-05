@@ -1,0 +1,124 @@
+# Builds Tabula for macOS and publishes a GitHub Release whenever Rust code
+# changes on main. Version: vMAJOR.MINOR.PATCH, where MAJOR.MINOR come from
+# Cargo.toml and PATCH counts up from the latest release of that series
+# (bump Cargo.toml to 0.2.0 to start v0.2.x).
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+# One release at a time, so two pushes can't claim the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.next.outputs.tag }}
+      version: ${{ steps.next.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: next
+        name: Pick the next version
+        run: |
+          base=$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([0-9]+)\.([0-9]+)\..*"/\1.\2/')
+          # `|| true`: no tags yet for this series is fine (starts at .0).
+          last=$(git tag --list "v${base}.*" | sed -E "s/^v${base}\.//" | { grep -E '^[0-9]+$' || true; } | sort -n | tail -1)
+          patch=$(( ${last:--1} + 1 ))
+          echo "version=${base}.${patch}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${base}.${patch}" >> "$GITHUB_OUTPUT"
+          echo "Next release: v${base}.${patch}"
+
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # rust-toolchain.toml pins the compiler; rustup installs it on first use.
+      - run: cargo test --locked
+
+  build:
+    needs: [version, test]
+    runs-on: macos-14
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: apple-silicon
+          - target: x86_64-apple-darwin
+            arch: intel
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package Tabula.app
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          app=Tabula.app
+          mkdir -p "$app/Contents/MacOS"
+          cp "target/${{ matrix.target }}/release/tabula" "$app/Contents/MacOS/tabula"
+          cat > "$app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>Tabula</string>
+            <key>CFBundleDisplayName</key><string>Tabula</string>
+            <key>CFBundleIdentifier</key><string>com.github.bhumit070.tabula</string>
+            <key>CFBundleExecutable</key><string>tabula</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>LSMinimumSystemVersion</key><string>12.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          EOF
+          # Ad-hoc signature: required to run on Apple Silicon. Not notarized,
+          # so the first launch needs right-click → Open.
+          codesign --force --deep --sign - "$app"
+          ditto -c -k --keepParent "$app" "Tabula-${VERSION}-macos-${{ matrix.arch }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: Tabula-*.zip
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          gh release create "$TAG" dist/*.zip \
+            --target "$GITHUB_SHA" \
+            --title "Tabula $TAG" \
+            --generate-notes \
+            --notes "macOS builds for Apple Silicon and Intel. The app isn't notarized yet: on first launch, right-click Tabula.app → Open (or run \`xattr -dr com.apple.quarantine Tabula.app\`)."

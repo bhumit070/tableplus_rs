@@ -19,6 +19,7 @@ use gpui_component::{
 };
 use gpui_kit_assets::IconName;
 
+use super::cell_edit::{self, EditStart};
 use super::grid::{Grid, data_table};
 use super::{
     AddRow, Commit, CopyCell, DeleteRows, Discard, SearchList, SetNull, Shared, ToggleFilter,
@@ -52,6 +53,9 @@ pub struct TableTab {
     error: Option<String>,
     focus: FocusHandle,
     edit_sub: Option<Subscription>,
+    /// Bumped per reload; only the latest response is applied, so a slow
+    /// earlier page can't overwrite a newer one.
+    load_seq: u64,
     _subs: Vec<Subscription>,
 }
 
@@ -94,7 +98,7 @@ impl TableTab {
                     .selected_cell()
                     .map(|(_, c)| c)
                     .unwrap_or(0);
-                t.start_edit(row, col, window, cx);
+                cell_edit::start_edit(t, row, col, EditStart::Keep, window, cx);
             }))
             .item(item("Copy Cell", |t, _, window, cx| {
                 t.copy_cell(window, cx)
@@ -143,7 +147,7 @@ impl TableTab {
         let subs = vec![
             cx.subscribe_in(&table, window, |this, _, ev: &TableEvent, window, cx| {
                 if let TableEvent::DoubleClickedCell(r, c) = ev {
-                    this.start_edit(*r, *c, window, cx);
+                    cell_edit::start_edit(this, *r, *c, EditStart::Keep, window, cx);
                 }
             }),
         ];
@@ -165,10 +169,56 @@ impl TableTab {
             error: None,
             focus: cx.focus_handle(),
             edit_sub: None,
+            load_seq: 0,
             _subs: subs,
         };
         this.reload(cx);
         this
+    }
+
+    #[cfg(test)]
+    pub fn loaded_rows(&self, cx: &App) -> usize {
+        self.table.read(cx).delegate().base_rows
+    }
+
+    /// Selects a cell and focuses the grid, as a click would.
+    #[cfg(test)]
+    pub fn select_cell(&mut self, r: usize, c: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.table.update(cx, |t, cx| t.set_selected_cell(r, c, cx));
+        let fh = self.table.focus_handle(cx);
+        window.focus(&fh, cx);
+    }
+
+    #[cfg(test)]
+    pub fn editing_cell(&self, cx: &App) -> Option<(usize, usize)> {
+        self.table
+            .read(cx)
+            .delegate()
+            .editing
+            .as_ref()
+            .map(|(r, c, _)| (*r, *c))
+    }
+
+    /// The staged (uncommitted) value of a cell, if it was edited.
+    #[cfg(test)]
+    pub fn staged(&self, r: usize, c: usize, cx: &App) -> Option<Option<String>> {
+        self.table.read(cx).delegate().edits.get(&(r, c)).cloned()
+    }
+
+    #[cfg(test)]
+    pub fn page(&self) -> usize {
+        self.page
+    }
+
+    #[cfg(test)]
+    pub fn stage_cell(&mut self, r: usize, c: usize, v: &str, cx: &mut Context<Self>) {
+        self.table
+            .update(cx, |t, _| t.delegate_mut().set_cell(r, c, Some(v.into())));
+    }
+
+    #[cfg(test)]
+    pub fn next_page_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reload_unless_dirty(window, cx, |t| t.page += 1);
     }
 
     pub fn title(&self) -> String {
@@ -195,6 +245,25 @@ impl TableTab {
             .collect()
     }
 
+    /// For user-triggered reloads (paging, filters…): a reload replaces the
+    /// rows staged edits refer to, so refuse while there are any.
+    fn reload_unless_dirty(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        change: impl FnOnce(&mut Self),
+    ) {
+        if self.is_dirty(cx) {
+            window.push_notification(
+                Notification::warning("Commit (⌘S) or discard (⌘⇧⌫) your changes first"),
+                cx,
+            );
+            return;
+        }
+        change(self);
+        self.reload(cx);
+    }
+
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let grid = self.table.read(cx).delegate();
         let order = grid
@@ -218,6 +287,8 @@ impl TableTab {
         let conn = self.shared.conn.clone();
         let obj = self.object.clone();
         let need_structure = self.structure.is_none();
+        self.load_seq += 1;
+        let seq = self.load_seq;
         let task = runtime::spawn(async move {
             let c = conn.read().await;
             let st = if need_structure {
@@ -230,7 +301,12 @@ impl TableTab {
         });
         cx.spawn(async move |this, cx| {
             let res = task.await;
-            this.update(cx, |this, cx| this.apply_load(res, cx)).ok();
+            this.update(cx, |this, cx| {
+                if seq == this.load_seq {
+                    this.apply_load(res, cx);
+                }
+            })
+            .ok();
         })
         .detach();
     }
@@ -301,57 +377,10 @@ impl TableTab {
             let g = t.delegate_mut();
             g.set_result(&data);
             g.pk = g.columns.iter().map(|c| pk_names.contains(c)).collect();
+            g.editable = vec![true; g.columns.len()];
             t.refresh(cx);
             cx.notify();
         });
-        cx.notify();
-    }
-
-    fn start_edit(&mut self, r: usize, c: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.show_structure {
-            return;
-        }
-        self.finish_edit(window, cx);
-        let Some(current) = self.table.read(cx).delegate().value(r, c).cloned() else {
-            return;
-        };
-        let input =
-            cx.new(|cx| InputState::new(window, cx).default_value(current.unwrap_or_default()));
-        self.edit_sub = Some(cx.subscribe_in(
-            &input,
-            window,
-            |this, _, ev: &InputEvent, window, cx| match ev {
-                InputEvent::PressEnter { .. } | InputEvent::Blur => this.finish_edit(window, cx),
-                _ => {}
-            },
-        ));
-        input.update(cx, |i, cx| i.focus(window, cx));
-        self.table.update(cx, |t, cx| {
-            t.delegate_mut().editing = Some((r, c, input));
-            cx.notify();
-        });
-    }
-
-    fn finish_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((r, c, input)) = self
-            .table
-            .update(cx, |t, _| t.delegate_mut().editing.take())
-        else {
-            return;
-        };
-        self.edit_sub = None;
-        let text = input.read(cx).value().to_string();
-        self.table.update(cx, |t, cx| {
-            let g = t.delegate_mut();
-            // Typing into a NULL cell and leaving it empty keeps it NULL.
-            let was_null = matches!(g.value(r, c), Some(None));
-            if !(was_null && text.is_empty()) {
-                g.set_cell(r, c, Some(text));
-            }
-            cx.notify();
-        });
-        let fh = self.table.focus_handle(cx);
-        window.focus(&fh, cx);
         cx.notify();
     }
 
@@ -422,7 +451,7 @@ impl TableTab {
             t.set_selected_cell(r, 0, cx);
             r
         });
-        self.start_edit(r, 0, window, cx);
+        cell_edit::start_edit(self, r, 0, EditStart::Keep, window, cx);
     }
 
     pub fn delete_rows(&mut self, _: &DeleteRows, _window: &mut Window, cx: &mut Context<Self>) {
@@ -456,17 +485,20 @@ impl TableTab {
     }
 
     pub fn toggle_filter(&mut self, _: &ToggleFilter, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_filters = !self.show_filters;
-        if self.show_filters && self.filters.is_empty() {
-            self.add_filter(window, cx);
-        }
         if self.show_filters {
+            // Hiding clears the filters, which reloads the rows.
+            self.reload_unless_dirty(window, cx, |t| {
+                t.show_filters = false;
+                t.page = 0;
+            });
+        } else {
+            self.show_filters = true;
+            if self.filters.is_empty() {
+                self.add_filter(window, cx);
+            }
             if let Some(f) = self.filters.last() {
                 f.value.update(cx, |i, cx| i.focus(window, cx));
             }
-        } else {
-            self.page = 0;
-            self.reload(cx);
         }
         cx.notify();
     }
@@ -481,10 +513,9 @@ impl TableTab {
         let op = cx.new(|cx| SelectState::new(ops, Some(IndexPath::new(0)), window, cx));
         let value = cx.new(|cx| InputState::new(window, cx).placeholder("Value — Enter to apply"));
         self._subs.push(
-            cx.subscribe_in(&value, window, |this, _, ev: &InputEvent, _, cx| {
+            cx.subscribe_in(&value, window, |this, _, ev: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { .. } = ev {
-                    this.page = 0;
-                    this.reload(cx);
+                    this.reload_unless_dirty(window, cx, |t| t.page = 0);
                 }
             }),
         );
@@ -492,7 +523,7 @@ impl TableTab {
     }
 
     pub fn commit(&mut self, _: &Commit, window: &mut Window, cx: &mut Context<Self>) {
-        self.finish_edit(window, cx);
+        cell_edit::finish_edit(self, window, cx);
         let changes = self.table.read(cx).delegate().changes();
         if changes.is_empty() {
             return;
@@ -546,10 +577,25 @@ impl TableTab {
                     );
                     this.reload(cx);
                 }
-                Err(e) => window.push_notification(
-                    Notification::error(format!("{e:#}")).title("Commit failed"),
-                    cx,
-                ),
+                Err(e) => {
+                    let atomic = this
+                        .shared
+                        .conn
+                        .try_read()
+                        .map_or(true, |c| c.commits_atomically());
+                    let mut msg = format!("{e:#}");
+                    if !atomic {
+                        // Some changes may be saved; keeping them all staged
+                        // would apply those twice on retry.
+                        msg.push_str(". The table was reloaded to show what was saved.");
+                        this.table.update(cx, |t, cx| {
+                            t.delegate_mut().discard();
+                            cx.notify();
+                        });
+                        this.reload(cx);
+                    }
+                    window.push_notification(Notification::error(msg).title("Commit failed"), cx)
+                }
             })
             .ok();
         })
@@ -605,10 +651,11 @@ impl TableTab {
                             .icon(IconName::Minus)
                             .ghost()
                             .small()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.filters.remove(i);
-                                this.page = 0;
-                                this.reload(cx);
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.reload_unless_dirty(window, cx, |t| {
+                                    t.filters.remove(i);
+                                    t.page = 0;
+                                });
                             })),
                     )
                     .when(i == self.filters.len() - 1, |row| {
@@ -627,9 +674,8 @@ impl TableTab {
                                 .label("Apply")
                                 .primary()
                                 .small()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.page = 0;
-                                    this.reload(cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.reload_unless_dirty(window, cx, |t| t.page = 0);
                                 })),
                         )
                     })
@@ -757,9 +803,8 @@ impl TableTab {
                     .ghost()
                     .small()
                     .disabled(page == 0)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.page = this.page.saturating_sub(1);
-                        this.reload(cx);
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.reload_unless_dirty(window, cx, |t| t.page = t.page.saturating_sub(1));
                     })),
             )
             .child(div().text_xs().child(format!(
@@ -773,9 +818,8 @@ impl TableTab {
                     .ghost()
                     .small()
                     .disabled(pages.is_some_and(|p| page + 1 >= p))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.page += 1;
-                        this.reload(cx);
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.reload_unless_dirty(window, cx, |t| t.page += 1);
                     })),
             )
             .child(
@@ -784,14 +828,15 @@ impl TableTab {
                     .ghost()
                     .small()
                     .tooltip("Change page size")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let i = PAGE_SIZES
-                            .iter()
-                            .position(|s| *s == this.page_size)
-                            .unwrap_or(0);
-                        this.page_size = PAGE_SIZES[(i + 1) % PAGE_SIZES.len()];
-                        this.page = 0;
-                        this.reload(cx);
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.reload_unless_dirty(window, cx, |t| {
+                            let i = PAGE_SIZES
+                                .iter()
+                                .position(|s| *s == t.page_size)
+                                .unwrap_or(0);
+                            t.page_size = PAGE_SIZES[(i + 1) % PAGE_SIZES.len()];
+                            t.page = 0;
+                        });
                     })),
             )
             .child(
@@ -802,6 +847,16 @@ impl TableTab {
                     .tooltip("Refresh (⌘R)")
                     .on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx))),
             )
+    }
+}
+
+impl cell_edit::CellEditHost for TableTab {
+    fn grid(&self) -> &Entity<TableState<Grid>> {
+        &self.table
+    }
+
+    fn edit_sub(&mut self) -> &mut Option<Subscription> {
+        &mut self.edit_sub
     }
 }
 
@@ -836,7 +891,7 @@ impl Render for TableTab {
                 .child(div().h(rems(11.25)).child(data_table(&self.struct_idx, cx)))
                 .into_any_element()
         } else {
-            data_table(&self.table, cx).into_any_element()
+            cell_edit::editable(data_table(&self.table, cx), cx).into_any_element()
         };
         v_flex()
             .size_full()

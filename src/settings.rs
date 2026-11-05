@@ -30,10 +30,7 @@ impl Default for Settings {
 impl Global for Settings {}
 
 fn path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("tabula")
-        .join("settings.json")
+    crate::store::config_dir().join("settings.json")
 }
 
 impl Settings {

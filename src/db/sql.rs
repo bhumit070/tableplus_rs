@@ -12,7 +12,8 @@ use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow, My
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgSslMode};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow};
 use sqlx::{
-    AssertSqlSafe, Column, Either, Executor, Row, SqlSafeStr, Statement, TypeInfo, ValueRef,
+    AssertSqlSafe, Column, Connection as _, Either, Executor, Row, SqlSafeStr, Statement, TypeInfo,
+    ValueRef,
 };
 
 use super::split::split_statements;
@@ -33,6 +34,23 @@ pub struct SqlConn {
     database: String,
     /// Postgres schema put first on `search_path`; `None` = server default.
     schema: Option<String>,
+}
+
+/// SSL checkbox → mode. "Verify" checks the certificate and host name.
+fn pg_ssl_mode(cfg: &ConnectionConfig) -> PgSslMode {
+    match (cfg.ssl, cfg.ssl_verify) {
+        (true, true) => PgSslMode::VerifyFull,
+        (true, false) => PgSslMode::Require,
+        (false, _) => PgSslMode::Prefer,
+    }
+}
+
+fn my_ssl_mode(cfg: &ConnectionConfig) -> MySqlSslMode {
+    match (cfg.ssl, cfg.ssl_verify) {
+        (true, true) => MySqlSslMode::VerifyIdentity,
+        (true, false) => MySqlSslMode::Required,
+        (false, _) => MySqlSslMode::Preferred,
+    }
 }
 
 fn pg_ident(s: &str) -> String {
@@ -138,6 +156,97 @@ macro_rules! run_raw {
     }};
 }
 
+/// What a batch of editor statements did to its connection.
+#[derive(Default, Debug, PartialEq)]
+struct SessionEffects {
+    /// A transaction was started and not yet ended.
+    tx_open: bool,
+    /// Session state changed (SET, USE, temp tables…), so the connection
+    /// must not go back to the shared pool.
+    dirty: bool,
+}
+
+impl SessionEffects {
+    fn observe(&mut self, stmt: &str) {
+        let lower = stmt.to_ascii_lowercase();
+        let words: Vec<&str> = lower.split_whitespace().take(3).collect();
+        match words.as_slice() {
+            ["begin", ..] | ["start", "transaction", ..] => self.tx_open = true,
+            // `rollback to savepoint` keeps the transaction open.
+            ["rollback", "to", ..] => {}
+            ["commit", ..] | ["end", ..] | ["rollback", ..] | ["abort", ..] => self.tx_open = false,
+            ["set", ..]
+            | ["use", ..]
+            | ["reset", ..]
+            | ["declare", ..]
+            | ["prepare", ..]
+            | ["listen", ..]
+            | ["lock", ..]
+            | ["attach", ..]
+            | ["detach", ..] => self.dirty = true,
+            ["create", "temp" | "temporary", ..] | ["create", "local" | "global", ..] => {
+                self.dirty = true
+            }
+            ["pragma", ..] if lower.contains('=') => self.dirty = true,
+            _ => {}
+        }
+        if lower.contains("set_config(") {
+            self.dirty = true;
+        }
+    }
+}
+
+/// Runs editor statements on one pooled connection, so `BEGIN … ROLLBACK`
+/// and session settings apply to the statements that follow them.
+/// Afterwards: a transaction left open is rolled back (and reported), and a
+/// connection whose session changed or errored is closed rather than
+/// returned to the pool, where it would leak that state into later reads.
+macro_rules! run_batch {
+    ($pool:expr, $stmts:expr, $decode:ident) => {{
+        let stmts: Vec<String> = $stmts;
+        let n = stmts.len();
+        let mut conn = $pool.acquire().await?;
+        let mut effects = SessionEffects::default();
+        let mut out = Vec::new();
+        let mut failed: Option<(usize, anyhow::Error)> = None;
+        for (i, stmt) in stmts.into_iter().enumerate() {
+            effects.observe(&stmt);
+            let start = Instant::now();
+            let res: Result<QueryResult> = async { Ok(run_raw!(&mut *conn, stmt, $decode)) }.await;
+            match res {
+                Ok(mut r) => {
+                    r.elapsed_ms = start.elapsed().as_millis();
+                    out.push(r);
+                }
+                Err(e) => {
+                    failed = Some((i, e));
+                    break;
+                }
+            }
+        }
+        let rolled_back = effects.tx_open;
+        if rolled_back {
+            let _ = sqlx::raw_sql("rollback").execute(&mut *conn).await;
+        }
+        if effects.dirty || rolled_back || failed.is_some() {
+            let _ = conn.detach().close().await;
+        }
+        let note = if rolled_back { " The open transaction was rolled back." } else { "" };
+        if let Some((i, e)) = failed {
+            let ran = if i > 0 && !rolled_back {
+                format!(" The {i} statement(s) before it were applied.")
+            } else {
+                String::new()
+            };
+            return Err(e.context(format!("statement {} of {n} failed.{ran}{note}", i + 1)));
+        }
+        if rolled_back {
+            bail!("BEGIN without COMMIT or ROLLBACK: nothing was saved.{note} End the batch with COMMIT; to keep the changes.");
+        }
+        out
+    }};
+}
+
 /// Applies a list of (sql, params) in one transaction.
 macro_rules! run_tx {
     ($pool:expr, $stmts:expr) => {{
@@ -195,11 +304,7 @@ impl SqlConn {
                     .username(&cfg.user)
                     .password(&cfg.password)
                     .application_name("tabula")
-                    .ssl_mode(if cfg.ssl {
-                        PgSslMode::Require
-                    } else {
-                        PgSslMode::Prefer
-                    });
+                    .ssl_mode(pg_ssl_mode(cfg));
                 if !database.is_empty() {
                     o = o.database(database);
                 }
@@ -228,11 +333,7 @@ impl SqlConn {
                     .port(cfg.port)
                     .username(&cfg.user)
                     .password(&cfg.password)
-                    .ssl_mode(if cfg.ssl {
-                        MySqlSslMode::Required
-                    } else {
-                        MySqlSslMode::Preferred
-                    });
+                    .ssl_mode(my_ssl_mode(cfg));
                 if !database.is_empty() {
                     o = o.database(database);
                 }
@@ -248,9 +349,13 @@ impl SqlConn {
                 if cfg.file.is_empty() {
                     bail!("choose a SQLite database file");
                 }
+                // A typo or a moved file is an error, not a new empty database.
+                if !std::path::Path::new(&cfg.file).is_file() {
+                    bail!("SQLite file not found: {}", cfg.file);
+                }
                 let o = SqliteConnectOptions::new()
                     .filename(&cfg.file)
-                    .create_if_missing(true);
+                    .create_if_missing(false);
                 Pool::Lite(
                     SqlitePoolOptions::new()
                         .max_connections(4)
@@ -527,14 +632,12 @@ impl SqlConn {
     }
 
     pub async fn execute(&self, text: &str) -> Result<Vec<QueryResult>> {
-        let mut out = Vec::new();
-        for stmt in split_statements(text) {
-            let start = Instant::now();
-            let mut r = self.raw(stmt).await?;
-            r.elapsed_ms = start.elapsed().as_millis();
-            out.push(r);
-        }
-        Ok(out)
+        let stmts = split_statements(text, self.cfg.driver == Driver::MySql);
+        Ok(match &self.pool {
+            Pool::Pg(p) => run_batch!(p, stmts, pg_row),
+            Pool::My(p) => run_batch!(p, stmts, my_row),
+            Pool::Lite(p) => run_batch!(p, stmts, lite_row),
+        })
     }
 
     /// Builds (sql, params, must_affect_exactly_one_row) per change. With
@@ -677,5 +780,47 @@ impl SqlConn {
             Pool::My(p) => p.close().await,
             Pool::Lite(p) => p.close().await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verify_option_checks_certificates() {
+        let mut cfg = ConnectionConfig::new(Driver::Postgres);
+        assert!(matches!(pg_ssl_mode(&cfg), PgSslMode::Prefer));
+        cfg.ssl = true;
+        assert!(matches!(pg_ssl_mode(&cfg), PgSslMode::Require));
+        assert!(matches!(my_ssl_mode(&cfg), MySqlSslMode::Required));
+        cfg.ssl_verify = true;
+        assert!(matches!(pg_ssl_mode(&cfg), PgSslMode::VerifyFull));
+        assert!(matches!(my_ssl_mode(&cfg), MySqlSslMode::VerifyIdentity));
+    }
+
+    fn after(stmts: &[&str]) -> SessionEffects {
+        let mut e = SessionEffects::default();
+        for s in stmts {
+            e.observe(s);
+        }
+        e
+    }
+
+    #[test]
+    fn tracks_transactions_and_session_changes() {
+        assert!(after(&["BEGIN", "delete from t"]).tx_open);
+        assert!(!after(&["begin", "delete from t", "ROLLBACK"]).tx_open);
+        assert!(!after(&["start transaction", "update t set a=1", "commit"]).tx_open);
+        assert!(after(&["begin", "savepoint s", "rollback to savepoint s"]).tx_open);
+        assert!(after(&["SET search_path TO x"]).dirty);
+        assert!(after(&["use other_db"]).dirty);
+        assert!(after(&["create temp table x (a int)"]).dirty);
+        assert!(after(&["select set_config('a.b', '1', false)"]).dirty);
+        assert!(after(&["pragma foreign_keys = on"]).dirty);
+        assert_eq!(
+            after(&["select 1", "pragma table_info(t)", "update t set a = 1"]),
+            SessionEffects::default()
+        );
     }
 }

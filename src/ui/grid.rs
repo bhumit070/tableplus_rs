@@ -10,14 +10,18 @@ use gpui::{App, Context, Entity, IntoElement, ParentElement, Styled, Window, div
 use gpui_component::Size;
 use gpui_component::input::{Input, InputState};
 use gpui_component::menu::PopupMenu;
+use gpui_component::notification::Notification;
 use gpui_component::table::{Column, ColumnSort, DataTable, TableDelegate, TableState};
-use gpui_component::{ActiveTheme as _, Sizable as _};
+use gpui_component::{ActiveTheme as _, Sizable as _, WindowExt as _};
 
 use crate::db::{Change, QueryResult};
 
 /// A data table whose row height follows the interface font size
 /// (30px rows at the default 16px, like the library's "small" size).
-pub fn data_table<D: TableDelegate>(state: &Entity<TableState<D>>, cx: &App) -> impl IntoElement {
+pub fn data_table<D: TableDelegate>(
+    state: &Entity<TableState<D>>,
+    cx: &App,
+) -> impl IntoElement + use<D> {
     let row = (crate::settings::get(cx).ui_font_size * 1.875).round();
     div().size_full().text_sm().child(
         DataTable::new(state)
@@ -40,6 +44,8 @@ pub struct Grid {
     pub edits: BTreeMap<(usize, usize), Option<String>>,
     pub deleted: BTreeSet<usize>,
     pub editing: Option<(usize, usize, Entity<InputState>)>,
+    /// Which columns can be edited; empty = read-only grid.
+    pub editable: Vec<bool>,
     pub loading: bool,
     pub sort: Option<(usize, bool)>,
     /// Server-side sort; when unset the grid sorts the loaded rows itself.
@@ -92,6 +98,12 @@ impl Grid {
                 (longest as f32 * 7.2 + 24.).clamp(64., 380.)
             })
             .collect();
+    }
+
+    pub fn can_edit(&self, r: usize, c: usize) -> bool {
+        self.editable.get(c).copied().unwrap_or(false)
+            && r < self.rows.len()
+            && !self.deleted.contains(&r)
     }
 
     pub fn value(&self, r: usize, c: usize) -> Option<&Option<String>> {
@@ -273,6 +285,18 @@ impl TableDelegate for Grid {
         window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
+        // Staged edits point at row positions, and a sort (local or a
+        // server reload) moves the rows under them.
+        if self.is_dirty() {
+            window.push_notification(
+                Notification::warning("Commit (⌘S) or discard (⌘⇧⌫) your changes before sorting"),
+                cx,
+            );
+            // Put the header's sort arrow back.
+            let table = cx.entity();
+            window.defer(cx, move |_, cx| table.update(cx, |t, cx| t.refresh(cx)));
+            return;
+        }
         self.sort = match sort {
             ColumnSort::Ascending => Some((col_ix, true)),
             ColumnSort::Descending => Some((col_ix, false)),
@@ -280,9 +304,6 @@ impl TableDelegate for Grid {
         };
         if let Some(f) = self.on_sort.clone() {
             f(col_ix, sort, window, cx);
-            return;
-        }
-        if self.is_dirty() {
             return;
         }
         match self.sort {
@@ -304,9 +325,11 @@ impl TableDelegate for Grid {
     ) -> impl IntoElement {
         if let Some((r, c, input)) = &self.editing {
             if *r == row_ix && *c == col_ix {
+                // Borderless and cell-sized, so editing happens in place.
                 return div()
                     .size_full()
-                    .child(Input::new(input).xsmall())
+                    .key_context("CellEditor")
+                    .child(Input::new(input).appearance(false).h_full())
                     .into_any_element();
             }
         }

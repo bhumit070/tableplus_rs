@@ -51,10 +51,23 @@ On Windows/Linux, use Ctrl in place of ⌘. Shortcuts work wherever focus is.
 | ⌘R | Refresh table (or the sidebar) |
 | ⌘F | Toggle the filter bar (outside text fields) |
 | ⌘I / ⌘⌫ | Add row / delete row (⌘⌫ outside text fields) |
+| Enter / typing | Edit the selected cell (typing replaces the value) |
+| Tab / ⇧Tab | While editing: save and edit the next / previous cell |
+| Esc | While editing: cancel |
 | Ctrl+Space | Show autocomplete |
-| ⌘N / ⌘0 | New connection / connection list |
+| ⌘N or ⌘⇧K | Open a connection: switch to an open one, open a saved one, or add new |
+| ⌘1 … ⌘9 | Switch to the 1st … 9th open connection |
+| ⌘0 | Connection list |
 | ⌘= / ⌘− | Zoom in / out |
 | ⌘⇧L | Toggle light/dark theme |
+
+## Releases
+
+Every push to `main` that changes Rust code runs the tests and, if they pass,
+publishes a GitHub Release with macOS builds for Apple Silicon and Intel
+(`.github/workflows/release.yml`). Versions are `vMAJOR.MINOR.PATCH`:
+MAJOR.MINOR come from `Cargo.toml`, and PATCH counts up per release. The
+app isn't notarized yet, so on first launch right-click Tabula.app → Open.
 
 ## Building
 

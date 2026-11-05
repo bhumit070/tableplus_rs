@@ -25,6 +25,7 @@ pub struct ConnForm {
     database: Entity<InputState>,
     file: Entity<InputState>,
     ssl: bool,
+    ssl_verify: bool,
     testing: bool,
     pub status: Option<(bool, String)>,
     _subs: Vec<Subscription>,
@@ -104,6 +105,7 @@ impl ConnForm {
             database,
             file,
             ssl: cfg.ssl,
+            ssl_verify: cfg.ssl_verify,
             testing: false,
             status: None,
             _subs: subs,
@@ -136,6 +138,7 @@ impl ConnForm {
             database: v(&self.database),
             file: v(&self.file),
             ssl: self.ssl,
+            ssl_verify: self.ssl && self.ssl_verify,
             password: self.password.read(cx).value().to_string(),
         }
     }
@@ -269,6 +272,22 @@ impl Render for ConnForm {
                         })),
                     cx,
                 ))
+                .when(
+                    self.ssl && matches!(driver, Driver::Postgres | Driver::MySql),
+                    |f| {
+                        f.child(row(
+                            "",
+                            Checkbox::new("ssl-verify")
+                                .checked(self.ssl_verify)
+                                .label("Verify server certificate (recommended)")
+                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                    this.ssl_verify = *checked;
+                                    cx.notify();
+                                })),
+                            cx,
+                        ))
+                    },
+                )
             })
             .child(
                 h_flex()

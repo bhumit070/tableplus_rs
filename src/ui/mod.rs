@@ -1,9 +1,10 @@
 pub mod app;
+pub mod cell_edit;
 pub mod completion;
 pub mod conn_form;
-pub mod db_picker;
 pub mod grid;
 pub mod home;
+pub mod picker;
 pub mod query_tab;
 pub mod session;
 pub mod settings_view;
@@ -22,6 +23,10 @@ gpui::actions!(
     tabula,
     [
         RunQuery,
+        EditCell,
+        CancelCellEdit,
+        NextCell,
+        PrevCell,
         SwitchDatabase,
         Commit,
         Discard,
@@ -37,7 +42,16 @@ gpui::actions!(
         CopyCell,
         SetNull,
         GoHome,
-        NewConnection,
+        OpenConnection,
+        Connection1,
+        Connection2,
+        Connection3,
+        Connection4,
+        Connection5,
+        Connection6,
+        Connection7,
+        Connection8,
+        Connection9,
         OpenSettings,
         ZoomIn,
         ZoomOut,
@@ -99,13 +113,30 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new(sec!("shift-]"), NextTab, None),
         KeyBinding::new(sec!("shift-["), PrevTab, None),
         KeyBinding::new(sec!("0"), GoHome, None),
-        KeyBinding::new(sec!("n"), NewConnection, None),
+        KeyBinding::new(sec!("n"), OpenConnection, None),
+        KeyBinding::new(sec!("shift-k"), OpenConnection, None),
+        KeyBinding::new(sec!("1"), Connection1, None),
+        KeyBinding::new(sec!("2"), Connection2, None),
+        KeyBinding::new(sec!("3"), Connection3, None),
+        KeyBinding::new(sec!("4"), Connection4, None),
+        KeyBinding::new(sec!("5"), Connection5, None),
+        KeyBinding::new(sec!("6"), Connection6, None),
+        KeyBinding::new(sec!("7"), Connection7, None),
+        KeyBinding::new(sec!("8"), Connection8, None),
+        KeyBinding::new(sec!("9"), Connection9, None),
         KeyBinding::new(sec!("shift-l"), ToggleTheme, None),
         KeyBinding::new(sec!("q"), Quit, None),
         KeyBinding::new(sec!(","), OpenSettings, None),
         KeyBinding::new(sec!("="), ZoomIn, None),
         KeyBinding::new(sec!("+"), ZoomIn, None),
         KeyBinding::new(sec!("-"), ZoomOut, None),
+        // Inline cell editing, TablePlus-style. Enter starts editing the
+        // selected cell (the grid itself doesn't use Enter); inside the cell
+        // editor these outrank the text input's own Esc / Tab bindings.
+        KeyBinding::new("enter", EditCell, Some("EditableGrid > DataTable")),
+        KeyBinding::new("escape", CancelCellEdit, Some("CellEditor > Input")),
+        KeyBinding::new("tab", NextCell, Some("CellEditor > Input")),
+        KeyBinding::new("shift-tab", PrevCell, Some("CellEditor > Input")),
         // Copy stays local to the grid so ⌘C in text fields copies text.
         KeyBinding::new(sec!("c"), CopyCell, Some("TableTab")),
         KeyBinding::new(
@@ -114,40 +145,6 @@ pub fn key_bindings() -> Vec<KeyBinding> {
             Some("Input"),
         ),
     ]
-}
-
-/// SELECT-like statements skip the production safe-mode prompt.
-pub fn is_read_only(sql: &str) -> bool {
-    let first = sql
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty() && !l.starts_with("--"))
-        .unwrap_or("")
-        .split(|c: char| c.is_whitespace() || c == '(')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    matches!(
-        first.as_str(),
-        "select"
-            | "show"
-            | "explain"
-            | "describe"
-            | "desc"
-            | "pragma"
-            | "with"
-            | "values"
-            | "table"
-            | "db.find"
-            | "get"
-            | "keys"
-            | "scan"
-            | "hgetall"
-            | "type"
-            | "ttl"
-            | "info"
-    ) || first.starts_with("db.")
-        && (sql.contains(".find(") || sql.contains(".aggregate(") || sql.contains(".count"))
 }
 
 #[cfg(test)]
@@ -248,6 +245,17 @@ mod tests {
             &in_editor
         )));
         assert!(is::<NewQuery>(resolve(editor(), sec!("t"), &in_editor)));
+        // ⌘⇧K opens the connection picker; ⌘K stays the database picker.
+        assert!(is::<OpenConnection>(resolve(
+            editor(),
+            sec!("shift-k"),
+            &in_editor
+        )));
+        assert!(is::<OpenConnection>(resolve(
+            vec![],
+            sec!("shift-k"),
+            &["Root"]
+        )));
     }
 
     /// GitHub #12: dropdown search must actually filter.

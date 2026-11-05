@@ -32,6 +32,8 @@ fn cfg(driver: Driver) -> ConnectionConfig {
         }
         Driver::Sqlite => {
             let p = std::env::temp_dir().join(format!("tabula-it-{}.db", c.id));
+            // An empty file is a valid new SQLite database.
+            std::fs::write(&p, b"").unwrap();
             c.file = p.to_string_lossy().into();
         }
     }
@@ -51,6 +53,17 @@ fn kv(pairs: &[(&str, Option<&str>)]) -> Vec<(String, Option<String>)> {
         .iter()
         .map(|(k, v)| (k.to_string(), v.map(String::from)))
         .collect()
+}
+
+async fn row_count(c: &Connection, obj: &DbObject) -> Option<u64> {
+    let q = TableQuery {
+        object: obj.clone(),
+        filters: vec![],
+        order: None,
+        limit: 1,
+        offset: 0,
+    };
+    c.fetch_table(&q).await.unwrap().1
 }
 
 /// Shared SQL scenario: DDL, listing, structure, staged commit, filters, sort.
@@ -214,6 +227,35 @@ async fn sql_scenario(driver: Driver) {
     assert!(r[0].rows.is_empty());
     assert_eq!(r[1].affected, Some(1));
 
+    // Editor transactions run on one connection (GitHub review #1):
+    // ROLLBACK really undoes the DELETE, on every backend.
+    c.execute("BEGIN; DELETE FROM it_people; ROLLBACK")
+        .await
+        .unwrap();
+    assert_eq!(row_count(&c, &t).await, Some(2), "rolled back");
+    // A batch that leaves a transaction open is rolled back and reported.
+    let err = c.execute("BEGIN; DELETE FROM it_people").await.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("BEGIN without COMMIT"),
+        "{err:#}"
+    );
+    assert_eq!(
+        row_count(&c, &t).await,
+        Some(2),
+        "open transaction not applied"
+    );
+    // COMMIT keeps changes made inside the transaction.
+    c.execute("BEGIN; UPDATE it_people SET age = 40 WHERE age IS NULL; COMMIT")
+        .await
+        .unwrap();
+    // A failing statement mid-transaction rolls the batch back.
+    let err = c
+        .execute("BEGIN; DELETE FROM it_people; SELECT * FROM no_such_table")
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("statement 3 of 3"), "{err:#}");
+    assert_eq!(row_count(&c, &t).await, Some(2));
+
     // Database list and truncate / drop.
     let dbs = c.databases().await.unwrap();
     assert!(!dbs.is_empty());
@@ -228,6 +270,17 @@ async fn sql_scenario(driver: Driver) {
             .any(|o| o.name == "it_people")
     );
     c.close().await;
+}
+
+/// Review #13: a missing file is reported, not silently created.
+#[tokio::test]
+async fn sqlite_missing_file_is_an_error() {
+    let mut c = ConnectionConfig::new(Driver::Sqlite);
+    let p = std::env::temp_dir().join(format!("tabula-missing-{}.db", c.id));
+    c.file = p.to_string_lossy().into();
+    let err = Connection::connect(&c).await.err().expect("must fail");
+    assert!(err.to_string().contains("not found"), "{err}");
+    assert!(!p.exists(), "no empty database was created");
 }
 
 #[tokio::test]
@@ -287,6 +340,15 @@ async fn postgres_schema_switch() {
 
     c.set_schema(None).await.unwrap();
     assert!(c.execute("select id from it_orders").await.is_err());
+    // A SET in the editor doesn't leak into the shared pool (review #1):
+    // later reads on any pooled connection still see the normal path.
+    c.execute("set search_path to it_sales").await.unwrap();
+    for _ in 0..6 {
+        assert!(
+            c.execute("select id from it_orders").await.is_err(),
+            "search_path leaked"
+        );
+    }
     c.execute("drop schema it_sales cascade").await.unwrap();
 }
 
@@ -362,6 +424,50 @@ async fn redis_end_to_end() {
         set: kv(&[("value", Some("x"))]),
     }];
     assert!(c.commit(&keys, &st, &bad).await.is_err());
+    // Rename + value + TTL in one commit (review #5): the new key gets the
+    // new value and TTL, and the old key doesn't come back.
+    let rename = vec![Change::Update {
+        key: kv(&[("key", Some("it:greeting"))]),
+        set: kv(&[
+            ("key", Some("it:renamed")),
+            ("value", Some("hi again")),
+            ("ttl", Some("120")),
+        ]),
+    }];
+    c.commit(&keys, &st, &rename).await.unwrap();
+    let (res, _) = c.fetch_table(&q).await.unwrap();
+    assert!(
+        !res.rows
+            .iter()
+            .any(|r| r[0].as_deref() == Some("it:greeting")),
+        "old key gone"
+    );
+    let renamed = row("it:renamed", &res);
+    assert_eq!(renamed[3].as_deref(), Some("hi again"));
+    assert!(renamed[2].as_deref().unwrap().parse::<i64>().unwrap() > 60);
+    // Renaming onto an existing key, or adding one that exists, is refused
+    // and changes nothing (review #5, #10).
+    let clash = vec![Change::Update {
+        key: kv(&[("key", Some("it:renamed"))]),
+        set: kv(&[("key", Some("it:new")), ("value", Some("clobber"))]),
+    }];
+    assert!(c.commit(&keys, &st, &clash).await.is_err());
+    let dup = vec![Change::Insert {
+        values: kv(&[("key", Some("it:new")), ("value", Some("x"))]),
+    }];
+    assert!(c.commit(&keys, &st, &dup).await.is_err());
+    let (res, _) = c.fetch_table(&q).await.unwrap();
+    assert_eq!(
+        row("it:new", &res)[3].as_deref(),
+        Some("v"),
+        "existing key untouched"
+    );
+    assert_eq!(
+        row("it:renamed", &res)[3].as_deref(),
+        Some("hi again"),
+        "nothing applied"
+    );
+
     let r = c.execute("HGETALL it:user:1").await.unwrap();
     assert_eq!(r[0].columns, ["field", "value"]);
     c.execute("FLUSHDB").await.unwrap();
@@ -459,11 +565,35 @@ async fn mongo_end_to_end() {
         &t,
         &st.columns,
         &[Change::Delete {
-            key: vec![("_id".into(), ada_id)],
+            key: vec![("_id".into(), ada_id.clone())],
         }],
     )
     .await
     .unwrap();
-    assert_eq!(c.fetch_table(&q(vec![])).await.unwrap().1, Some(2));
+    // Deleting it again matches nothing: that's an error, not a silent
+    // success (review #11). In a mixed commit, the error says what was saved.
+    let again = [Change::Delete {
+        key: vec![("_id".into(), ada_id.clone())],
+    }];
+    assert!(c.commit(&t, &st.columns, &again).await.is_err());
+    let mixed = [
+        Change::Insert {
+            values: kv(&[("name", Some("Barbara")), ("age", Some("70"))]),
+        },
+        Change::Delete {
+            key: vec![("_id".into(), ada_id)],
+        },
+    ];
+    let err = c.commit(&t, &st.columns, &mixed).await.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("change 2 of 2 failed; the 1 before it were saved"),
+        "{err:#}"
+    );
+    assert!(!c.commits_atomically());
+    assert_eq!(
+        c.fetch_table(&q(vec![])).await.unwrap().1,
+        Some(3),
+        "the insert was saved"
+    );
     c.drop_object(&t).await.unwrap();
 }

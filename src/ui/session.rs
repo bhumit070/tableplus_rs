@@ -22,6 +22,7 @@ use gpui_component::{
 use gpui_kit_assets::IconName;
 
 use super::completion::Schema;
+use super::picker::{OnPick, PickItem, Picker};
 use super::query_tab::QueryTab;
 use super::table_tab::TableTab;
 use super::{SearchList, Shared, search_list, tag_color};
@@ -31,6 +32,16 @@ use crate::runtime;
 enum TabItem {
     Table(Entity<TableTab>),
     Query(Entity<QueryTab>),
+}
+
+impl TabItem {
+    /// Has staged edits (a table, or an editable query result).
+    fn is_dirty(&self, cx: &App) -> bool {
+        match self {
+            TabItem::Table(t) => t.read(cx).is_dirty(cx),
+            TabItem::Query(q) => q.read(cx).is_dirty(cx),
+        }
+    }
 }
 
 pub struct Session {
@@ -90,7 +101,7 @@ impl Session {
                     let SelectEvent::Confirm(Some(name)) = ev else {
                         return;
                     };
-                    this.switch_database(name.clone(), window, cx);
+                    this.request_switch_database(name.clone(), window, cx);
                 },
             ),
         ];
@@ -185,6 +196,51 @@ impl Session {
         .detach();
     }
 
+    /// Switching closes table tabs, so confirm first if any has unsaved
+    /// edits. Cancelling puts the dropdown back on the current database.
+    fn request_switch_database(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if name == self.current_db {
+            return;
+        }
+        if !self.has_unsaved(cx) {
+            self.switch_database(name, window, cx);
+            return;
+        }
+        let me = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |d, _, _| {
+            let (ok, cancel, name) = (me.clone(), me.clone(), name.clone());
+            d.title(format!("Switch to {name}?"))
+                .description("Tables with uncommitted changes will be closed and the changes lost.")
+                .on_ok(move |_, window, cx| {
+                    ok.update(cx, |s, cx| s.switch_database(name.clone(), window, cx))
+                        .ok();
+                    true
+                })
+                .on_cancel(move |_, window, cx| {
+                    cancel
+                        .update(cx, |s, cx| s.reset_db_select(window, cx))
+                        .ok();
+                    true
+                })
+        });
+    }
+
+    /// Point the sidebar dropdown back at the database actually in use.
+    fn reset_db_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ix = self
+            .databases
+            .iter()
+            .position(|d| *d == self.current_db)
+            .map(IndexPath::new);
+        self.db_select
+            .update(cx, |s, cx| s.set_selected_index(ix, window, cx));
+    }
+
     fn switch_database(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
         let conn = self.shared.conn.clone();
         let n = name.clone();
@@ -202,7 +258,10 @@ impl Session {
                     this.load_objects(window, cx);
                     window.push_notification(format!("Switched to {name}"), cx);
                 }
-                Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
+                Err(e) => {
+                    this.reset_db_select(window, cx);
+                    window.push_notification(Notification::error(format!("{e:#}")), cx)
+                }
             })
             .ok();
         })
@@ -251,23 +310,45 @@ impl Session {
         if schema == self.schema {
             return;
         }
-        self.schema = schema.clone();
-        self.rebuild_tree(cx);
-        self.refresh_completion();
+        // The sidebar changes only once queries really use the new schema,
+        // so the two can't disagree if the reconnect fails.
         let conn = self.shared.conn.clone();
-        let task = runtime::spawn(async move { conn.write().await.set_schema(schema).await });
-        cx.spawn_in(window, async move |_, cx| {
-            if let Err(e) = task.await {
-                cx.update(|window, cx| {
+        let s = schema.clone();
+        let task = runtime::spawn(async move { conn.write().await.set_schema(s).await });
+        cx.spawn_in(window, async move |this, cx| {
+            let res = task.await;
+            this.update_in(cx, |this, window, cx| match res {
+                Ok(()) => {
+                    this.schema = schema;
+                    this.rebuild_tree(cx);
+                    this.refresh_completion();
+                }
+                Err(e) => {
+                    this.reset_schema_select(window, cx);
                     window.push_notification(
                         Notification::error(format!("{e:#}")).title("Couldn't switch schema"),
                         cx,
-                    )
-                })
-                .ok();
-            }
+                    );
+                }
+            })
+            .ok();
         })
         .detach();
+    }
+
+    /// Point the Schema dropdown back at the schema actually in use.
+    fn reset_schema_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ix = match &self.schema {
+            None => 0,
+            Some(s) => self
+                .schemas
+                .iter()
+                .position(|x| x == s)
+                .map_or(0, |i| i + 1),
+        };
+        self.schema_select.update(cx, |s, cx| {
+            s.set_selected_index(Some(IndexPath::new(ix)), window, cx)
+        });
     }
 
     pub fn open_object(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -299,13 +380,28 @@ impl Session {
             window.push_notification("This connection has only one database", cx);
             return;
         }
-        let current = self.current_db.clone();
+        let items = self
+            .databases
+            .iter()
+            .map(|d| PickItem {
+                current: *d == self.current_db,
+                ..PickItem::new(d, d)
+            })
+            .collect();
         let me = cx.entity().downgrade();
-        let on_pick: super::db_picker::OnPick = Rc::new(move |name, window, cx| {
-            me.update(cx, |s, cx| s.switch_database(name, window, cx))
+        let on_pick: OnPick = Rc::new(move |name, window, cx| {
+            me.update(cx, |s, cx| s.request_switch_database(name, window, cx))
                 .ok();
         });
-        super::db_picker::DbPicker::open(self.databases.clone(), current, on_pick, window, cx);
+        Picker::open(
+            "Switch Database",
+            "Switch database…",
+            IconName::Database,
+            items,
+            on_pick,
+            window,
+            cx,
+        );
     }
 
     pub fn active_table(&self) -> Option<Entity<TableTab>> {
@@ -368,8 +464,8 @@ impl Session {
         if i >= self.tabs.len() {
             return;
         }
-        if let TabItem::Table(t) = &self.tabs[i] {
-            if t.read(cx).is_dirty(cx) {
+        {
+            if self.tabs[i].is_dirty(cx) {
                 let weak = cx.entity().downgrade();
                 window.open_alert_dialog(cx, move |d, _, _| {
                     let weak = weak.clone();
@@ -400,14 +496,37 @@ impl Session {
     }
 
     #[cfg(test)]
+    pub fn object_index(&self, name: &str) -> Option<usize> {
+        self.objects.iter().position(|o| o.name == name)
+    }
+
+    #[cfg(test)]
+    pub fn new_query_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_query(window, cx);
+    }
+
+    #[cfg(test)]
+    pub fn current_db(&self) -> &str {
+        &self.current_db
+    }
+
+    #[cfg(test)]
+    pub fn request_switch_for_test(
+        &mut self,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.request_switch_database(name.to_string(), window, cx);
+    }
+
+    #[cfg(test)]
     pub fn database_count(&self) -> usize {
         self.databases.len()
     }
 
     pub fn has_unsaved(&self, cx: &App) -> bool {
-        self.tabs
-            .iter()
-            .any(|t| matches!(t, TabItem::Table(e) if e.read(cx).is_dirty(cx)))
+        self.tabs.iter().any(|t| t.is_dirty(cx))
     }
 
     fn object_menu(
@@ -600,9 +719,11 @@ impl Session {
                     TabItem::Table(e) => {
                         (e.read(cx).title(), IconName::Table, e.read(cx).is_dirty(cx))
                     }
-                    TabItem::Query(e) => {
-                        (e.read(cx).title.clone(), IconName::SquareTerminal, false)
-                    }
+                    TabItem::Query(e) => (
+                        e.read(cx).title.clone(),
+                        IconName::SquareTerminal,
+                        e.read(cx).is_dirty(cx),
+                    ),
                 };
                 Tab::new()
                     .prefix(Icon::new(icon).small().ml_2())
@@ -679,10 +800,17 @@ impl Render for Session {
             .border_color(theme.border)
             .child(div().size(px(8.)).rounded_full().bg(tag_color(cfg)))
             .child(
-                div()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(cfg.display_name()),
+                // Opens the connection picker: switch to another open
+                // connection, open a saved one, or add a new one.
+                Button::new("switch-connection")
+                    .label(cfg.display_name())
+                    .ghost()
+                    .xsmall()
+                    .dropdown_caret(true)
+                    .tooltip("Switch connection (⌘⇧K)")
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(super::OpenConnection), cx)
+                    }),
             )
             .child(
                 div()

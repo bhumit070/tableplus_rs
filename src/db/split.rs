@@ -1,7 +1,10 @@
 //! Splits editor text into SQL statements on `;`, ignoring semicolons inside
 //! quotes, comments and Postgres dollar-quoted bodies.
 
-pub fn split_statements(sql: &str) -> Vec<String> {
+/// `backslash_escapes`: MySQL treats `\'` inside quotes as an escaped quote.
+/// Standard SQL (Postgres, SQLite) doesn't, so `'C:\'` is a complete string
+/// there; Postgres `E'…'` strings are the exception and always escape.
+pub fn split_statements(sql: &str, backslash_escapes: bool) -> Vec<String> {
     let chars: Vec<char> = sql.chars().collect();
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -11,6 +14,11 @@ pub fn split_statements(sql: &str) -> Vec<String> {
         let next = chars.get(i + 1).copied();
         match c {
             '\'' | '"' | '`' => {
+                let e_string = c == '\''
+                    && i > 0
+                    && matches!(chars[i - 1], 'e' | 'E')
+                    && (i < 2 || !(chars[i - 2].is_alphanumeric() || chars[i - 2] == '_'));
+                let escapes = c != '"' && (backslash_escapes || e_string);
                 cur.push(c);
                 i += 1;
                 while i < chars.len() {
@@ -24,7 +32,7 @@ pub fn split_statements(sql: &str) -> Vec<String> {
                         }
                         break;
                     }
-                    if chars[i] == '\\' && c != '"' {
+                    if chars[i] == '\\' && escapes {
                         if let Some(&n) = chars.get(i + 1) {
                             cur.push(n);
                             i += 1;
@@ -109,7 +117,7 @@ mod tests {
     #[test]
     fn splits_respecting_quotes_and_dollar_bodies() {
         let sql = "select ';'; -- c;\nselect 2 /* ; */;\ncreate function f() returns int as $$ select 1; $$ language sql;";
-        let s = split_statements(sql);
+        let s = split_statements(sql, false);
         assert_eq!(s.len(), 3, "{s:?}");
         assert_eq!(s[0], "select ';'");
         assert!(s[2].contains("$$ select 1; $$"));
@@ -117,6 +125,32 @@ mod tests {
 
     #[test]
     fn skips_empty_and_comment_only() {
-        assert_eq!(split_statements(" ; -- hi\n ;select 1"), vec!["select 1"]);
+        assert_eq!(
+            split_statements(" ; -- hi\n ;select 1", false),
+            vec!["select 1"]
+        );
+    }
+
+    #[test]
+    fn backslash_is_literal_except_in_mysql_and_e_strings() {
+        // Postgres / SQLite: a trailing backslash doesn't escape the quote.
+        assert_eq!(
+            split_statements(r"select 'C:\'; select 2", false),
+            [r"select 'C:\'", "select 2"]
+        );
+        // MySQL: \' is an escaped quote, so the string continues.
+        assert_eq!(
+            split_statements(r"select 'it\'s; ok'; select 2", true).len(),
+            2
+        );
+        // Postgres E'' strings escape; a column named `name` before a quote doesn't count.
+        assert_eq!(
+            split_statements(r"select E'a\'; b'; select 2", false).len(),
+            2
+        );
+        assert_eq!(
+            split_statements(r"select name'x\'; select 2", false).len(),
+            2
+        );
     }
 }

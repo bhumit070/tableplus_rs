@@ -477,44 +477,59 @@ impl MongoConn {
                 .context("documents without _id can't be edited")?;
             Ok(doc! {"_id": to_bson(v, ty("_id"))})
         };
-        // MongoDB transactions need a replica set, so changes apply in order.
-        for ch in changes {
-            match ch {
-                Change::Update { key, set } => {
-                    let mut s = Document::new();
-                    let mut unset = Document::new();
-                    for (c, v) in set {
-                        match v {
-                            None => {
-                                unset.insert(c.clone(), "");
-                            }
-                            Some(_) => {
-                                s.insert(c.clone(), to_bson(v, ty(c)));
+        // MongoDB transactions need a replica set, so changes apply one at a
+        // time; a failure says how many were already saved.
+        let n = changes.len();
+        for (i, ch) in changes.iter().enumerate() {
+            let applied: Result<()> = async {
+                match ch {
+                    Change::Update { key, set } => {
+                        let mut s = Document::new();
+                        let mut unset = Document::new();
+                        for (c, v) in set {
+                            match v {
+                                None => {
+                                    unset.insert(c.clone(), "");
+                                }
+                                Some(_) => {
+                                    s.insert(c.clone(), to_bson(v, ty(c)));
+                                }
                             }
                         }
+                        let mut update = Document::new();
+                        if !s.is_empty() {
+                            update.insert("$set", s);
+                        }
+                        if !unset.is_empty() {
+                            update.insert("$unset", unset);
+                        }
+                        let r = coll.update_one(id_filter(key)?, update).await?;
+                        if r.matched_count != 1 {
+                            bail!("document not found; it may have been changed elsewhere");
+                        }
                     }
-                    let mut update = Document::new();
-                    if !s.is_empty() {
-                        update.insert("$set", s);
+                    Change::Insert { values } => {
+                        let mut d = Document::new();
+                        for (c, v) in values.iter().filter(|(_, v)| v.is_some()) {
+                            d.insert(c.clone(), to_bson(v, ty(c)));
+                        }
+                        coll.insert_one(d).await?;
                     }
-                    if !unset.is_empty() {
-                        update.insert("$unset", unset);
-                    }
-                    let r = coll.update_one(id_filter(key)?, update).await?;
-                    if r.matched_count != 1 {
-                        bail!("document not found; it may have been changed elsewhere");
+                    Change::Delete { key } => {
+                        let r = coll.delete_one(id_filter(key)?).await?;
+                        if r.deleted_count != 1 {
+                            bail!("document not found; it may have been deleted elsewhere");
+                        }
                     }
                 }
-                Change::Insert { values } => {
-                    let mut d = Document::new();
-                    for (c, v) in values.iter().filter(|(_, v)| v.is_some()) {
-                        d.insert(c.clone(), to_bson(v, ty(c)));
-                    }
-                    coll.insert_one(d).await?;
-                }
-                Change::Delete { key } => {
-                    coll.delete_one(id_filter(key)?).await?;
-                }
+                Ok(())
+            }
+            .await;
+            if let Err(e) = applied {
+                return Err(e.context(format!(
+                    "change {} of {n} failed; the {i} before it were saved",
+                    i + 1
+                )));
             }
         }
         Ok(())

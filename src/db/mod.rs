@@ -5,8 +5,10 @@
 mod it;
 mod mongo;
 mod redis_kv;
+pub mod safety;
 pub mod split;
 mod sql;
+pub mod target;
 
 use std::time::Instant;
 
@@ -134,6 +136,11 @@ pub struct ConnectionConfig {
     pub file: String,
     #[serde(default)]
     pub ssl: bool,
+    /// With `ssl`: also check the server certificate and host name, so an
+    /// impostor server can't read the password. Off by default because it
+    /// rejects self-signed / private-CA servers.
+    #[serde(default)]
+    pub ssl_verify: bool,
     /// Lives in the OS keychain, never in the JSON file.
     #[serde(skip)]
     pub password: String,
@@ -152,6 +159,7 @@ impl ConnectionConfig {
             database: String::new(),
             file: String::new(),
             ssl: false,
+            ssl_verify: false,
             password: String::new(),
         }
     }
@@ -423,6 +431,12 @@ impl Connection {
             Connection::Redis(c) => c.commit(changes).await,
             Connection::Mongo(c) => c.commit(obj, changes).await,
         }
+    }
+
+    /// Whether `commit` is all-or-nothing. MongoDB (standalone) isn't: a
+    /// failed commit may have saved some changes.
+    pub fn commits_atomically(&self) -> bool {
+        !matches!(self, Connection::Mongo(_))
     }
 
     pub async fn drop_object(&self, obj: &DbObject) -> Result<()> {
