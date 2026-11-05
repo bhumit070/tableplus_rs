@@ -16,8 +16,9 @@ pub struct Csv {
 pub fn parse(bytes: &[u8]) -> Result<Csv> {
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let first_line = bytes.split(|b| *b == b'\n').next().unwrap_or_default();
-    let delimiter = [b',', b';', b'\t']
-        .into_iter()
+    let delimiter = b",;\t"
+        .iter()
+        .copied()
         .max_by_key(|d| first_line.iter().filter(|b| *b == d).count())
         .unwrap_or(b',');
     let mut r = csv::ReaderBuilder::new()
