@@ -1348,6 +1348,67 @@ mod tests {
         let _ = std::fs::remove_file(file);
     }
 
+    /// Import CSV: rows go in after confirming; a bad row inserts nothing.
+    #[gpui::test]
+    fn csv_import(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-csv-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        futures::executor::block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute("create table people (id integer primary key, name text not null, age int)")
+                .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+        let good = std::env::temp_dir().join(format!("tabula-ui-good-{}.csv", cfg.id));
+        std::fs::write(&good, "Name,Age,Unknown\nAda,36,x\n\"Hopper, Grace\",85,y\nLinus,,z\n").unwrap();
+        let bad = std::env::temp_dir().join(format!("tabula-ui-bad-{}.csv", cfg.id));
+        std::fs::write(&bad, "name,age\nKen,1\n,2\n").unwrap();
+
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("people").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let i = s.object_index("people").unwrap();
+            s.open_object(i, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "structure", |cx| {
+            tab.read_with(cx, |t, _| t.has_structure())
+        });
+
+        tab.update_in(&mut cx, |t, w, cx| t.import_csv_file(&good, w, cx));
+        cx.run_until_parked();
+        assert!(cx.update(|w, cx| w.has_active_dialog(cx)), "confirmation");
+        cx.simulate_keystrokes("enter");
+        wait_until(&mut cx, "imported", |cx| tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 3));
+        assert_eq!(tab.read_with(&cx, |t, cx| t.cell(1, 1, cx)).as_deref(), Some("Hopper, Grace"));
+        assert_eq!(tab.read_with(&cx, |t, cx| t.cell(2, 2, cx)), None, "empty → NULL");
+
+        // The second row has no name (NOT NULL): the whole file is rejected.
+        tab.update_in(&mut cx, |t, w, cx| t.import_csv_file(&bad, w, cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        cx.run_until_parked();
+        assert_eq!(tab.read_with(&cx, |t, cx| t.loaded_rows(cx)), 3, "nothing inserted");
+        for f in [file, good, bad] {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+
     /// ⌘1/⌘2 switch connections; ⌘N opens the connection picker, which
     /// switches to an open connection or offers "New Connection…".
     #[gpui::test]

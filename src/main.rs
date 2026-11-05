@@ -1,3 +1,4 @@
+mod csv_import;
 mod db;
 mod export;
 mod history;

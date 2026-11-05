@@ -130,6 +130,7 @@ impl TableTab {
             }))
             .separator()
             .map(|menu| copy::copy_items(menu, w.clone(), row))
+            .item(item("Import CSV…", |t, _, window, cx| t.import_csv(window, cx)))
             .separator()
             .item(item("Set NULL", |t, _, window, cx| t.set_null(window, cx)))
             .item(item("Duplicate Row", |t, row, _, cx| {
@@ -240,6 +241,11 @@ impl TableTab {
     #[cfg(test)]
     pub fn cell(&self, r: usize, c: usize, cx: &App) -> Option<String> {
         self.table.read(cx).delegate().cell_string(r, c)
+    }
+
+    #[cfg(test)]
+    pub fn has_structure(&self) -> bool {
+        self.structure.is_some()
     }
 
     #[cfg(test)]
@@ -645,6 +651,165 @@ impl TableTab {
             }),
         );
         self.filters.push(FilterRow { column, op, value });
+    }
+
+    /// Import CSV…: pick a file, confirm the column mapping, insert every
+    /// row in one transaction.
+    pub fn import_csv(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_dirty(cx) {
+            window.push_notification(
+                Notification::warning("Commit (⌘S) or discard (⌘⇧⌫) your changes first"),
+                cx,
+            );
+            return;
+        }
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import CSV".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update_in(cx, |t, window, cx| t.import_csv_file(&path, window, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    pub fn import_csv_file(
+        &mut self,
+        path: &std::path::Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let fail = |msg: String, window: &mut Window, cx: &mut Context<Self>| {
+            window.push_notification(Notification::error(msg).title("Import failed"), cx);
+        };
+        if self.shared.cfg.driver == crate::db::Driver::Redis {
+            return fail("CSV import isn't available for Redis".into(), window, cx);
+        }
+        let atomic = self
+            .shared
+            .conn
+            .try_read()
+            .map(|c| c.commits_atomically())
+            .unwrap_or(true);
+        let csv = match std::fs::read(path)
+            .map_err(anyhow::Error::from)
+            .and_then(|b| crate::csv_import::parse(&b))
+        {
+            Ok(c) => c,
+            Err(e) => return fail(format!("{e:#}"), window, cx),
+        };
+        let Some(columns) = self.structure.as_ref().map(|s| s.columns.clone()) else {
+            return fail("The table's columns haven't loaded yet".into(), window, cx);
+        };
+        let mapping = crate::csv_import::map_columns(&csv.headers, &columns);
+        let matched: Vec<String> = csv
+            .headers
+            .iter()
+            .zip(&mapping)
+            .filter_map(|(h, m)| m.as_ref().map(|m| if h == m { m.clone() } else { format!("{m} ← {h}") }))
+            .collect();
+        if matched.is_empty() {
+            return fail(
+                format!(
+                    "No CSV column matches a column of {}. The header row must use the column names.",
+                    self.object.title()
+                ),
+                window,
+                cx,
+            );
+        }
+        let ignored: Vec<&String> = csv
+            .headers
+            .iter()
+            .zip(&mapping)
+            .filter(|(_, m)| m.is_none())
+            .map(|(h, _)| h)
+            .collect();
+        let n = csv.rows.len();
+        let changes = crate::csv_import::changes(&csv, &mapping);
+        let mut text = format!(
+            "Insert {n} row(s) into {}.\n\nColumns: {}",
+            self.object.title(),
+            matched.join(", ")
+        );
+        if !ignored.is_empty() {
+            text.push_str(&format!(
+                "\nIgnored (no such column): {}",
+                ignored.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            ));
+        }
+        text.push_str("\n\nEmpty cells get the column's default.");
+        text.push_str(if atomic {
+            " All rows are inserted in one transaction: if one fails, none are."
+        } else {
+            " If a row fails, the rows before it stay inserted."
+        });
+        let title = if self.shared.cfg.tag == EnvTag::Production {
+            "Import into PRODUCTION?"
+        } else {
+            "Import CSV?"
+        };
+        let weak = cx.entity().downgrade();
+        let changes = std::rc::Rc::new(changes);
+        window.open_alert_dialog(cx, move |d, _, _| {
+            let (weak, changes, columns) = (weak.clone(), changes.clone(), columns.clone());
+            d.title(title)
+                .description(SharedString::from(text.clone()))
+                .show_cancel(true)
+                .on_ok(move |_, window, cx| {
+                    let (changes, columns) = ((*changes).clone(), columns.clone());
+                    weak.update(cx, |t, cx| t.run_import(changes, columns, atomic, window, cx))
+                        .ok();
+                    true
+                })
+        });
+    }
+
+    fn run_import(
+        &mut self,
+        changes: Vec<crate::db::Change>,
+        columns: Vec<crate::db::ColumnInfo>,
+        atomic: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let n = changes.len();
+        let conn = self.shared.conn.clone();
+        let obj = self.object.clone();
+        let task = runtime::spawn(async move {
+            conn.read().await.commit(&obj, &columns, &changes).await
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let res = task.await;
+            this.update_in(cx, |t, window, cx| {
+                match res {
+                    Ok(()) => window.push_notification(
+                        Notification::success(format!("Imported {n} row(s)")),
+                        cx,
+                    ),
+                    Err(e) => window.push_notification(
+                        Notification::error(format!("{e:#}")).title(if atomic {
+                            "Import failed: nothing was inserted"
+                        } else {
+                            "Import stopped: earlier rows were inserted"
+                        }),
+                        cx,
+                    ),
+                }
+                t.reload(cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub fn commit(&mut self, _: &Commit, window: &mut Window, cx: &mut Context<Self>) {
