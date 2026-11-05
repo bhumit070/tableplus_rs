@@ -747,3 +747,69 @@ async fn postgres_over_ssh() {
     assert!(a.is_ok() && b.is_ok());
     conn.close().await;
 }
+
+/// Process list: another session's slow statement shows up and can be
+/// cancelled from here.
+async fn process_scenario(driver: Driver, sleep: &'static str, query_col: &str) {
+    let busy = Arc::new(Connection::connect(&cfg(driver)).await.unwrap());
+    let admin = Connection::connect(&cfg(driver)).await.unwrap();
+    let run = tokio::spawn({
+        let busy = busy.clone();
+        async move { busy.execute(sleep).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let list = admin.processes().await.unwrap();
+    let qc = list.columns.iter().position(|c| c == query_col).unwrap();
+    let row = list
+        .rows
+        .iter()
+        .find(|r| r[qc].as_deref() == Some(sleep))
+        .unwrap_or_else(|| panic!("{driver:?}: sleeping session listed in {:?}", list.rows));
+    let id = row[0].clone().unwrap();
+    admin.kill(&id, false).await.unwrap();
+    let res = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+        .await
+        .expect("cancelled promptly")
+        .unwrap();
+    // Postgres reports the cancel as an error; MySQL's SLEEP returns 1.
+    match driver {
+        Driver::Postgres => assert!(res.is_err()),
+        _ => assert_eq!(res.unwrap()[0].rows[0][0].as_deref(), Some("1")),
+    }
+    // Our own session is never listed.
+    let me = admin.processes().await.unwrap();
+    assert!(me.rows.iter().all(|r| r[qc].as_deref() != Some(sleep)));
+}
+
+#[tokio::test]
+async fn postgres_processes() {
+    if it_enabled() {
+        process_scenario(Driver::Postgres, "select pg_sleep(20)", "query").await;
+    }
+}
+
+#[tokio::test]
+async fn mysql_processes() {
+    if it_enabled() {
+        process_scenario(Driver::MySql, "select sleep(20)", "query").await;
+    }
+}
+
+#[tokio::test]
+async fn redis_clients() {
+    if !it_enabled() {
+        return;
+    }
+    let other = Connection::connect(&cfg(Driver::Redis)).await.unwrap();
+    other.execute("CLIENT SETNAME tabula-it-other").await.unwrap();
+    let admin = Connection::connect(&cfg(Driver::Redis)).await.unwrap();
+    let list = admin.processes().await.unwrap();
+    let row = list
+        .rows
+        .iter()
+        .find(|r| r[2].as_deref() == Some("tabula-it-other"))
+        .expect("named client listed");
+    admin.kill(row[0].as_deref().unwrap(), true).await.unwrap();
+    let after = admin.processes().await.unwrap();
+    assert!(after.rows.iter().all(|r| r[2].as_deref() != Some("tabula-it-other")));
+}

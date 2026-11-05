@@ -504,6 +504,24 @@ impl Connection {
         !matches!(self.inner, Conn::Mongo(_))
     }
 
+    /// Server sessions (first column = id), for the process list.
+    pub async fn processes(&self) -> Result<QueryResult> {
+        match &self.inner {
+            Conn::Sql(c) => c.processes().await,
+            Conn::Redis(c) => c.processes().await,
+            Conn::Mongo(_) => anyhow::bail!("not available for MongoDB yet"),
+        }
+    }
+
+    /// Cancels a session's statement, or with `whole` ends the session.
+    pub async fn kill(&self, id: &str, whole: bool) -> Result<()> {
+        match &self.inner {
+            Conn::Sql(c) => c.kill(id, whole).await,
+            Conn::Redis(c) => c.kill(id).await,
+            Conn::Mongo(_) => anyhow::bail!("not available for MongoDB yet"),
+        }
+    }
+
     pub async fn drop_object(&self, obj: &DbObject) -> Result<()> {
         match &self.inner {
             Conn::Sql(c) => c.drop_object(obj).await,

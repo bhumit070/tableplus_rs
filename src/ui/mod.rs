@@ -6,6 +6,7 @@ pub mod copy;
 pub mod grid;
 pub mod home;
 pub mod picker;
+pub mod processes;
 pub mod query_tab;
 pub mod row_panel;
 pub mod session;
@@ -32,6 +33,7 @@ gpui::actions!(
         FormatSql,
         SaveQuery,
         SavedQueries,
+        ShowProcesses,
         EditCell,
         CancelCellEdit,
         NextCell,
@@ -116,6 +118,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new(sec!("shift-f"), FormatSql, None),
         KeyBinding::new(sec!("shift-s"), SaveQuery, None),
         KeyBinding::new(sec!("shift-o"), SavedQueries, None),
+        KeyBinding::new(sec!("shift-p"), ShowProcesses, None),
         KeyBinding::new(sec!("k"), SwitchDatabase, None),
         KeyBinding::new(sec!("s"), Commit, None),
         KeyBinding::new(sec!("shift-backspace"), Discard, None),
@@ -211,6 +214,7 @@ mod tests {
             (sec!("shift-f"), is::<FormatSql>),
             (sec!("shift-s"), is::<SaveQuery>),
             (sec!("shift-o"), is::<SavedQueries>),
+            (sec!("shift-p"), is::<ShowProcesses>),
             (sec!("f"), is::<ToggleFilter>),
         ] {
             assert!(ok(resolve(vec![], key, &["Root"])), "{key} with no focus");

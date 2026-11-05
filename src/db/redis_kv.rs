@@ -157,6 +157,46 @@ impl RedisConn {
         self.db.clone()
     }
 
+    /// CLIENT LIST as rows (our own client left out), first column = id.
+    pub async fn processes(&self) -> Result<QueryResult> {
+        let mut con = self.con.clone();
+        let me: i64 = redis::cmd("CLIENT").arg("ID").query_async(&mut con).await?;
+        let list: String = redis::cmd("CLIENT").arg("LIST").query_async(&mut con).await?;
+        let cols = ["id", "addr", "name", "db", "age", "idle", "cmd"];
+        let rows = list
+            .lines()
+            .filter_map(|line| {
+                let kv: std::collections::HashMap<&str, &str> =
+                    line.split(' ').filter_map(|p| p.split_once('=')).collect();
+                (kv.get("id")? != &me.to_string().as_str()).then(|| {
+                    cols.iter()
+                        .map(|c| kv.get(c).map(|v| v.to_string()))
+                        .collect()
+                })
+            })
+            .collect();
+        Ok(QueryResult {
+            columns: cols.iter().map(|c| c.to_string()).collect(),
+            rows,
+            ..Default::default()
+        })
+    }
+
+    /// CLIENT KILL ID: disconnects the client (Redis can't stop just a command).
+    pub async fn kill(&self, id: &str) -> Result<()> {
+        let mut con = self.con.clone();
+        let n: i64 = redis::cmd("CLIENT")
+            .arg("KILL")
+            .arg("ID")
+            .arg(id)
+            .query_async(&mut con)
+            .await?;
+        if n == 0 {
+            anyhow::bail!("no such client");
+        }
+        Ok(())
+    }
+
     pub async fn databases(&self) -> Result<Vec<String>> {
         let mut con = self.con.clone();
         let n = redis::cmd("CONFIG")

@@ -27,7 +27,7 @@ use super::table_tab::TableTab;
 use super::{
     AddRow, CloseTab, Commit, Connection1, Connection2, Connection3, Connection4, Connection5,
     Connection6, Connection7, Connection8, Connection9, DeleteRows, Discard, GoHome, NewQuery,
-    CancelQuery, ExportData, FormatSql, SaveQuery, SavedQueries, ToggleRowDetail, NextTab, QueryHistory, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
+    CancelQuery, ExportData, FormatSql, SaveQuery, SavedQueries, ShowProcesses, ToggleRowDetail, NextTab, QueryHistory, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
     ToggleFilter, ToggleTheme, tag_color,
 };
 use crate::db::ssh::UnknownHostKey;
@@ -580,6 +580,9 @@ pub fn register_actions(cx: &mut App) {
     });
 
     cx.on_action(|_: &QueryHistory, cx| with_session(cx, |s, w, cx| s.open_history(w, cx)));
+    cx.on_action(|_: &ShowProcesses, cx| {
+        with_session(cx, |s, w, cx| super::processes::Processes::open(s.shared.clone(), w, cx))
+    });
     cx.on_action(|_: &SavedQueries, cx| with_session(cx, |s, w, cx| s.open_saved(w, cx)));
     cx.on_action(|_: &SaveQuery, cx| {
         with_session(cx, |s, w, cx| {

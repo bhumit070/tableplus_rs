@@ -624,6 +624,45 @@ impl SqlConn {
         })
     }
 
+    /// Server sessions, first column = the id `kill` takes. Our own
+    /// session is left out.
+    pub async fn processes(&self) -> Result<QueryResult> {
+        let sql = match self.cfg.driver {
+            Driver::Postgres => {
+                "select pid, usename as user, datname as database, \
+                 coalesce(host(client_addr), 'local') as client, application_name as app, state, \
+                 to_char(now() - query_start, 'HH24:MI:SS') as running_for, \
+                 wait_event_type || coalesce(': ' || wait_event, '') as waiting_on, query \
+                 from pg_stat_activity where pid <> pg_backend_pid() and backend_type = 'client backend' \
+                 order by query_start nulls last"
+            }
+            Driver::MySql => {
+                "select id, user, host as client, db as `database`, command, time as seconds, state, info as query \
+                 from information_schema.processlist where id <> connection_id() order by time desc"
+            }
+            _ => bail!("SQLite has no server processes"),
+        };
+        self.raw(sql.into()).await
+    }
+
+    /// Stops a session's running statement, or (`whole`) the session.
+    pub async fn kill(&self, id: &str, whole: bool) -> Result<()> {
+        let id: u64 = id.parse().context("not a process id")?;
+        let sql = match (self.cfg.driver, whole) {
+            (Driver::Postgres, false) => format!("select pg_cancel_backend({id})"),
+            (Driver::Postgres, true) => format!("select pg_terminate_backend({id})"),
+            (Driver::MySql, false) => format!("kill query {id}"),
+            (Driver::MySql, true) => format!("kill {id}"),
+            _ => bail!("not supported"),
+        };
+        let r = self.raw(sql).await?;
+        // Postgres answers false when the process is gone or not ours.
+        if r.rows.first().and_then(|r| r.first()).cloned().flatten().as_deref() == Some("false") {
+            bail!("the server refused: the process is gone, or you lack permission");
+        }
+        Ok(())
+    }
+
     async fn foreign_keys(&self, obj: &DbObject) -> Result<Vec<ForeignKey>> {
         // One row per (constraint, column position): name, column, ref
         // schema, ref table, ref column, on update, on delete.
