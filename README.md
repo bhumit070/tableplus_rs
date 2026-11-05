@@ -100,10 +100,14 @@ Versions are `vMAJOR.MINOR.PATCH`: MAJOR.MINOR come from `Cargo.toml`, and
 PATCH counts up per release. If one platform fails to build, the others are
 still published and the release notes say which is missing.
 
-- **macOS:** not notarized yet, so on first launch right-click Tabula.app → Open.
-- **Linux:** needs X11 or Wayland, Vulkan, and a Secret Service keyring
-  (GNOME Keyring, KWallet) for saved passwords.
-- **Windows:** SmartScreen may warn the first time (More info → Run anyway).
+- **macOS** (`.dmg`): drag Tabula to Applications. Not notarized yet, so on
+  first launch right-click Tabula → Open.
+- **Linux** (`.deb` for Debian/Ubuntu, `.tar.gz` for others): needs X11 or
+  Wayland, Vulkan, and a Secret Service keyring (GNOME Keyring, KWallet) for
+  saved passwords. The `.deb` installs Vulkan and GNOME Keyring for you.
+- **Windows** (`.msi` installer, or the bare `.exe` to run without
+  installing): not signed yet, so SmartScreen may warn the first time (More
+  info → Run anyway).
 
 ## Building
 

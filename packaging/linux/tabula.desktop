@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Tabula
+Comment=Database client for PostgreSQL, MySQL, SQLite, Redis and MongoDB
+Exec=tabula
+Terminal=false
+Categories=Development;Database;

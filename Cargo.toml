@@ -2,6 +2,7 @@
 name = "tabula"
 version = "0.1.0"
 edition = "2024"
+description = "Database client for PostgreSQL, MySQL, SQLite, Redis and MongoDB"
 
 [dependencies]
 anyhow = "1.0.104"
@@ -36,3 +37,17 @@ csv = "1.4.0"
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "0.3.11", features = ["test-support"] }
 rand = { version = "0.10", features = ["thread_rng"] }
+
+# `cargo deb` (used by the release workflow) builds the Linux .deb.
+[package.metadata.deb]
+maintainer = "bhumit070 <ganatrabhoomit070@gmail.com>"
+copyright = "bhumit070"
+section = "database"
+extended-description = "A fast native database client with no connection limit."
+# Vulkan is loaded at runtime, so the automatic scan doesn't find it.
+depends = "$auto, libvulkan1"
+recommends = "gnome-keyring"
+assets = [
+    ["target/release/tabula", "usr/bin/", "755"],
+    ["packaging/linux/tabula.desktop", "usr/share/applications/", "644"],
+]

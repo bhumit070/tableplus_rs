@@ -1,0 +1,23 @@
+<!-- Windows installer (WiX v5): installs Tabula.exe into Program Files and
+     adds a Start menu shortcut. Built by .github/workflows/release.yml with
+     `wix build -d Version=... -d Exe=...`. The UpgradeCode must never change:
+     it's how a newer installer finds and replaces an older install. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Tabula" Manufacturer="Tabula" Version="$(var.Version)"
+           UpgradeCode="4106CACB-EBD3-4DCB-8C54-C7322994D909" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Tabula is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Tabula">
+        <Component>
+          <File Source="$(var.Exe)" Name="Tabula.exe" KeyPath="yes">
+            <Shortcut Name="Tabula" Directory="ProgramMenuFolder"
+                      WorkingDirectory="INSTALLFOLDER" Advertise="yes" />
+          </File>
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+  </Package>
+</Wix>

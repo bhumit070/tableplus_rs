@@ -116,7 +116,12 @@ jobs:
           # Ad-hoc signature: required to run on Apple Silicon. Not notarized,
           # so the first launch needs right-click → Open.
           codesign --force --deep --sign - "$app"
-          ditto -c -k --keepParent "$app" "Tabula-${VERSION}-${{ matrix.name }}.zip"
+          # Disk image with an Applications shortcut to drag the app onto.
+          mkdir dmg
+          mv "$app" dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname Tabula -srcfolder dmg -ov -format UDZO \
+            "Tabula-${VERSION}-${{ matrix.name }}.dmg"
       - name: Package (Linux)
         if: runner.os == 'Linux'
         env:
@@ -127,23 +132,32 @@ jobs:
           cp "target/${{ matrix.target }}/release/tabula" "$dir/"
           cp README.md "$dir/"
           tar -czf "$dir.tar.gz" "$dir"
+          cargo install cargo-deb --locked --version 3.8.0
+          cargo deb --no-build --target ${{ matrix.target }} --deb-version "$VERSION" \
+            -o "$dir.deb"
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          $dir = "Tabula-$env:VERSION-${{ matrix.name }}"
-          New-Item -ItemType Directory $dir | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/tabula.exe" "$dir/Tabula.exe"
-          Copy-Item README.md "$dir/"
-          Compress-Archive -Path $dir -DestinationPath "$dir.zip"
+          $name = "Tabula-$env:VERSION-${{ matrix.name }}"
+          $exe = "target/${{ matrix.target }}/release/tabula.exe"
+          Copy-Item $exe "$name.exe"
+          # WiX 5: newer majors need a paid EULA acceptance.
+          dotnet tool install --global wix --version 5.0.2
+          & "$env:USERPROFILE\.dotnet\tools\wix.exe" build packaging/windows/tabula.wxs -arch x64 `
+            -d "Version=$env:VERSION" -d "Exe=$exe" -o "$name.msi"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
           path: |
-            Tabula-*.zip
+            Tabula-*.dmg
             Tabula-*.tar.gz
+            Tabula-*.deb
+            Tabula-*.exe
+            Tabula-*.msi
 
   release:
     needs: [version, build]
@@ -162,20 +176,21 @@ jobs:
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           shopt -s nullglob
-          files=(dist/*.zip dist/*.tar.gz)
+          files=(dist/*)
           if [ ${#files[@]} -eq 0 ]; then
             echo "No platform built; nothing to release." >&2
             exit 1
           fi
           missing=""
-          for p in macos-apple-silicon macos-intel linux-x86_64 windows-x86_64; do
-            ls dist | grep -q -- "-$p\." || missing="$missing $p"
+          for p in macos-apple-silicon.dmg macos-intel.dmg linux-x86_64.deb \
+                   linux-x86_64.tar.gz windows-x86_64.exe windows-x86_64.msi; do
+            ls dist | grep -q -- "-$p\$" || missing="$missing $p"
           done
           notes="Builds for macOS (Apple Silicon, Intel), Linux (x86_64) and Windows (x86_64).
 
-          - macOS: not notarized yet; on first launch right-click Tabula.app → Open (or run \`xattr -dr com.apple.quarantine Tabula.app\`).
-          - Linux: extract and run \`./tabula\` (needs X11 or Wayland, Vulkan, and a Secret Service keyring such as GNOME Keyring for saved passwords).
-          - Windows: unzip and run Tabula.exe (SmartScreen may ask the first time: More info → Run anyway)."
+          - macOS (.dmg): open it and drag Tabula to Applications. Not notarized yet, so on first launch right-click Tabula → Open (or run \`xattr -dr com.apple.quarantine /Applications/Tabula.app\`).
+          - Linux: on Debian/Ubuntu, \`sudo apt install ./Tabula-*.deb\`; elsewhere extract the .tar.gz and run \`./tabula\` (needs X11 or Wayland, Vulkan, and a Secret Service keyring such as GNOME Keyring for saved passwords).
+          - Windows: the .msi installs Tabula with a Start menu entry; the .exe runs without installing. Neither is signed yet, so SmartScreen may ask the first time: More info → Run anyway."
           if [ -n "$missing" ]; then
             notes="$notes
 
