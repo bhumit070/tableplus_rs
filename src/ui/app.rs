@@ -1649,6 +1649,64 @@ mod tests {
         let _ = std::fs::remove_file(file);
     }
 
+    /// Closing a tab left of the visible one keeps showing the same tab.
+    #[gpui::test]
+    fn closing_a_tab_keeps_the_visible_one(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-tabs-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| app.read_with(cx, |a, _| a.sessions.len() == 1));
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        for _ in 0..3 {
+            session.update_in(&mut cx, |s, w, cx| s.new_query_for_test(w, cx));
+        }
+        let shown = session.read_with(&cx, |s, _| s.active_query().unwrap());
+        session.update_in(&mut cx, |s, w, cx| s.close_tab_for_test(0, w, cx));
+        let now = session.read_with(&cx, |s, _| s.active_query().unwrap());
+        assert_eq!(now.entity_id(), shown.entity_id());
+        let _ = std::fs::remove_file(file);
+    }
+
+    /// The server stops answering: the sidebar keeps an error with Retry
+    /// (not a stale or silently empty list); Retry recovers once it's back.
+    #[gpui::test]
+    fn sidebar_shows_load_errors(cx: &mut TestAppContext) {
+        if std::env::var("TABULA_IT_PAUSE").is_err() {
+            return;
+        }
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Postgres);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = 55432;
+        cfg.user = "postgres".into();
+        cfg.password = "test".into();
+        cfg.database = "postgres".into();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| app.read_with(cx, |a, _| a.sessions.len() == 1));
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        cx.run_until_parked();
+        std::process::Command::new("docker").args(["pause", "tabula-test-pg"]).status().unwrap();
+        session.update_in(&mut cx, |s, w, cx| s.refresh(w, cx));
+        let start = Instant::now();
+        while session.read_with(&cx, |s, _| s.load_error().is_none()) {
+            assert!(start.elapsed() < Duration::from_secs(45), "error shown");
+            std::thread::sleep(Duration::from_millis(100));
+            cx.run_until_parked();
+        }
+        std::process::Command::new("docker").args(["unpause", "tabula-test-pg"]).status().unwrap();
+        let e = session.read_with(&cx, |s, _| s.load_error().unwrap());
+        assert!(e.contains("Lost the connection") || e.contains("didn't answer"), "{e}");
+        cx.run_until_parked();
+        let retry = cx.debug_bounds("retry-objects").expect("Retry shown");
+        cx.simulate_click(retry.center(), gpui::Modifiers::none());
+        wait_until(&mut cx, "recovered", |cx| session.read_with(cx, |s, _| s.load_error().is_none()));
+    }
+
     /// ⌘1/⌘2 switch connections; ⌘N opens the connection picker, which
     /// switches to an open connection or offers "New Connection…".
     #[gpui::test]

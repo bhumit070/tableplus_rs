@@ -53,6 +53,8 @@ pub struct QueryTab {
     edit_sub: Option<Subscription>,
     /// Row detail panel beside the results.
     pub show_detail: bool,
+    /// A commit is on its way; ⌘S again mustn't send it twice.
+    committing: bool,
     /// The last EXPLAIN, shown instead of results until the next run.
     plan: Option<crate::db::explain::PlanNode>,
     /// Set once this tab's text is a saved query; ⌘⇧S then updates it.
@@ -183,6 +185,7 @@ impl QueryTab {
             show_detail: false,
             saved: None,
             plan: None,
+            committing: false,
             error: None,
             elapsed: 0,
             focus: cx.focus_handle(),
@@ -246,8 +249,12 @@ impl QueryTab {
         let Some(stmt) = stmts.into_iter().find(|s| !s.trim().is_empty()) else {
             return;
         };
-        let Ok(wrapped) = explain::explain_script(driver, &stmt, analyze) else {
-            return;
+        let wrapped = match explain::explain_script(driver, &stmt, analyze) {
+            Ok(w) => w,
+            Err(e) => {
+                window.push_notification(Notification::error(format!("{e:#}")), cx);
+                return;
+            }
         };
         // ANALYZE executes the statement: the safe mode decides as for a run.
         if analyze {
@@ -627,7 +634,14 @@ impl QueryTab {
                 if generation != this.edit_gen {
                     return;
                 }
-                let cols = st.map(|s| s.columns).unwrap_or_default();
+                let cols = match st {
+                    Ok(s) => s.columns,
+                    Err(e) => {
+                        this.edit_note = Some(format!("Read-only: couldn't check {} ({e:#})", obj.title()));
+                        cx.notify();
+                        return;
+                    }
+                };
                 match map_columns(&result_cols, &obj.title(), &cols) {
                     Ok((editable, pk)) => {
                         this.grid.update(cx, |t, cx| {
@@ -730,7 +744,7 @@ impl QueryTab {
             .conn
             .try_read()
             .map(|c| c.preview(&t.obj, &t.columns, &changes))
-            .unwrap_or_default()
+            .unwrap_or_else(|_| "(The connection is busy; the statements will be shown when it's free.)".into())
     }
 
     pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -750,6 +764,10 @@ impl QueryTab {
 
     fn do_commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(t) = self.target.clone() else { return };
+        if self.committing {
+            return;
+        }
+        self.committing = true;
         let changes = self.grid.read(cx).delegate().changes();
         let n = changes.len();
         let conn = self.shared.conn.clone();
@@ -759,7 +777,9 @@ impl QueryTab {
             );
         cx.spawn_in(window, async move |this, cx| {
             let res = task.await;
-            this.update_in(cx, |this, window, cx| match res {
+            this.update_in(cx, |this, window, cx| {
+                this.committing = false;
+                match res {
                 Ok(()) => {
                     window.push_notification(
                         Notification::success(format!("Committed {n} change(s)")),
@@ -774,6 +794,7 @@ impl QueryTab {
                     Notification::error(format!("{e:#}")).title("Commit failed"),
                     cx,
                 ),
+                }
             })
             .ok();
         })

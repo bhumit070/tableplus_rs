@@ -65,6 +65,10 @@ pub struct Session {
     active: usize,
     queries_opened: usize,
     loading: bool,
+    /// Why the table list couldn't be loaded; shown in the sidebar with Retry.
+    load_error: Option<String>,
+    /// Why the database list couldn't be loaded.
+    dbs_error: Option<String>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -121,6 +125,8 @@ impl Session {
             active: 0,
             queries_opened: 0,
             loading: false,
+            load_error: None,
+            dbs_error: None,
             focus: cx.focus_handle(),
             _subs: subs,
         };
@@ -134,7 +140,7 @@ impl Session {
         let task = runtime::spawn(async move {
             let c = conn.read().await;
             let objects = c.list_objects().await?;
-            let dbs = c.databases().await.unwrap_or_default();
+            let dbs = c.databases().await.map_err(|e| format!("{e:#}"));
             // Autocomplete still works (minus columns) if this fails.
             let columns = c.all_columns().await.unwrap_or_default();
             Ok((
@@ -151,6 +157,12 @@ impl Session {
                 this.loading = false;
                 match res {
                     Ok((objects, dbs, current, columns, schema)) => {
+                        this.load_error = None;
+                        let (dbs, dbs_error) = match dbs {
+                            Ok(d) => (d, None),
+                            Err(e) => (vec![], Some(e)),
+                        };
+                        this.dbs_error = dbs_error;
                         this.schemas = if this.shared.cfg.driver == Driver::Postgres {
                             schemas_of(&objects)
                         } else {
@@ -181,13 +193,21 @@ impl Session {
                         this.rebuild_tree(cx);
                         // Redis has a single "keys" view: open it straight away.
                         if this.tabs.is_empty()
-                            && this.objects.len() == 1
-                            && this.objects[0].kind == ObjectKind::Keys
+                            && this.objects.first().is_some_and(|o| o.kind == ObjectKind::Keys)
                         {
                             this.open_object(0, window, cx);
                         }
                     }
-                    Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
+                    Err(e) => {
+                        // An old list would look current; show the error instead.
+                        this.objects.clear();
+                        this.load_error = Some(format!("{e:#}"));
+                        this.rebuild_tree(cx);
+                        window.push_notification(
+                            Notification::error(format!("{e:#}")).title("Couldn't load tables"),
+                            cx,
+                        );
+                    }
                 }
                 cx.notify();
             })
@@ -421,7 +441,13 @@ impl Session {
     /// ⌘K: pick another database on this connection.
     pub fn open_db_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.databases.len() < 2 {
-            window.push_notification("This connection has only one database", cx);
+            match &self.dbs_error {
+                Some(e) => window.push_notification(
+                    Notification::error(e.clone()).title("Couldn't list databases"),
+                    cx,
+                ),
+                None => window.push_notification("This connection has only one database", cx),
+            }
             return;
         }
         let items = self
@@ -682,8 +708,9 @@ impl Session {
     /// ⌘R: reload the open table, or the sidebar when no table is open.
     pub fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.active_table() {
-            Some(t) => t.update(cx, |t, cx| t.refresh(window, cx)),
-            None => self.load_objects(window, cx),
+            // A failed sidebar retries too.
+            Some(t) if self.load_error.is_none() => t.update(cx, |t, cx| t.refresh(window, cx)),
+            _ => self.load_objects(window, cx),
         }
     }
 
@@ -733,9 +760,32 @@ impl Session {
     fn remove_tab(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
         if i < self.tabs.len() {
             self.tabs.remove(i);
+            // Keep showing the same tab when one to its left goes.
+            if i < self.active {
+                self.active -= 1;
+            }
         }
         let next = self.active.min(self.tabs.len().saturating_sub(1));
         self.activate(next, window, cx);
+    }
+
+    /// Closes the table tabs showing `obj`, keeping the visible tab if it stays.
+    fn close_tabs_of(&mut self, obj: &DbObject, cx: &App) {
+        let current = self.tabs.get(self.active).map(|t| match t {
+            TabItem::Table(e) => e.entity_id(),
+            TabItem::Query(e) => e.entity_id(),
+        });
+        self.tabs
+            .retain(|t| !matches!(t, TabItem::Table(e) if e.read(cx).object == *obj));
+        self.active = current
+            .and_then(|id| {
+                self.tabs.iter().position(|t| match t {
+                    TabItem::Table(e) => e.entity_id() == id,
+                    TabItem::Query(e) => e.entity_id() == id,
+                })
+            })
+            .unwrap_or(self.active)
+            .min(self.tabs.len().saturating_sub(1));
     }
 
     /// What to reopen next launch.
@@ -793,6 +843,16 @@ impl Session {
             self.activate(state.active_tab, window, cx);
         }
         cx.notify();
+    }
+
+    #[cfg(test)]
+    pub fn close_tab_for_test(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_tab_at(i, window, cx);
+    }
+
+    #[cfg(test)]
+    pub fn load_error(&self) -> Option<String> {
+        self.load_error.clone()
     }
 
     #[cfg(test)]
@@ -998,6 +1058,7 @@ impl Session {
             return;
         }
         let Some(target) = self.backup_target() else {
+            window.push_notification("The connection is busy; try again in a moment", cx);
             return;
         };
         let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
@@ -1073,6 +1134,7 @@ impl Session {
         done: &'static str,
         window: &mut Window,
         cx: &mut Context<Self>,
+        on_ok: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
         op: impl FnOnce(
             std::sync::Arc<tokio::sync::RwLock<crate::db::Connection>>,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<String>>> + Send>>,
@@ -1082,11 +1144,17 @@ impl Session {
             let res = task.await;
             this.update_in(cx, |s, window, cx| {
                 match res {
-                    Ok(msg) => window.push_notification(
-                        Notification::success(msg.unwrap_or_else(|| done.to_string())),
+                    Ok(msg) => {
+                        on_ok(s, cx);
+                        window.push_notification(
+                            Notification::success(msg.unwrap_or_else(|| done.to_string())),
+                            cx,
+                        )
+                    }
+                    Err(e) => window.push_notification(
+                        Notification::error(format!("{e:#}")).title("Failed"),
                         cx,
                     ),
-                    Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
                 }
                 s.load_objects(window, cx);
             })
@@ -1116,7 +1184,7 @@ impl Session {
         let me = cx.entity().downgrade();
         super::prompt_text("New Database", "", "", window, cx, move |name, window, cx| {
             me.update(cx, |s, cx| {
-                s.run_op("Database created", window, cx, move |c| {
+                s.run_op("Database created", window, cx, |_, _| {}, move |c| {
                     Box::pin(async move { c.read().await.create_database(&name).await.map(|_| None) })
                 })
             })
@@ -1157,7 +1225,7 @@ impl Session {
                             return false;
                         }
                         me.update(cx, |s, cx| {
-                            s.run_op("Database dropped", window, cx, move |c| {
+                            s.run_op("Database dropped", window, cx, |_, _| {}, move |c| {
                                 Box::pin(async move { c.read().await.drop_database(&typed).await.map(|_| None) })
                             })
                         })
@@ -1183,10 +1251,9 @@ impl Session {
             }
             let o = obj.clone();
             me.update(cx, |s, cx| {
-                // Tabs of the old name would point at nothing.
-                s.tabs.retain(|t| !matches!(t, TabItem::Table(e) if e.read(cx).object == o));
-                s.active = s.active.min(s.tabs.len().saturating_sub(1));
-                s.run_op("Renamed", window, cx, move |c| {
+                // Once renamed, tabs of the old name point at nothing.
+                let old = o.clone();
+                s.run_op("Renamed", window, cx, move |s, cx| s.close_tabs_of(&old, cx), move |c| {
                     Box::pin(async move { c.read().await.rename_object(&o, &name).await.map(|_| None) })
                 })
             })
@@ -1210,7 +1277,7 @@ impl Session {
             move |name, window, cx| {
                 let o = obj.clone();
                 me.update(cx, |s, cx| {
-                    s.run_op("Table duplicated", window, cx, move |c| {
+                    s.run_op("Table duplicated", window, cx, |_, _| {}, move |c| {
                         Box::pin(async move { c.read().await.duplicate_table(&o, &name, true).await.map(|_| None) })
                     })
                 })
@@ -1225,7 +1292,7 @@ impl Session {
             return;
         }
         window.push_notification("Working…", cx);
-        self.run_op("Done", window, cx, move |c| {
+        self.run_op("Done", window, cx, |_, _| {}, move |c| {
             Box::pin(async move { c.read().await.maintain(&obj).await.map(Some) })
         });
     }
@@ -1352,8 +1419,7 @@ impl Session {
                             this.update_in(cx, |this, window, cx| match res {
                                 Ok(()) => {
                                     if drop {
-                                        this.tabs.retain(|t| !matches!(t, TabItem::Table(e) if e.read(cx).object == obj));
-                                        this.active = this.active.min(this.tabs.len().saturating_sub(1));
+                                        this.close_tabs_of(&obj, cx);
                                     }
                                     this.load_objects(window, cx);
                                     window.push_notification(Notification::success("Done"), cx);
@@ -1396,6 +1462,28 @@ impl Session {
                             .prefix(Icon::new(IconName::Search).small()),
                     ),
             )
+            .when_some(self.load_error.clone(), |d, e| {
+                d.child(
+                    v_flex()
+                        .gap_1()
+                        .m_2()
+                        .p_2()
+                        .rounded_md()
+                        .bg(theme.danger.opacity(0.12))
+                        .text_xs()
+                        .text_color(theme.danger)
+                        .child("Couldn't load tables")
+                        .child(div().text_color(theme.foreground).child(e))
+                        .child(
+                            Button::new("retry-objects")
+                                .debug_selector(|| "retry-objects".into())
+                                .label("Retry")
+                                .xsmall()
+                                .loading(self.loading)
+                                .on_click(cx.listener(|s, _, window, cx| s.load_objects(window, cx))),
+                        ),
+                )
+            })
             .child(
                 div().flex_1().min_h_0().child(
                     tree(&self.tree, move |ix, entry, selected, _, cx| {

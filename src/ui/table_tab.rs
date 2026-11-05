@@ -65,6 +65,8 @@ pub struct TableTab {
     pub show_detail: bool,
     /// Structure view section: columns, indexes, foreign keys, SQL.
     struct_section: usize,
+    /// A commit is on its way; ⌘S again mustn't send it twice.
+    committing: bool,
     /// Filters this tab was opened with (following a foreign key); shown as
     /// a removable chip, applied on top of the filter bar.
     fixed: Vec<Filter>,
@@ -191,6 +193,7 @@ impl TableTab {
             struct_fks,
             show_structure: false,
             show_detail: false,
+            committing: false,
             struct_section: 0,
             fixed,
             filters: Vec::new(),
@@ -390,6 +393,12 @@ impl TableTab {
             Ok(v) => v,
             Err(e) => {
                 self.error = Some(format!("{e:#}"));
+                // Rows from before would pass for current (and be editable).
+                // A reload only starts without staged edits, so none are lost.
+                self.table.update(cx, |t, cx| {
+                    t.delegate_mut().set_result(&QueryResult::default());
+                    t.refresh(cx);
+                });
                 cx.notify();
                 return;
             }
@@ -885,7 +894,9 @@ impl TableTab {
                 .conn
                 .try_read()
                 .map(|c| c.preview(&self.object, &columns, &changes))
-                .unwrap_or_default()
+                .unwrap_or_else(|_| {
+                    "(The connection is busy, so the statements can't be listed right now.)".into()
+                })
         } else {
             String::new()
         };
@@ -898,12 +909,20 @@ impl TableTab {
     }
 
     fn do_commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.committing {
+            return;
+        }
         let changes = self.table.read(cx).delegate().changes();
-        let columns = self
-            .structure
-            .as_ref()
-            .map(|s| s.columns.clone())
-            .unwrap_or_default();
+        // Writes need the column types (and keys) from the structure.
+        let Some(columns) = self.structure.as_ref().map(|s| s.columns.clone()) else {
+            window.push_notification(
+                Notification::warning("The table's structure isn't loaded; refresh (⌘R) and try again"),
+                cx,
+            );
+            return;
+        };
+        self.committing = true;
+        cx.notify();
         let conn = self.shared.conn.clone();
         let obj = self.object.clone();
         let n = changes.len();
@@ -911,7 +930,10 @@ impl TableTab {
             runtime::spawn(async move { conn.read().await.commit(&obj, &columns, &changes).await });
         cx.spawn_in(window, async move |this, cx| {
             let res = task.await;
-            this.update_in(cx, |this, window, cx| match res {
+            this.update_in(cx, |this, window, cx| {
+                this.committing = false;
+                cx.notify();
+                match res {
                 Ok(()) => {
                     window.push_notification(
                         Notification::success(format!("Committed {n} change(s)")),
@@ -937,6 +959,7 @@ impl TableTab {
                         this.reload(cx);
                     }
                     window.push_notification(Notification::error(msg).title("Commit failed"), cx)
+                }
                 }
             })
             .ok();
