@@ -4,6 +4,7 @@ mod export;
 mod history;
 mod import;
 mod rncryptor;
+mod restore;
 mod runtime;
 mod saved;
 mod settings;

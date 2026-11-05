@@ -674,7 +674,11 @@ impl QueryTab {
         window.focus(&fh, cx);
     }
 
-    #[cfg(test)]
+    /// The editor's current text.
+    pub fn text_now(&self, cx: &App) -> String {
+        self.editor.read(cx).value().to_string()
+    }
+
     #[cfg(test)]
     pub fn plan_labels(&self) -> Vec<String> {
         self.plan

@@ -41,6 +41,9 @@ pub struct AppView {
     /// `None` shows the connection list.
     active: Option<usize>,
     focus: FocusHandle,
+    /// Saved tabs of connections reopening at launch, by connection id
+    /// (and whether that session was in front).
+    pending_restore: std::collections::HashMap<String, (crate::restore::SessionState, bool)>,
 }
 
 impl AppView {
@@ -53,11 +56,50 @@ impl AppView {
             view: cx.entity().downgrade(),
             window: window.window_handle(),
         });
+        // Last time's state is saved on quit, and reopened once at launch.
+        cx.on_app_quit(|this: &mut AppView, cx| {
+            this.save_state(cx);
+            async {}
+        })
+        .detach();
+        if crate::settings::get(cx).restore_sessions && !cfg!(test) {
+            cx.defer_in(window, |this, window, cx| this.restore_state(window, cx));
+        }
         Self {
             home,
             sessions: Vec::new(),
             active: None,
             focus,
+            pending_restore: Default::default(),
+        }
+    }
+
+    fn snapshot(&self, cx: &App) -> crate::restore::State {
+        crate::restore::State {
+            sessions: self.sessions.iter().map(|s| s.read(cx).snapshot(cx)).collect(),
+            active: self
+                .active
+                .and_then(|i| self.sessions.get(i))
+                .map(|s| s.read(cx).shared.cfg.id.clone()),
+        }
+    }
+
+    pub fn save_state(&self, cx: &App) {
+        crate::restore::save(&self.snapshot(cx));
+    }
+
+    /// Connects last time's saved connections; their tabs reopen as each
+    /// one connects (see `connect`).
+    fn restore_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = crate::restore::load();
+        let saved = self.home.read(cx).connections.clone();
+        for s in state.sessions {
+            let Some(cfg) = saved.iter().find(|c| c.id == s.conn_id).cloned() else {
+                continue;
+            };
+            let front = state.active.as_deref() == Some(s.conn_id.as_str());
+            self.pending_restore.insert(s.conn_id.clone(), (s, front));
+            self.home.update(cx, |h, cx| h.connect(cfg, window, cx));
         }
     }
 
@@ -89,9 +131,20 @@ impl AppView {
                             conn: Arc::new(RwLock::new(conn)),
                             schema: Default::default(),
                         });
+                        let id = shared.cfg.id.clone();
                         let session = cx.new(|cx| Session::new(shared, window, cx));
-                        this.sessions.push(session);
-                        this.active = Some(this.sessions.len() - 1);
+                        this.sessions.push(session.clone());
+                        let me = this.sessions.len() - 1;
+                        match this.pending_restore.remove(&id) {
+                            Some((state, front)) => {
+                                session.update(cx, |s, cx| s.restore_tabs(state, window, cx));
+                                if front || this.active.is_none() {
+                                    this.active = Some(me);
+                                }
+                            }
+                            None => this.active = Some(me),
+                        }
+                        this.save_state(cx);
                     }
                     Err(e) => window.push_notification(
                         Notification::error(format!("{e:#}"))
@@ -191,7 +244,25 @@ impl AppView {
             Some(a) if a > ix => Some(a - 1),
             other => other,
         };
+        self.save_state(cx);
         cx.notify();
+    }
+
+    #[cfg(test)]
+    pub fn reopen_for_test(
+        &mut self,
+        state: crate::restore::SessionState,
+        cfg: ConnectionConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_restore.insert(state.conn_id.clone(), (state, true));
+        self.connect(cfg, window, cx, |_, _, _| {});
+    }
+
+    #[cfg(test)]
+    pub fn snapshot_for_test(&self, cx: &App) -> crate::restore::State {
+        self.snapshot(cx)
     }
 
     fn rail_button(&self, ix: Option<usize>, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1514,6 +1585,50 @@ mod tests {
             session.read_with(cx, |s, _| s.object("new_name").is_some() && s.object("old_name").is_none())
         });
         assert!(!cx.update(|w, cx| w.has_active_dialog(cx)));
+        let _ = std::fs::remove_file(file);
+    }
+
+    /// Tabs (with unsaved query text) survive a restart: snapshot, close,
+    /// reopen the connection with the saved state.
+    #[gpui::test]
+    fn session_restore(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-restore-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        futures::executor::block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute("create table kept (id integer primary key)").await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg.clone(), w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| app.read_with(cx, |a, _| a.sessions.len() == 1));
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| session.read_with(cx, |s, _| s.object_index("kept").is_some()));
+        session.update_in(&mut cx, |s, w, cx| {
+            let i = s.object_index("kept").unwrap();
+            s.open_object(i, w, cx);
+            s.new_query_for_test(w, cx);
+        });
+        cx.run_until_parked();
+        cx.simulate_input("select 'draft'");
+        let state = app.read_with(&cx, |a, cx| a.snapshot_for_test(cx));
+        assert_eq!(state.sessions[0].tabs.len(), 2);
+
+        app.update_in(&mut cx, |a, _, cx| a.remove_session(0, cx));
+        app.update_in(&mut cx, |a, w, cx| {
+            a.reopen_for_test(state.sessions[0].clone(), cfg, w, cx)
+        });
+        wait_until(&mut cx, "reopened", |cx| app.read_with(cx, |a, _| a.sessions.len() == 1));
+        let s = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        assert_eq!(s.read_with(&cx, |s, _| s.tab_count()), 2);
+        let q = s.read_with(&cx, |s, _| s.active_query().expect("query tab in front"));
+        assert_eq!(q.read_with(&cx, |q, cx| q.text(cx)), "select 'draft'");
         let _ = std::fs::remove_file(file);
     }
 

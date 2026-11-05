@@ -1,4 +1,4 @@
-//! Settings dialog: interface and editor font sizes.
+//! Settings dialog: interface and editor font sizes, session restore.
 
 use gpui::{App, Context, IntoElement, ParentElement, Render, Styled, Window, div, prelude::*, px};
 use gpui_component::button::{Button, ButtonVariants as _};
@@ -82,6 +82,15 @@ impl Render for SettingsView {
                 |s, v| s.editor_font_size = v,
                 cx,
             ))
+            .child(
+                gpui_component::checkbox::Checkbox::new("restore-sessions")
+                    .checked(s.restore_sessions)
+                    .label("Reopen last connections and tabs at launch")
+                    .on_click(|v: &bool, _, cx| {
+                        let v = *v;
+                        settings::update(cx, |s| s.restore_sessions = v)
+                    }),
+            )
             .child(
                 div()
                     .p_2()

@@ -723,6 +723,63 @@ impl Session {
         self.activate(next, window, cx);
     }
 
+    /// What to reopen next launch.
+    pub fn snapshot(&self, cx: &App) -> crate::restore::SessionState {
+        use crate::restore::TabState;
+        crate::restore::SessionState {
+            conn_id: self.shared.cfg.id.clone(),
+            tabs: self
+                .tabs
+                .iter()
+                .map(|t| match t {
+                    TabItem::Table(e) => {
+                        let o = &e.read(cx).object;
+                        TabState::Table {
+                            schema: o.schema.clone(),
+                            name: o.name.clone(),
+                            kind: o.kind,
+                        }
+                    }
+                    TabItem::Query(e) => {
+                        let q = e.read(cx);
+                        TabState::Query {
+                            title: q.title.clone(),
+                            text: q.text_now(cx),
+                        }
+                    }
+                })
+                .collect(),
+            active_tab: self.active,
+        }
+    }
+
+    /// Reopens tabs saved by `snapshot`.
+    pub fn restore_tabs(
+        &mut self,
+        state: crate::restore::SessionState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::restore::TabState;
+        for t in state.tabs {
+            match t {
+                TabState::Table { schema, name, kind } => {
+                    self.open_table_tab(DbObject { schema, name, kind }, vec![], window, cx)
+                }
+                TabState::Query { title, text } => {
+                    self.open_query(text, window, cx);
+                    if let Some(q) = self.active_query() {
+                        q.update(cx, |q, _| q.title = title);
+                    }
+                }
+            }
+        }
+        if state.active_tab < self.tabs.len() {
+            self.activate(state.active_tab, window, cx);
+        }
+        cx.notify();
+    }
+
     #[cfg(test)]
     pub fn tab_count(&self) -> usize {
         self.tabs.len()

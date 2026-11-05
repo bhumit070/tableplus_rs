@@ -16,6 +16,8 @@ pub struct Settings {
     pub ui_font_size: f32,
     /// SQL / query editor text.
     pub editor_font_size: f32,
+    /// Reopen last time's connections and tabs at launch.
+    pub restore_sessions: bool,
 }
 
 impl Default for Settings {
@@ -23,6 +25,7 @@ impl Default for Settings {
         Self {
             ui_font_size: 16.,
             editor_font_size: 13.,
+            restore_sessions: true,
         }
     }
 }
@@ -100,12 +103,14 @@ mod tests {
             s.clamped(),
             Settings {
                 ui_font_size: 24.,
-                editor_font_size: 13.
+                editor_font_size: 13.,
+                restore_sessions: true,
             }
         );
         let s = Settings {
             ui_font_size: 14.6,
             editor_font_size: 1.,
+            ..Default::default()
         }
         .clamped();
         assert_eq!((s.ui_font_size, s.editor_font_size), (15., 10.));
