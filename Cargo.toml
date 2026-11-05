@@ -21,7 +21,7 @@ serde_json = "1.0.154"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "sqlite", "chrono", "uuid", "json", "rust_decimal"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
 uuid = { version = "1.29.0", features = ["v4", "serde"] }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["font-kit", "runtime_shaders"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["font-kit", "runtime_shaders", "x11", "wayland"] }
 plist = "1.10.3"
 aes = "0.9.4"
 cbc = { version = "0.2.1", features = ["alloc"] }

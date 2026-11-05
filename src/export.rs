@@ -96,24 +96,23 @@ pub fn literal(driver: Driver, v: &Option<String>) -> String {
     }
 }
 
-fn delimited(columns: &[String], rows: &[Row], sep: char) -> String {
+/// One delimited line. NULL is an empty field and an empty string is `""`
+/// (as in Postgres' CSV), so the two stay distinguishable.
+fn delimited_line(cells: &[Option<String>], sep: char) -> String {
     let esc = |s: &str| {
-        if s.contains([sep, '"', '\n', '\r']) {
+        if s.is_empty() || s.contains([sep, '"', '\n', '\r']) {
             format!("\"{}\"", s.replace('"', "\"\""))
         } else {
             s.to_string()
         }
     };
-    let mut out = String::new();
-    let mut line = |cells: Vec<String>| {
-        out.push_str(&cells.join(&sep.to_string()));
-        out.push('\n');
-    };
-    line(columns.iter().map(|c| esc(c)).collect());
-    for r in rows {
-        line(r.iter().map(|v| v.as_deref().map(esc).unwrap_or_default()).collect());
-    }
-    out
+    let mut line = cells
+        .iter()
+        .map(|v| v.as_deref().map(esc).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join(&sep.to_string());
+    line.push('\n');
+    line
 }
 
 /// JSON keys for `columns`: a repeated name (`select a.id, b.id`) gets a
@@ -147,49 +146,15 @@ fn json_object(columns: &[String], row: &Row) -> serde_json::Value {
     )
 }
 
-fn markdown(columns: &[String], rows: &[Row]) -> String {
-    let esc = |s: &str| s.replace('|', "\\|").replace(['\n', '\r'], " ");
-    let mut out = format!(
-        "| {} |\n|{}\n",
-        columns.iter().map(|c| esc(c)).collect::<Vec<_>>().join(" | "),
-        " --- |".repeat(columns.len())
-    );
-    for r in rows {
-        let cells: Vec<String> = r
-            .iter()
-            .map(|v| v.as_deref().map(esc).unwrap_or_else(|| "NULL".into()))
-            .collect();
-        out.push_str(&format!("| {} |\n", cells.join(" | ")));
-    }
-    out
+fn md_esc(s: &str) -> String {
+    s.replace('|', "\\|").replace(['\n', '\r'], " ")
 }
 
-fn html(columns: &[String], rows: &[Row]) -> String {
-    let esc = |s: &str| {
-        s.replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-            .replace('"', "&quot;")
-    };
-    let mut out = String::from(
-        "<!doctype html>\n<meta charset=\"utf-8\">\n<table>\n<thead><tr>",
-    );
-    for c in columns {
-        out.push_str(&format!("<th>{}</th>", esc(c)));
-    }
-    out.push_str("</tr></thead>\n<tbody>\n");
-    for r in rows {
-        out.push_str("<tr>");
-        for v in r {
-            match v {
-                Some(s) => out.push_str(&format!("<td>{}</td>", esc(s))),
-                None => out.push_str("<td><i>NULL</i></td>"),
-            }
-        }
-        out.push_str("</tr>\n");
-    }
-    out.push_str("</tbody>\n</table>\n");
-    out
+fn html_esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// One `INSERT` per row.
@@ -257,26 +222,110 @@ pub fn in_list(driver: Driver, values: &[Option<String>]) -> String {
     format!("({})", vals.join(", "))
 }
 
+/// Writes `format` in pieces: `header`, then `rows` for each page, then
+/// `footer` — so a big table never has to sit in memory at once.
+pub struct Encoder<'a> {
+    format: Format,
+    columns: &'a [String],
+    target: &'a SqlTarget,
+    /// Rows written so far (JSON needs commas between objects).
+    written: usize,
+}
+
+impl<'a> Encoder<'a> {
+    pub fn new(format: Format, columns: &'a [String], target: &'a SqlTarget) -> Self {
+        Encoder {
+            format,
+            columns,
+            target,
+            written: 0,
+        }
+    }
+
+    pub fn header(&self) -> String {
+        let names: Vec<Option<String>> = self.columns.iter().cloned().map(Some).collect();
+        match self.format {
+            Format::Csv => delimited_line(&names, ','),
+            Format::Tsv => delimited_line(&names, '\t'),
+            Format::Json => "[".into(),
+            Format::Markdown => format!(
+                "| {} |\n|{}\n",
+                self.columns.iter().map(|c| md_esc(c)).collect::<Vec<_>>().join(" | "),
+                " --- |".repeat(self.columns.len())
+            ),
+            Format::Html => {
+                let mut out =
+                    String::from("<!doctype html>\n<meta charset=\"utf-8\">\n<table>\n<thead><tr>");
+                for c in self.columns {
+                    out.push_str(&format!("<th>{}</th>", html_esc(c)));
+                }
+                out.push_str("</tr></thead>\n<tbody>\n");
+                out
+            }
+            Format::JsonLines | Format::SqlInsert => String::new(),
+        }
+    }
+
+    pub fn rows(&mut self, rows: &[Row]) -> String {
+        let mut out = String::new();
+        for r in rows {
+            match self.format {
+                Format::Csv => out.push_str(&delimited_line(r, ',')),
+                Format::Tsv => out.push_str(&delimited_line(r, '\t')),
+                Format::Json => {
+                    out.push_str(if self.written == 0 { "\n  " } else { ",\n  " });
+                    let obj = serde_json::to_string_pretty(&json_object(self.columns, r))
+                        .unwrap_or_default();
+                    out.push_str(&obj.replace('\n', "\n  "));
+                }
+                Format::JsonLines => {
+                    out.push_str(&json_object(self.columns, r).to_string());
+                    out.push('\n');
+                }
+                Format::Markdown => {
+                    let cells: Vec<String> = r
+                        .iter()
+                        .map(|v| v.as_deref().map(md_esc).unwrap_or_else(|| "NULL".into()))
+                        .collect();
+                    out.push_str(&format!("| {} |\n", cells.join(" | ")));
+                }
+                Format::Html => {
+                    out.push_str("<tr>");
+                    for v in r {
+                        match v {
+                            Some(s) => out.push_str(&format!("<td>{}</td>", html_esc(s))),
+                            None => out.push_str("<td><i>NULL</i></td>"),
+                        }
+                    }
+                    out.push_str("</tr>\n");
+                }
+                Format::SqlInsert => {
+                    out.push_str(&inserts(self.target, self.columns, std::slice::from_ref(r)))
+                }
+            }
+            self.written += 1;
+        }
+        out
+    }
+
+    pub fn footer(&self) -> String {
+        match self.format {
+            Format::Json if self.written == 0 => "]\n".into(),
+            Format::Json => "\n]\n".into(),
+            Format::Html => "</tbody>\n</table>\n".into(),
+            _ => String::new(),
+        }
+    }
+}
+
 /// The whole result in `format`. SQL needs a target table; without one it
 /// uses `target.table` as given (e.g. "query_result").
 pub fn render(format: Format, columns: &[String], rows: &[Row], target: &SqlTarget) -> String {
-    match format {
-        Format::Csv => delimited(columns, rows, ','),
-        Format::Tsv => delimited(columns, rows, '\t'),
-        Format::Json => {
-            let arr: Vec<_> = rows.iter().map(|r| json_object(columns, r)).collect();
-            let mut s = serde_json::to_string_pretty(&arr).unwrap_or_default();
-            s.push('\n');
-            s
-        }
-        Format::JsonLines => rows
-            .iter()
-            .map(|r| format!("{}\n", json_object(columns, r)))
-            .collect(),
-        Format::Markdown => markdown(columns, rows),
-        Format::Html => html(columns, rows),
-        Format::SqlInsert => inserts(target, columns, rows),
-    }
+    let mut e = Encoder::new(format, columns, target);
+    let mut out = e.header();
+    out.push_str(&e.rows(rows));
+    out.push_str(&e.footer());
+    out
 }
 
 #[cfg(test)]
@@ -325,6 +374,22 @@ mod tests {
     }
 
     #[test]
+    fn csv_tells_null_from_empty() {
+        let r = vec![vec![None, Some(String::new())]];
+        assert_eq!(render(Format::Csv, &cols(), &r, &pg()), "id,name\n,\"\"\n");
+        // And it reads back that way.
+        let mut rd = csv_reader(render(Format::Csv, &cols(), &r, &pg()));
+        let rec = rd.records().next().unwrap().unwrap();
+        assert_eq!((&rec[0], &rec[1]), ("", ""));
+        let j = render(Format::Json, &cols(), &[], &pg());
+        assert_eq!(j, "[]\n");
+    }
+
+    fn csv_reader(s: String) -> csv::Reader<std::io::Cursor<Vec<u8>>> {
+        csv::Reader::from_reader(std::io::Cursor::new(s.into_bytes()))
+    }
+
+    #[test]
     fn json_keeps_repeated_column_names() {
         let cols = vec!["id".to_string(), "id".to_string()];
         let j = render(Format::JsonLines, &cols, &[vec![Some("1".into()), Some("2".into())]], &pg());
@@ -333,9 +398,9 @@ mod tests {
 
     #[test]
     fn markdown_and_html_escape() {
-        let md = markdown(&cols(), &[vec![Some("a|b".into()), None]]);
+        let md = render(Format::Markdown, &cols(), &[vec![Some("a|b".into()), None]], &pg());
         assert_eq!(md, "| id | name |\n| --- | --- |\n| a\\|b | NULL |\n");
-        let h = html(&cols(), &[vec![Some("<b>".into()), None]]);
+        let h = render(Format::Html, &cols(), &[vec![Some("<b>".into()), None]], &pg());
         assert!(h.contains("<td>&lt;b&gt;</td><td><i>NULL</i></td>"));
     }
 

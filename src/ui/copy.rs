@@ -188,36 +188,62 @@ async fn write_export(
     source: Source,
     path: PathBuf,
 ) -> anyhow::Result<usize> {
-    let (columns, rows) = match source {
-        Source::Loaded => (columns, loaded),
-        Source::Table { conn, query } => {
-            runtime::spawn(async move {
-                let c = conn.read().await;
-                let mut q = query;
-                q.limit = PAGE;
-                q.offset = 0;
-                let (mut columns, mut rows) = (vec![], vec![]);
-                loop {
-                    let (res, _) = c.fetch_table(&q).await?;
-                    let n = res.rows.len();
-                    if columns.is_empty() {
-                        columns = res.columns;
-                    }
-                    rows.extend(res.rows);
-                    if n < PAGE {
-                        break;
-                    }
-                    q.offset += PAGE;
+    use std::io::Write as _;
+    // Written next to the destination, then renamed: a failed or cancelled
+    // export never leaves a half file under the chosen name.
+    let tmp = path.with_extension(format!("tabula-{}.tmp", uuid::Uuid::new_v4().simple()));
+    let result = runtime::spawn({
+        let tmp = tmp.clone();
+        async move {
+            let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+            match source {
+                Source::Loaded => {
+                    let mut e = export::Encoder::new(format, &columns, &target);
+                    out.write_all(e.header().as_bytes())?;
+                    out.write_all(e.rows(&loaded).as_bytes())?;
+                    out.write_all(e.footer().as_bytes())?;
+                    out.flush()?;
+                    Ok(loaded.len())
                 }
-                Ok((columns, rows))
-            })
-            .await?
+                // Page by page, so a big table is never all in memory.
+                Source::Table { conn, query } => {
+                    let c = conn.read().await;
+                    let mut q = query;
+                    q.limit = PAGE;
+                    q.offset = 0;
+                    let (first, _) = c.fetch_table(&q).await?;
+                    let columns = first.columns.clone();
+                    let mut e = export::Encoder::new(format, &columns, &target);
+                    out.write_all(e.header().as_bytes())?;
+                    let mut page = first.rows;
+                    let mut n = 0;
+                    loop {
+                        n += page.len();
+                        out.write_all(e.rows(&page).as_bytes())?;
+                        if page.len() < PAGE {
+                            break;
+                        }
+                        q.offset += PAGE;
+                        page = c.fetch_table(&q).await?.0.rows;
+                    }
+                    out.write_all(e.footer().as_bytes())?;
+                    out.flush()?;
+                    Ok(n)
+                }
+            }
         }
-    };
-    let n = rows.len();
-    let text = export::render(format, &columns, &rows, &target);
-    std::fs::write(&path, text)?;
-    Ok(n)
+    })
+    .await;
+    match result {
+        Ok(n) => {
+            std::fs::rename(&tmp, &path)?;
+            Ok(n)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
 }
 
 /// For ⌘C with a whole row selected: the row's values, tab-separated.

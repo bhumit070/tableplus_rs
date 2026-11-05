@@ -152,15 +152,54 @@ pub struct Tunnel {
     pub port: u16,
     pub host: String,
     task: tokio::task::JoinHandle<()>,
-    session: Arc<client::Handle<Client>>,
+    /// Why the last attempt to reopen a dropped session failed, if it did.
+    reopen_error: Arc<Mutex<Option<String>>>,
 }
 
 impl Tunnel {
-    /// The SSH session ended (server gone, network dropped, keepalive
-    /// failed): nothing goes through any more.
-    pub fn closed(&self) -> bool {
-        self.session.is_closed() || self.task.is_finished()
+    /// The SSH session dropped and couldn't be reopened: nothing goes
+    /// through until it can. Returns why.
+    pub fn broken(&self) -> Option<String> {
+        if self.task.is_finished() {
+            return Some("the tunnel stopped".into());
+        }
+        self.reopen_error.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
+}
+
+/// Connects and logs in to the SSH server (host key checked as above).
+async fn session(ssh: &SshConfig) -> Result<client::Handle<Client>> {
+    let port = if ssh.port == 0 { 22 } else { ssh.port };
+    let config = Arc::new(client::Config {
+        keepalive_interval: Some(Duration::from_secs(30)),
+        nodelay: true,
+        ..Default::default()
+    });
+    let problem = Arc::new(Mutex::new(None));
+    let handler = Client {
+        host: ssh.host.clone(),
+        port,
+        problem: problem.clone(),
+    };
+    let connect = client::connect(config, (ssh.host.as_str(), port), handler);
+    let mut session = match tokio::time::timeout(Duration::from_secs(15), connect).await {
+        Err(_) => bail!("SSH: timed out connecting to {}:{port}", ssh.host),
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            return Err(match problem.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                Some(KeyProblem::Unknown(u)) => anyhow::Error::new(u),
+                Some(KeyProblem::Changed(msg)) => anyhow::anyhow!("SSH: {msg}"),
+                None => anyhow::Error::new(e)
+                    .context(format!("SSH: couldn't connect to {}:{port}", ssh.host)),
+            });
+        }
+    };
+    // An agent waiting for a hardware-key touch, or a stalled server,
+    // mustn't hang the connect forever.
+    tokio::time::timeout(Duration::from_secs(60), authenticate(&mut session, ssh))
+        .await
+        .map_err(|_| anyhow::anyhow!("SSH: login to {} didn't finish within 60 s", ssh.host))??;
+    Ok(session)
 }
 
 impl Drop for Tunnel {
@@ -183,49 +222,52 @@ impl Tunnel {
         if target_host.starts_with("mongodb") {
             bail!("a MongoDB connection string can't go through an SSH tunnel; enter host and port instead");
         }
-        let port = if ssh.port == 0 { 22 } else { ssh.port };
-        let config = Arc::new(client::Config {
-            keepalive_interval: Some(Duration::from_secs(30)),
-            nodelay: true,
-            ..Default::default()
-        });
-        let problem = Arc::new(Mutex::new(None));
-        let handler = Client {
-            host: ssh.host.clone(),
-            port,
-            problem: problem.clone(),
-        };
-        let connect = client::connect(config, (ssh.host.as_str(), port), handler);
-        let mut session = match tokio::time::timeout(Duration::from_secs(15), connect).await {
-            Err(_) => bail!("SSH: timed out connecting to {}:{port}", ssh.host),
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => {
-                return Err(match problem.lock().unwrap_or_else(|e| e.into_inner()).take() {
-                    Some(KeyProblem::Unknown(u)) => anyhow::Error::new(u),
-                    Some(KeyProblem::Changed(msg)) => anyhow::anyhow!("SSH: {msg}"),
-                    None => anyhow::Error::new(e)
-                        .context(format!("SSH: couldn't connect to {}:{port}", ssh.host)),
-                });
-            }
-        };
-        // An agent waiting for a hardware-key touch, or a stalled server,
-        // mustn't hang the connect forever.
-        tokio::time::timeout(Duration::from_secs(60), authenticate(&mut session, ssh))
-            .await
-            .map_err(|_| anyhow::anyhow!("SSH: login to {} didn't finish within 60 s", ssh.host))??;
-
+        let first = session(ssh).await?;
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let local_port = listener.local_addr()?.port();
-        let session = Arc::new(session);
-        let kept = session.clone();
+        // The live session; replaced when it drops (laptop sleep, network
+        // change, server restart) by the next connection that needs it.
+        let current = Arc::new(tokio::sync::Mutex::new(Arc::new(first)));
+        let reopen_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let errors = reopen_error.clone();
+        let host = ssh.host.clone();
+        let ssh = ssh.clone();
         let target = target_host.to_string();
         let task = tokio::spawn(async move {
             // Owned here, so aborting the task also stops every forward.
             let mut forwards = JoinSet::new();
-            while let Ok((mut socket, from)) = listener.accept().await {
-                let (session, target) = (session.clone(), target.clone());
+            loop {
+                let (mut socket, from) = match listener.accept().await {
+                    Ok(a) => a,
+                    // Out of file descriptors and the like: try again shortly
+                    // rather than ending the tunnel for good.
+                    Err(e) => {
+                        eprintln!("SSH tunnel: accept failed: {e}");
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        continue;
+                    }
+                };
+                let (current, errors, ssh, target) =
+                    (current.clone(), errors.clone(), ssh.clone(), target.clone());
                 forwards.spawn(async move {
-                    let channel = session
+                    let live = {
+                        let mut guard = current.lock().await;
+                        if guard.is_closed() {
+                            match session(&ssh).await {
+                                Ok(s) => {
+                                    *guard = Arc::new(s);
+                                    *errors.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                                }
+                                Err(e) => {
+                                    *errors.lock().unwrap_or_else(|e| e.into_inner()) =
+                                        Some(format!("{e:#}"));
+                                    return;
+                                }
+                            }
+                        }
+                        guard.clone()
+                    };
+                    let channel = live
                         .channel_open_direct_tcpip(
                             target,
                             target_port as u32,
@@ -249,9 +291,9 @@ impl Tunnel {
         });
         Ok(Tunnel {
             port: local_port,
-            host: ssh.host.clone(),
+            host,
             task,
-            session: kept,
+            reopen_error,
         })
     }
 }
@@ -387,8 +429,30 @@ pub(crate) mod test_server {
         }
     }
 
+    /// Running client sessions; disconnecting them drops those clients.
+    pub type Sessions = Arc<std::sync::Mutex<Vec<russh::server::Handle>>>;
+
+    /// Ends every session, as a server restart would.
+    pub async fn drop_all(sessions: &Sessions) {
+        let all: Vec<_> = sessions.lock().unwrap().drain(..).collect();
+        for h in all {
+            let _ = h
+                .disconnect(russh::Disconnect::ByApplication, "bye".into(), "en".into())
+                .await;
+        }
+    }
+
     /// Starts the server on a free port; returns (port, host key).
     pub async fn start(client_key: Option<russh::keys::PublicKey>) -> (u16, PrivateKey) {
+        let (port, key, _) = start_tracked(client_key).await;
+        (port, key)
+    }
+
+    pub async fn start_tracked(
+        client_key: Option<russh::keys::PublicKey>,
+    ) -> (u16, PrivateKey, Sessions) {
+        let sessions: Sessions = Default::default();
+        let tracked = sessions.clone();
         let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
         let config = Arc::new(server::Config {
             keys: vec![key.clone()],
@@ -400,15 +464,17 @@ pub(crate) mod test_server {
         tokio::spawn(async move {
             while let Ok((socket, _)) = listener.accept().await {
                 let (config, client_key) = (config.clone(), client_key.clone());
+                let tracked = tracked.clone();
                 tokio::spawn(async move {
                     let handler = Server { client_key };
                     if let Ok(s) = server::run_stream(config, socket, handler).await {
+                        tracked.lock().unwrap().push(s.handle());
                         let _ = s.await;
                     }
                 });
             }
         });
-        (port, key)
+        (port, key, sessions)
     }
 }
 
@@ -495,5 +561,42 @@ mod tests {
         c.secret = "wrong".into();
         assert!(Tunnel::open(&c, "127.0.0.1", 9).await.is_err());
         let _ = std::fs::remove_file(file);
+    }
+
+    /// The SSH session drops (server restart, network change): the next
+    /// connection through the tunnel opens a new session by itself.
+    #[tokio::test]
+    async fn tunnel_reopens_a_dropped_session() {
+        let (ssh_port, _, sessions) = test_server::start_tracked(None).await;
+        let echo = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let echo_port = echo.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = echo.accept().await {
+                tokio::spawn(async move {
+                    let (mut r, mut w) = s.split();
+                    let _ = tokio::io::copy(&mut r, &mut w).await;
+                });
+            }
+        });
+        let c = cfg(ssh_port, test_server::PASSWORD);
+        if let Err(e) = Tunnel::open(&c, "127.0.0.1", echo_port).await {
+            e.downcast_ref::<UnknownHostKey>().unwrap().trust().unwrap();
+        }
+        let t = Tunnel::open(&c, "127.0.0.1", echo_port).await.unwrap();
+        let roundtrip = |port: u16| async move {
+            let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            s.write_all(b"ping").await.unwrap();
+            let mut buf = [0u8; 4];
+            tokio::time::timeout(Duration::from_secs(5), s.read_exact(&mut buf))
+                .await
+                .is_ok_and(|r| r.is_ok())
+                && &buf == b"ping"
+        };
+        assert!(roundtrip(t.port).await);
+        // The server drops every session.
+        test_server::drop_all(&sessions).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(roundtrip(t.port).await, "reopened");
+        assert!(t.broken().is_none());
     }
 }

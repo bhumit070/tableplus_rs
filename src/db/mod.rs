@@ -32,12 +32,12 @@ impl Connection {
     /// lost, or the SSH tunnel it ran through has closed.
     fn explain(&self, e: anyhow::Error) -> anyhow::Error {
         let e = sql::explain_lost(e);
-        match &self._tunnel {
-            Some(t) if t.closed() => e.context(format!(
-                "The SSH tunnel through {} has closed. Close this connection and open it again",
+        match self._tunnel.as_ref().and_then(|t| t.broken().map(|why| (t, why))) {
+            Some((t, why)) => e.context(format!(
+                "The SSH tunnel through {} dropped and couldn't be reopened ({why}). It's retried on the next request",
                 t.host
             )),
-            _ => e,
+            None => e,
         }
     }
 
