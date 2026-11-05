@@ -24,6 +24,8 @@ pub struct ImportReport {
     /// Imported SSH connections that log in with a private key: TablePlus
     /// exports don't include the key, so the default ~/.ssh keys are used.
     pub ssh_key: Vec<String>,
+    /// Passwords that couldn't be stored in the keychain.
+    pub keychain_failed: usize,
 }
 
 pub fn tableplus_store() -> PathBuf {
@@ -233,7 +235,12 @@ pub fn parse(
 
 impl ImportReport {
     pub fn summary(&self) -> String {
-        let with_pw = self.added.iter().filter(|c| !c.password.is_empty()).count();
+        let with_pw = self
+            .added
+            .iter()
+            .filter(|c| !c.password.is_empty())
+            .count()
+            .saturating_sub(self.keychain_failed);
         let mut parts = vec![format!("Imported {} connection(s)", self.added.len())];
         if with_pw > 0 {
             parts.push(format!("{with_pw} password(s) saved to Keychain"));

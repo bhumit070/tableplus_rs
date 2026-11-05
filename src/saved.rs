@@ -20,25 +20,22 @@ fn path() -> PathBuf {
     crate::store::config_dir().join("saved_queries.json")
 }
 
-pub fn load() -> Vec<SavedQuery> {
-    load_from(&path())
-}
-
-fn load_from(p: &std::path::Path) -> Vec<SavedQuery> {
-    std::fs::read_to_string(p)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+/// A damaged file is moved aside (the error says where), never overwritten.
+fn load_from(p: &std::path::Path) -> Result<Vec<SavedQuery>> {
+    match crate::store::read_json(p, "saved queries") {
+        (list, None) => Ok(list),
+        (_, Some(warning)) => anyhow::bail!(warning),
+    }
 }
 
 /// Those visible on connection `conn_id`, by name.
-pub fn for_connection(conn_id: &str) -> Vec<SavedQuery> {
-    let mut list: Vec<_> = load()
+pub fn for_connection(conn_id: &str) -> Result<Vec<SavedQuery>> {
+    let mut list: Vec<_> = load_from(&path())?
         .into_iter()
         .filter(|q| q.conn_id.as_deref().is_none_or(|c| c == conn_id))
         .collect();
     list.sort_by_key(|q| q.name.to_lowercase());
-    list
+    Ok(list)
 }
 
 /// Adds `q`, or replaces the saved query with the same id.
@@ -47,7 +44,7 @@ pub fn upsert(q: SavedQuery) -> Result<()> {
 }
 
 fn upsert_at(p: &std::path::Path, q: SavedQuery) -> Result<()> {
-    let mut list = load_from(p);
+    let mut list = load_from(p)?;
     match list.iter_mut().find(|x| x.id == q.id) {
         Some(x) => *x = q,
         None => list.push(q),
@@ -57,19 +54,13 @@ fn upsert_at(p: &std::path::Path, q: SavedQuery) -> Result<()> {
 
 pub fn delete(id: &str) -> Result<()> {
     let p = path();
-    let mut list = load_from(&p);
+    let mut list = load_from(&p)?;
     list.retain(|q| q.id != id);
     save_to(&p, &list)
 }
 
 fn save_to(p: &std::path::Path, list: &[SavedQuery]) -> Result<()> {
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(list)?)?;
-    std::fs::rename(&tmp, p)?;
-    Ok(())
+    crate::store::write_atomic(p, &serde_json::to_string_pretty(list)?)
 }
 
 #[cfg(test)]
@@ -89,7 +80,7 @@ mod tests {
         upsert_at(&p, q("2", "everywhere", None)).unwrap();
         upsert_at(&p, q("3", "Other", Some("b"))).unwrap();
         upsert_at(&p, q("1", "Daily v2", Some("a"))).unwrap();
-        let all = load_from(&p);
+        let all = load_from(&p).unwrap();
         assert_eq!(all.len(), 3);
         assert_eq!(all[0].name, "Daily v2");
         let for_a: Vec<_> = all
@@ -98,6 +89,11 @@ mod tests {
             .map(|x| x.id.as_str())
             .collect();
         assert_eq!(for_a, ["1", "2"]);
+        // A damaged file is kept aside, and saving starts a new one.
+        std::fs::write(&p, "{ not json").unwrap();
+        assert!(load_from(&p).unwrap_err().to_string().contains("kept as"));
+        upsert_at(&p, q("9", "fresh", None)).unwrap();
+        assert_eq!(load_from(&p).unwrap().len(), 1);
         let _ = std::fs::remove_file(p);
     }
 }

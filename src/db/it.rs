@@ -1160,3 +1160,26 @@ async fn postgres_create_drop_database() {
     c.drop_database(&name).await.unwrap();
     assert!(!c.databases().await.unwrap().contains(&name));
 }
+
+#[tokio::test]
+#[ignore]
+async fn tmp_server_down_probe() {
+    for d in [Driver::Postgres, Driver::MySql, Driver::Redis, Driver::Mongo] {
+        let name = match d { Driver::Postgres => "tabula-test-pg", Driver::MySql => "tabula-test-mysql", Driver::Redis => "tabula-test-redis", _ => "tabula-test-mongo" };
+        let c = Connection::connect(&cfg(d)).await.unwrap();
+        let q = match d { Driver::Redis => "PING", Driver::Mongo => "{\"ping\": 1}", _ => "select 1" };
+        std::process::Command::new("docker").args(["pause", name]).status().unwrap();
+        let t = Instant::now();
+        let r = tokio::time::timeout(std::time::Duration::from_secs(40), c.execute(q)).await;
+        println!("PROBE {d:?} paused: after {:?}: {}", t.elapsed(), match &r { Err(_) => "STILL HANGING at 40s".into(), Ok(Ok(_)) => "ok?".into(), Ok(Err(e)) => format!("err: {e:#}") });
+        std::process::Command::new("docker").args(["unpause", name]).status().unwrap();
+        let t = Instant::now();
+        let r = tokio::time::timeout(std::time::Duration::from_secs(40), c.execute(q)).await;
+        println!("PROBE {d:?} after unpause: {:?} {}", t.elapsed(), match &r { Err(_) => "HANG".into(), Ok(Ok(_)) => "ok".into(), Ok(Err(e)) => format!("err: {e:#}") });
+        std::process::Command::new("docker").args(["restart", name]).status().unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+        let t = Instant::now();
+        let r = tokio::time::timeout(std::time::Duration::from_secs(40), c.execute(q)).await;
+        println!("PROBE {d:?} after restart: {:?} {}", t.elapsed(), match &r { Err(_) => "HANG".into(), Ok(Ok(_)) => "ok".into(), Ok(Err(e)) => format!("err: {e:#}") });
+    }
+}

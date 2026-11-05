@@ -40,22 +40,14 @@ fn path() -> std::path::PathBuf {
     crate::store::config_dir().join("session.json")
 }
 
-pub fn load() -> State {
-    std::fs::read_to_string(path())
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+/// The saved state, plus a message if the file was damaged (it's moved
+/// aside rather than overwritten).
+pub fn load() -> (State, Option<String>) {
+    crate::store::read_json(&path(), "the last session")
 }
 
-pub fn save(s: &State) {
-    let p = path();
-    if let Some(d) = p.parent() {
-        let _ = std::fs::create_dir_all(d);
-    }
-    let tmp = p.with_extension("json.tmp");
-    if std::fs::write(&tmp, serde_json::to_string_pretty(s).unwrap_or_default()).is_ok() {
-        let _ = std::fs::rename(tmp, p);
-    }
+pub fn save(s: &State) -> anyhow::Result<()> {
+    crate::store::write_atomic(&path(), &serde_json::to_string_pretty(s)?)
 }
 
 #[cfg(test)]

@@ -524,7 +524,16 @@ impl Session {
 
     /// ⌘⇧O: saved queries for this connection; picking one opens it.
     pub fn open_saved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let list = crate::saved::for_connection(&self.shared.cfg.id);
+        let list = match crate::saved::for_connection(&self.shared.cfg.id) {
+            Ok(l) => l,
+            Err(e) => {
+                window.push_notification(
+                    Notification::error(format!("{e:#}")).title("Saved queries"),
+                    cx,
+                );
+                return;
+            }
+        };
         if list.is_empty() {
             window.push_notification("No saved queries yet: save one with ⌘⇧S", cx);
             return;
@@ -570,7 +579,13 @@ impl Session {
     }
 
     fn pick_saved_to_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let list = crate::saved::for_connection(&self.shared.cfg.id);
+        let list = match crate::saved::for_connection(&self.shared.cfg.id) {
+            Ok(l) => l,
+            Err(e) => {
+                window.push_notification(Notification::error(format!("{e:#}")), cx);
+                return;
+            }
+        };
         let items = list
             .iter()
             .map(|q| PickItem::new(q.id.clone(), q.name.clone()))

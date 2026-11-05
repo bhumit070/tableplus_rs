@@ -22,7 +22,8 @@ pub struct Home {
     app: WeakEntity<AppView>,
     pub connections: Vec<ConnectionConfig>,
     search: Entity<InputState>,
-    pub connecting: Option<String>,
+    /// Ids of connections being opened (several at launch).
+    pub connecting: std::collections::HashSet<String>,
     /// Set when connections.json couldn't be read (it's kept aside).
     load_warning: Option<String>,
     _subs: Vec<Subscription>,
@@ -44,7 +45,7 @@ impl Home {
             connections,
             load_warning,
             search,
-            connecting: None,
+            connecting: Default::default(),
             _subs: subs,
         }
     }
@@ -81,8 +82,14 @@ impl Home {
     ) {
         let is_new = cfg.is_none();
         let mut cfg = cfg.unwrap_or_else(|| ConnectionConfig::new(Driver::Postgres));
-        if !is_new {
-            store::load_secrets(&mut cfg);
+        // The form must show the real secret: a blank field saved back
+        // would delete the stored password.
+        if !is_new && let Err(e) = store::load_secrets(&mut cfg) {
+            window.push_notification(
+                Notification::error(format!("{e:#}")).title("Can't edit this connection right now"),
+                cx,
+            );
+            return;
         }
         let form = cx.new(|cx| ConnForm::new(cfg, window, cx));
         let home = cx.entity().downgrade();
@@ -137,8 +144,15 @@ impl Home {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        store::load_secrets(&mut cfg);
-        self.connecting = Some(cfg.id.clone());
+        if let Err(e) = store::load_secrets(&mut cfg) {
+            window.push_notification(
+                Notification::error(format!("{e:#}"))
+                    .title(format!("Couldn't connect to {}", cfg.display_name())),
+                cx,
+            );
+            return;
+        }
+        self.connecting.insert(cfg.id.clone());
         cx.notify();
         let home = cx.entity().downgrade();
         self.app
@@ -146,7 +160,7 @@ impl Home {
                 let retry = cfg.clone();
                 app.connect(cfg, window, cx, move |ok, window, cx| {
                     home.update(cx, |h, cx| {
-                        h.connecting = None;
+                        h.connecting.remove(&retry.id);
                         // Imported connections have no password yet: let the user add it.
                         if !ok && retry.password.is_empty() && retry.driver != Driver::Sqlite {
                             h.open_form(Some(retry), window, cx);
@@ -200,12 +214,24 @@ impl Home {
                 return false;
             }
         };
+        let mut report = report;
+        let mut keychain_err = None;
         for c in &report.added {
             let has_secret =
                 !c.password.is_empty() || c.ssh.as_ref().is_some_and(|s| !s.secret.is_empty());
             if has_secret && let Err(e) = store::save_secrets(c) {
-                window.push_notification(Notification::warning(format!("Keychain: {e:#}")), cx);
+                report.keychain_failed += 1;
+                keychain_err.get_or_insert(e);
             }
+        }
+        if let Some(e) = keychain_err {
+            window.push_notification(
+                Notification::warning(format!(
+                    "{e:#}. Those connections will ask for their password when you open them."
+                ))
+                .title(format!("{} password(s) couldn't be saved", report.keychain_failed)),
+                cx,
+            );
         }
         // Drop passwords from memory; they're read from the Keychain on connect.
         self.connections
@@ -310,7 +336,13 @@ impl Home {
 
     fn duplicate(&mut self, cfg: &ConnectionConfig, window: &mut Window, cx: &mut Context<Self>) {
         let mut copy = cfg.clone();
-        store::load_secrets(&mut copy);
+        if let Err(e) = store::load_secrets(&mut copy) {
+            window.push_notification(
+                Notification::error(format!("{e:#}")).title("Couldn't duplicate the connection"),
+                cx,
+            );
+            return;
+        }
         copy.id = uuid::Uuid::new_v4().to_string();
         copy.name = format!("{} copy", cfg.display_name());
         self.upsert(&copy, window, cx);
@@ -328,7 +360,13 @@ impl Home {
                     let id = id.clone();
                     home.update(cx, |h, cx| {
                         h.connections.retain(|c| c.id != id);
-                        store::delete_password(&id);
+                        if let Err(e) = store::delete_password(&id) {
+                            window.push_notification(
+                                Notification::warning(format!("{e:#}"))
+                                    .title("The connection was removed, but its Keychain item wasn't"),
+                                cx,
+                            );
+                        }
                         h.persist(window, cx);
                         cx.notify();
                     })
@@ -345,7 +383,7 @@ impl Home {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme();
-        let connecting = self.connecting.as_deref() == Some(cfg.id.as_str());
+        let connecting = self.connecting.contains(&cfg.id);
         let subtitle = match cfg.driver {
             Driver::Sqlite => cfg.file.clone(),
             _ if cfg.host.starts_with("mongodb") => "connection string".into(),

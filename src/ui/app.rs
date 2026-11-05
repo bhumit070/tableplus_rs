@@ -76,7 +76,13 @@ impl AppView {
 
     fn snapshot(&self, cx: &App) -> crate::restore::State {
         crate::restore::State {
-            sessions: self.sessions.iter().map(|s| s.read(cx).snapshot(cx)).collect(),
+            // Ones still reconnecting (or that failed to) keep their tabs too.
+            sessions: self
+                .sessions
+                .iter()
+                .map(|s| s.read(cx).snapshot(cx))
+                .chain(self.pending_restore.values().map(|(s, _)| s.clone()))
+                .collect(),
             active: self
                 .active
                 .and_then(|i| self.sessions.get(i))
@@ -84,14 +90,21 @@ impl AppView {
         }
     }
 
+    /// Best effort: losing the session list isn't worth interrupting for,
+    /// but it's logged.
     pub fn save_state(&self, cx: &App) {
-        crate::restore::save(&self.snapshot(cx));
+        if let Err(e) = crate::restore::save(&self.snapshot(cx)) {
+            eprintln!("couldn't save the session: {e:#}");
+        }
     }
 
     /// Connects last time's saved connections; their tabs reopen as each
     /// one connects (see `connect`).
     fn restore_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let state = crate::restore::load();
+        let (state, warning) = crate::restore::load();
+        if let Some(w) = warning {
+            window.push_notification(Notification::warning(w), cx);
+        }
         let saved = self.home.read(cx).connections.clone();
         for s in state.sessions {
             let Some(cfg) = saved.iter().find(|c| c.id == s.conn_id).cloned() else {
@@ -99,7 +112,11 @@ impl AppView {
             };
             let front = state.active.as_deref() == Some(s.conn_id.as_str());
             self.pending_restore.insert(s.conn_id.clone(), (s, front));
-            self.home.update(cx, |h, cx| h.connect(cfg, window, cx));
+            // Home::connect updates this view: run it after this update.
+            let home = self.home.clone();
+            window.defer(cx, move |window, cx| {
+                home.update(cx, |h, cx| h.connect(cfg, window, cx));
+            });
         }
     }
 
@@ -1411,7 +1428,7 @@ mod tests {
         cx.simulate_input("Kept query");
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
-        let saved = crate::saved::for_connection(&conn_id);
+        let saved = crate::saved::for_connection(&conn_id).unwrap();
         let mine: Vec<_> = saved.iter().filter(|q| q.conn_id.as_deref() == Some(&conn_id)).collect();
         assert_eq!(mine.len(), 1);
         assert_eq!((mine[0].name.as_str(), mine[0].sql.as_str()), ("Kept query", "select 'kept'"));
@@ -1434,7 +1451,7 @@ mod tests {
         cx.simulate_keystrokes("cmd-shift-s");
         cx.run_until_parked();
         assert!(!cx.update(|w, cx| w.has_active_dialog(cx)));
-        let again = crate::saved::for_connection(&conn_id);
+        let again = crate::saved::for_connection(&conn_id).unwrap();
         let mine: Vec<_> = again.iter().filter(|q| q.conn_id.as_deref() == Some(&conn_id)).collect();
         assert_eq!(mine.len(), 1);
         assert_eq!(mine[0].sql, "select 'kept' -- v2");

@@ -37,20 +37,17 @@ fn path() -> PathBuf {
 }
 
 impl Settings {
+    /// A damaged file is moved aside and defaults are used.
     fn load() -> Self {
-        std::fs::read_to_string(path())
-            .ok()
-            .and_then(|t| serde_json::from_str::<Settings>(&t).ok())
-            .unwrap_or_default()
-            .clamped()
+        let (s, warning): (Settings, _) = crate::store::read_json(&path(), "settings");
+        if let Some(w) = warning {
+            eprintln!("{w}");
+        }
+        s.clamped()
     }
 
-    fn save(&self) {
-        let p = path();
-        if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(p, serde_json::to_string_pretty(self).unwrap_or_default());
+    fn save(&self) -> anyhow::Result<()> {
+        crate::store::write_atomic(&path(), &serde_json::to_string_pretty(self)?)
     }
 
     fn clamped(mut self) -> Self {
@@ -87,7 +84,16 @@ pub fn update(cx: &mut App, f: impl FnOnce(&mut Settings)) {
     let mut s = get(cx);
     f(&mut s);
     let s = s.clamped();
-    s.save();
+    if let Err(e) = s.save() {
+        // Applied for now, but it won't survive a restart: say so.
+        let msg = format!("Settings couldn't be saved: {e:#}");
+        if let Some(w) = cx.windows().first().copied() {
+            let _ = w.update(cx, |_, window, cx| {
+                use gpui_component::WindowExt as _;
+                window.push_notification(gpui_component::notification::Notification::warning(msg), cx);
+            });
+        }
+    }
     cx.set_global(s);
     apply_theme(cx);
 }
