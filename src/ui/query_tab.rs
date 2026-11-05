@@ -26,7 +26,7 @@ use super::copy;
 use super::row_panel;
 use super::grid::{Grid, data_table};
 use super::{RunQuery, Shared};
-use crate::db::{Cancel, ColumnInfo, DbObject, Driver, EnvTag, ObjectKind, QueryResult};
+use crate::db::{Cancel, ColumnInfo, DbObject, Driver, ObjectKind, QueryResult};
 use crate::{history, runtime};
 
 pub struct QueryTab {
@@ -214,23 +214,12 @@ impl QueryTab {
         if self.blocked_by_edits(window, cx) {
             return;
         }
-        if self.shared.cfg.tag == EnvTag::Production
-            && !crate::db::safety::is_read_only(self.shared.cfg.driver, &text)
-        {
-            let weak = cx.entity().downgrade();
-            let shown: SharedString = text.chars().take(600).collect::<String>().into();
-            window.open_alert_dialog(cx, move |d, _, _| {
-                let weak = weak.clone();
-                let text = text.clone();
-                d.title("Run on PRODUCTION?")
-                    .description(shown.clone())
-                    .on_ok(move |_, window, cx| {
-                        weak.update(cx, |t, cx| t.execute(text.clone(), window, cx))
-                            .ok();
-                        true
-                    })
-            });
-        } else {
+        let gate = crate::db::safety::gate_query(&self.shared.cfg, &text);
+        let weak = cx.entity().downgrade();
+        let t2 = text.clone();
+        if super::guarded(gate, &self.shared.cfg, "Run", text.clone(), window, cx, move |w, cx| {
+            weak.update(cx, |t, cx| t.execute(t2.clone(), w, cx)).ok();
+        }) {
             self.execute(text, window, cx);
         }
     }
@@ -580,19 +569,12 @@ impl QueryTab {
         if self.target.is_none() || !self.is_dirty(cx) {
             return;
         }
-        if self.shared.cfg.tag == EnvTag::Production {
-            let preview: SharedString = self.preview(cx).into();
-            let weak = cx.entity().downgrade();
-            window.open_alert_dialog(cx, move |d, _, _| {
-                let weak = weak.clone();
-                d.title("Commit to PRODUCTION?")
-                    .description(preview.clone())
-                    .on_ok(move |_, window, cx| {
-                        weak.update(cx, |t, cx| t.do_commit(window, cx)).ok();
-                        true
-                    })
-            });
-        } else {
+        let gate = crate::db::safety::gate_write(&self.shared.cfg);
+        let weak = cx.entity().downgrade();
+        let preview = self.preview(cx);
+        if super::guarded(gate, &self.shared.cfg, "Commit", preview, window, cx, move |w, cx| {
+            weak.update(cx, |t, cx| t.do_commit(w, cx)).ok();
+        }) {
             self.do_commit(window, cx);
         }
     }

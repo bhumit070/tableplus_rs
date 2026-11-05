@@ -78,6 +78,51 @@ pub struct Shared {
     pub schema: Rc<RefCell<completion::Schema>>,
 }
 
+/// Applies the safe mode: returns true when the caller may go ahead now;
+/// otherwise asks for confirmation (showing `detail`, then calling `go`)
+/// or explains why it's blocked, and returns false. (`go` runs later, so
+/// it may update the caller's entity.)
+pub fn guarded(
+    gate: crate::db::safety::Gate,
+    cfg: &ConnectionConfig,
+    what: &str,
+    detail: String,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+    go: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
+) -> bool {
+    use crate::db::safety::Gate;
+    use gpui_component::WindowExt as _;
+    match gate {
+        Gate::Run => return true,
+        Gate::Block(why) => window.push_notification(
+            gpui_component::notification::Notification::warning(why),
+            cx,
+        ),
+        Gate::Confirm => {
+            let target = if cfg.tag == crate::db::EnvTag::Production {
+                "PRODUCTION".to_string()
+            } else {
+                cfg.display_name()
+            };
+            let title = format!("{what} on {target}?");
+            let detail: gpui::SharedString = detail.chars().take(800).collect::<String>().into();
+            let go = std::rc::Rc::new(go);
+            window.open_alert_dialog(cx, move |d, _, _| {
+                let go = go.clone();
+                d.title(title.clone())
+                    .description(detail.clone())
+                    .show_cancel(true)
+                    .on_ok(move |_, window, cx| {
+                        go(window, cx);
+                        true
+                    })
+            });
+        }
+    }
+    false
+}
+
 /// Items for a searchable dropdown. A plain `Vec` also works as a dropdown
 /// list, but its search does nothing (GitHub #12); `SearchableVec` filters.
 pub type SearchList = gpui_component::select::SearchableVec<String>;

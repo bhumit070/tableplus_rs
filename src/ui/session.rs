@@ -817,6 +817,11 @@ impl Session {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let crate::db::safety::Gate::Block(why) = crate::db::safety::gate_write(&self.shared.cfg)
+        {
+            window.push_notification(Notification::warning(why), cx);
+            return;
+        }
         let weak = cx.entity().downgrade();
         let verb = if drop { "Drop" } else { "Truncate" };
         let title = format!("{verb} {}?", obj.title());

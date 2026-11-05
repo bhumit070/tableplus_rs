@@ -11,7 +11,7 @@ use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::{ActiveTheme as _, IndexPath, Sizable as _, h_flex, v_flex};
 
 use crate::db::ssh::{SshAuth, SshConfig, UnknownHostKey};
-use crate::db::{Connection, ConnectionConfig, Driver, EnvTag};
+use crate::db::{Connection, ConnectionConfig, Driver, EnvTag, SafeMode};
 
 const SSH_AUTHS: [(SshAuth, &str); 3] = [
     (SshAuth::Password, "Password"),
@@ -33,6 +33,7 @@ pub struct ConnForm {
     file: Entity<InputState>,
     ssl: bool,
     ssl_verify: bool,
+    safe_mode: Entity<SelectState<Vec<&'static str>>>,
     ssh: bool,
     ssh_host: Entity<InputState>,
     ssh_port: Entity<InputState>,
@@ -84,6 +85,15 @@ impl ConnForm {
         });
         let database = input(&cfg.database, "database (optional)", window, cx);
         let file = input(&cfg.file, "/path/to/database.sqlite", window, cx);
+        let si = SafeMode::ALL.iter().position(|m| *m == cfg.safe_mode).unwrap_or(0);
+        let safe_mode = cx.new(|cx| {
+            SelectState::new(
+                SafeMode::ALL.iter().map(|m| m.label()).collect(),
+                Some(IndexPath::new(si)),
+                window,
+                cx,
+            )
+        });
         let ssh = cfg.ssh.clone().unwrap_or_default();
         let ssh_host = input(&ssh.host, "ssh.example.com", window, cx);
         let ssh_port = input(
@@ -151,6 +161,7 @@ impl ConnForm {
             file,
             ssl: cfg.ssl,
             ssl_verify: cfg.ssl_verify,
+            safe_mode,
             ssh: cfg.ssh.is_some(),
             ssh_host,
             ssh_port,
@@ -193,6 +204,13 @@ impl ConnForm {
             ssl: self.ssl,
             ssl_verify: self.ssl && self.ssl_verify,
             password: self.password.read(cx).value().to_string(),
+            safe_mode: {
+                let l = self.safe_mode.read(cx).selected_value().copied().unwrap_or("");
+                SafeMode::ALL
+                    .into_iter()
+                    .find(|m| m.label() == l)
+                    .unwrap_or_default()
+            },
             ssh: (self.ssh && driver != Driver::Sqlite).then(|| SshConfig {
                 host: v(&self.ssh_host),
                 port: v(&self.ssh_port).parse().unwrap_or(22),
@@ -332,6 +350,7 @@ impl Render for ConnForm {
             .child(row("Type", Select::new(&self.driver).small(), cx))
             .child(row("Name", Input::new(&self.name).small(), cx))
             .child(row("Tag", Select::new(&self.tag).small(), cx))
+            .child(row("Safe mode", Select::new(&self.safe_mode).small(), cx))
             .when(driver == Driver::Sqlite, |f| {
                 f.child(row(
                     "File",

@@ -1,8 +1,38 @@
 //! Production safe mode: decides whether editor text only reads data, so it
 //! can run without a confirmation prompt. When unsure, it says "writes".
 
-use super::Driver;
 use super::split::split_statements;
+use super::{ConnectionConfig, Driver, SafeMode};
+
+/// What to do before running something.
+#[derive(Debug, PartialEq)]
+pub enum Gate {
+    Run,
+    Confirm,
+    Block(String),
+}
+
+const READ_ONLY: &str = "This connection is read-only (Safe mode). Change it in the connection's settings.";
+
+/// For editor text.
+pub fn gate_query(cfg: &ConnectionConfig, text: &str) -> Gate {
+    let reads = || is_read_only(cfg.driver, text);
+    match cfg.safety() {
+        SafeMode::ReadOnly if !reads() => Gate::Block(READ_ONLY.into()),
+        SafeMode::ConfirmAll => Gate::Confirm,
+        SafeMode::ConfirmWrites if !reads() => Gate::Confirm,
+        _ => Gate::Run,
+    }
+}
+
+/// For grid commits, imports, drop / truncate.
+pub fn gate_write(cfg: &ConnectionConfig) -> Gate {
+    match cfg.safety() {
+        SafeMode::ReadOnly => Gate::Block(READ_ONLY.into()),
+        SafeMode::ConfirmWrites | SafeMode::ConfirmAll => Gate::Confirm,
+        _ => Gate::Run,
+    }
+}
 
 pub fn is_read_only(driver: Driver, text: &str) -> bool {
     match driver {
@@ -185,6 +215,26 @@ mod tests {
             Driver::MySql,
             r"select 'a\'; drop table t'; drop table u"
         ));
+    }
+
+    #[test]
+    fn gates_follow_the_safe_mode() {
+        use crate::db::EnvTag;
+        let mut c = ConnectionConfig::new(Driver::Postgres);
+        let (read, write) = ("select 1", "delete from t");
+        assert_eq!(gate_query(&c, write), Gate::Run, "local + auto = off");
+        c.tag = EnvTag::Production;
+        assert_eq!(gate_query(&c, read), Gate::Run);
+        assert_eq!(gate_query(&c, write), Gate::Confirm);
+        assert_eq!(gate_write(&c), Gate::Confirm);
+        c.safe_mode = SafeMode::Off;
+        assert_eq!(gate_query(&c, write), Gate::Run, "explicit off wins over the tag");
+        c.safe_mode = SafeMode::ConfirmAll;
+        assert_eq!(gate_query(&c, read), Gate::Confirm);
+        c.safe_mode = SafeMode::ReadOnly;
+        assert_eq!(gate_query(&c, read), Gate::Run);
+        assert!(matches!(gate_query(&c, write), Gate::Block(_)));
+        assert!(matches!(gate_write(&c), Gate::Block(_)));
     }
 
     #[test]

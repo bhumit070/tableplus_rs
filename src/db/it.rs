@@ -813,3 +813,49 @@ async fn redis_clients() {
     let after = admin.processes().await.unwrap();
     assert!(after.rows.iter().all(|r| r[2].as_deref() != Some("tabula-it-other")));
 }
+
+/// Read-only safe mode is enforced by the server too, so a write the
+/// editor's guess misses still fails.
+async fn read_only_scenario(driver: Driver) {
+    let mut c = cfg(driver);
+    let setup = Connection::connect(&c).await.unwrap();
+    setup
+        .execute("drop table if exists it_ro; create table it_ro (id int)")
+        .await
+        .unwrap();
+    c.safe_mode = SafeMode::ReadOnly;
+    let ro = Connection::connect(&c).await.unwrap();
+    assert!(ro.execute("select count(*) from it_ro").await.is_ok());
+    // Looks like a read to a naive parser; the server still refuses.
+    let sneaky = "select 1; insert into it_ro values (1)";
+    assert!(ro.execute(sneaky).await.is_err(), "{driver:?}");
+    assert!(ro.execute("insert into it_ro values (2)").await.is_err(), "{driver:?}");
+    let n = setup.execute("select count(*) from it_ro").await.unwrap();
+    assert_eq!(n[0].rows[0][0].as_deref(), Some("0"));
+    setup.execute("drop table it_ro").await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_read_only() {
+    let mut c = cfg(Driver::Sqlite);
+    let setup = Connection::connect(&c).await.unwrap();
+    setup.execute("create table it_ro (id int)").await.unwrap();
+    c.safe_mode = SafeMode::ReadOnly;
+    let ro = Connection::connect(&c).await.unwrap();
+    assert!(ro.execute("insert into it_ro values (1)").await.is_err());
+    assert!(ro.execute("select count(*) from it_ro").await.is_ok());
+}
+
+#[tokio::test]
+async fn postgres_read_only() {
+    if it_enabled() {
+        read_only_scenario(Driver::Postgres).await;
+    }
+}
+
+#[tokio::test]
+async fn mysql_read_only() {
+    if it_enabled() {
+        read_only_scenario(Driver::MySql).await;
+    }
+}

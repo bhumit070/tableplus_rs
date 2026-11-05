@@ -694,6 +694,9 @@ impl TableTab {
         if self.shared.cfg.driver == crate::db::Driver::Redis {
             return fail("CSV import isn't available for Redis".into(), window, cx);
         }
+        if let crate::db::safety::Gate::Block(why) = crate::db::safety::gate_write(&self.shared.cfg) {
+            return fail(why, window, cx);
+        }
         let atomic = self
             .shared
             .conn
@@ -823,24 +826,20 @@ impl TableTab {
             .as_ref()
             .map(|s| s.columns.clone())
             .unwrap_or_default();
-        if self.shared.cfg.tag == EnvTag::Production {
-            let preview = self
-                .shared
+        let gate = crate::db::safety::gate_write(&self.shared.cfg);
+        let preview = if gate == crate::db::safety::Gate::Confirm {
+            self.shared
                 .conn
                 .try_read()
                 .map(|c| c.preview(&self.object, &columns, &changes))
-                .unwrap_or_default();
-            let weak = cx.entity().downgrade();
-            window.open_alert_dialog(cx, move |d, _, _| {
-                let weak = weak.clone();
-                d.title("Commit to PRODUCTION?")
-                    .description(SharedString::from(preview.clone()))
-                    .on_ok(move |_, window, cx| {
-                        weak.update(cx, |t, cx| t.do_commit(window, cx)).ok();
-                        true
-                    })
-            });
+                .unwrap_or_default()
         } else {
+            String::new()
+        };
+        let weak = cx.entity().downgrade();
+        if super::guarded(gate, &self.shared.cfg, "Commit", preview, window, cx, move |w, cx| {
+            weak.update(cx, |t, cx| t.do_commit(w, cx)).ok();
+        }) {
             self.do_commit(window, cx);
         }
     }

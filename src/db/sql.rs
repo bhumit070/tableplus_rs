@@ -254,8 +254,13 @@ macro_rules! run_batch {
                 }
             };
             // The server-side cancel makes the statement fail with its own
-            // error; report it as cancelled.
-            let res = res.map_err(|e| if cancel.is_cancelled() { anyhow::anyhow!(CANCELLED) } else { e });
+            // error, or (MySQL SLEEP) return early as if done: either way
+            // it was cancelled.
+            let res = if cancel.is_cancelled() {
+                Err(anyhow::anyhow!(CANCELLED))
+            } else {
+                res
+            };
             match res {
                 Ok(mut r) => {
                     r.elapsed_ms = start.elapsed().as_millis();
@@ -287,6 +292,12 @@ macro_rules! run_batch {
             } else {
                 String::new()
             };
+            if cancel.is_cancelled() {
+                if n == 1 && !rolled_back {
+                    return Err(e);
+                }
+                return Err(e.context(format!("Stopped at statement {} of {n}.{ran}{note}", i + 1)));
+            }
             return Err(e.context(format!("statement {} of {n} failed.{ran}{note}", i + 1)));
         }
         if rolled_back {
@@ -345,6 +356,7 @@ impl SqlConn {
 
     async fn open(cfg: &ConnectionConfig, database: &str, schema: Option<&str>) -> Result<Pool> {
         let timeout = Duration::from_secs(10);
+        let read_only = cfg.safety() == super::SafeMode::ReadOnly;
         Ok(match cfg.driver {
             Driver::Postgres => {
                 let mut o = PgConnectOptions::new()
@@ -360,10 +372,19 @@ impl SqlConn {
                 let mut pool = PgPoolOptions::new()
                     .max_connections(4)
                     .acquire_timeout(timeout);
+                let mut setup = vec![];
                 if let Some(schema) = schema {
                     // Every pooled connection resolves unqualified names in
                     // the chosen schema first; `public` keeps extensions working.
-                    let sql = format!("set search_path to {}, public", pg_ident(schema));
+                    setup.push(format!("set search_path to {}, public", pg_ident(schema)));
+                }
+                if read_only {
+                    // The server refuses writes, whatever the editor's
+                    // read/write guess says.
+                    setup.push("set session characteristics as transaction read only".into());
+                }
+                if !setup.is_empty() {
+                    let sql = setup.join("; ");
                     pool = pool.after_connect(move |conn, _| {
                         let sql = sql.clone();
                         Box::pin(async move {
@@ -386,13 +407,20 @@ impl SqlConn {
                 if !database.is_empty() {
                     o = o.database(database);
                 }
-                Pool::My(
-                    MySqlPoolOptions::new()
-                        .max_connections(4)
-                        .acquire_timeout(timeout)
-                        .connect_with(o)
-                        .await?,
-                )
+                let mut pool = MySqlPoolOptions::new()
+                    .max_connections(4)
+                    .acquire_timeout(timeout);
+                if read_only {
+                    pool = pool.after_connect(|conn, _| {
+                        Box::pin(async move {
+                            sqlx::raw_sql("set session transaction read only")
+                                .execute(&mut *conn)
+                                .await
+                                .map(|_| ())
+                        })
+                    });
+                }
+                Pool::My(pool.connect_with(o).await?)
             }
             Driver::Sqlite => {
                 if cfg.file.is_empty() {
@@ -404,7 +432,8 @@ impl SqlConn {
                 }
                 let o = SqliteConnectOptions::new()
                     .filename(&cfg.file)
-                    .create_if_missing(false);
+                    .create_if_missing(false)
+                    .read_only(read_only);
                 Pool::Lite(
                     SqlitePoolOptions::new()
                         .max_connections(4)

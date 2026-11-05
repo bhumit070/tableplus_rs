@@ -152,6 +152,43 @@ pub struct ConnectionConfig {
     /// Connect through an SSH tunnel.
     #[serde(default)]
     pub ssh: Option<ssh::SshConfig>,
+    #[serde(default)]
+    pub safe_mode: SafeMode,
+}
+
+/// How carefully Tabula treats writes on a connection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SafeMode {
+    /// Confirm writes on Production-tagged connections, nothing elsewhere.
+    #[default]
+    Auto,
+    Off,
+    /// Ask before running anything that writes, and before commits.
+    ConfirmWrites,
+    /// Ask before running any query.
+    ConfirmAll,
+    /// Refuse writes (also enforced by the server session where possible).
+    ReadOnly,
+}
+
+impl SafeMode {
+    pub const ALL: [SafeMode; 5] = [
+        SafeMode::Auto,
+        SafeMode::Off,
+        SafeMode::ConfirmWrites,
+        SafeMode::ConfirmAll,
+        SafeMode::ReadOnly,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SafeMode::Auto => "Automatic (confirm writes on Production)",
+            SafeMode::Off => "Off",
+            SafeMode::ConfirmWrites => "Confirm writes",
+            SafeMode::ConfirmAll => "Confirm every query",
+            SafeMode::ReadOnly => "Read-only",
+        }
+    }
 }
 
 impl ConnectionConfig {
@@ -170,6 +207,16 @@ impl ConnectionConfig {
             ssl_verify: false,
             password: String::new(),
             ssh: None,
+            safe_mode: SafeMode::Auto,
+        }
+    }
+
+    /// The safe mode in force (`Auto` resolved by the tag).
+    pub fn safety(&self) -> SafeMode {
+        match (self.safe_mode, self.tag) {
+            (SafeMode::Auto, EnvTag::Production) => SafeMode::ConfirmWrites,
+            (SafeMode::Auto, _) => SafeMode::Off,
+            (m, _) => m,
         }
     }
 
