@@ -59,14 +59,28 @@ pub fn find_tool(names: &[&str]) -> Option<PathBuf> {
     ] {
         dirs.push(d.into());
     }
+    // Windows installers put each version in its own folder.
+    for parent in [r"C:\Program Files\PostgreSQL", r"C:\Program Files\MySQL"] {
+        if let Ok(entries) = std::fs::read_dir(parent) {
+            dirs.extend(entries.flatten().map(|e| e.path().join("bin")));
+        }
+    }
     names
         .iter()
-        .flat_map(|n| dirs.iter().map(move |d| d.join(n)))
+        .map(|n| format!("{n}{}", std::env::consts::EXE_SUFFIX))
+        .flat_map(|n| dirs.iter().map(move |d| d.join(&n)).collect::<Vec<_>>())
         .find(|p| p.is_file())
 }
 
 fn tool(names: &[&str], install: &str) -> Result<PathBuf> {
     find_tool(names).with_context(|| {
+        let install = if cfg!(windows) {
+            "the PostgreSQL / MySQL installer (command-line tools), then try again"
+        } else if cfg!(target_os = "linux") {
+            "your package manager (postgresql-client / mysql-client)"
+        } else {
+            install
+        };
         format!("{} isn't installed. Install it with: {install}", names[0])
     })
 }

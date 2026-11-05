@@ -1,4 +1,4 @@
-# Builds Tabula for macOS and publishes a GitHub Release whenever Rust code
+# Builds Tabula for macOS, Linux and Windows and publishes a GitHub Release whenever Rust code
 # changes on main. Version: vMAJOR.MINOR.PATCH, where MAJOR.MINOR come from
 # Cargo.toml and PATCH counts up from the latest release of that series
 # (bump Cargo.toml to 0.2.0 to start v0.2.x).
@@ -55,22 +55,41 @@ jobs:
 
   build:
     needs: [version, test]
-    runs-on: macos-14
+    runs-on: ${{ matrix.os }}
+    # One platform failing shouldn't hide the others' builds; the release
+    # job publishes whatever was built and lists what's missing.
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - target: aarch64-apple-darwin
-            arch: apple-silicon
-          - target: x86_64-apple-darwin
-            arch: intel
+          - os: macos-14
+            target: aarch64-apple-darwin
+            name: macos-apple-silicon
+          - os: macos-14
+            target: x86_64-apple-darwin
+            name: macos-intel
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x86_64
     steps:
       - uses: actions/checkout@v4
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
+            libzstd-dev libdbus-1-dev libssl-dev libasound2-dev pkg-config clang cmake
       - run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
-      - name: Package Tabula.app
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
@@ -97,14 +116,39 @@ jobs:
           # Ad-hoc signature: required to run on Apple Silicon. Not notarized,
           # so the first launch needs right-click → Open.
           codesign --force --deep --sign - "$app"
-          ditto -c -k --keepParent "$app" "Tabula-${VERSION}-macos-${{ matrix.arch }}.zip"
+          ditto -c -k --keepParent "$app" "Tabula-${VERSION}-${{ matrix.name }}.zip"
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          dir="Tabula-${VERSION}-${{ matrix.name }}"
+          mkdir "$dir"
+          cp "target/${{ matrix.target }}/release/tabula" "$dir/"
+          cp README.md "$dir/"
+          tar -czf "$dir.tar.gz" "$dir"
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $dir = "Tabula-$env:VERSION-${{ matrix.name }}"
+          New-Item -ItemType Directory $dir | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/tabula.exe" "$dir/Tabula.exe"
+          Copy-Item README.md "$dir/"
+          Compress-Archive -Path $dir -DestinationPath "$dir.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-${{ matrix.arch }}
-          path: Tabula-*.zip
+          name: ${{ matrix.name }}
+          path: |
+            Tabula-*.zip
+            Tabula-*.tar.gz
 
   release:
     needs: [version, build]
+    # Publish what built, even if one platform failed.
+    if: ${{ !cancelled() && needs.version.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -117,8 +161,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.version.outputs.tag }}
         run: |
-          gh release create "$TAG" dist/*.zip \
+          shopt -s nullglob
+          files=(dist/*.zip dist/*.tar.gz)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No platform built; nothing to release." >&2
+            exit 1
+          fi
+          missing=""
+          for p in macos-apple-silicon macos-intel linux-x86_64 windows-x86_64; do
+            ls dist | grep -q -- "-$p\." || missing="$missing $p"
+          done
+          notes="Builds for macOS (Apple Silicon, Intel), Linux (x86_64) and Windows (x86_64).
+
+          - macOS: not notarized yet; on first launch right-click Tabula.app → Open (or run \`xattr -dr com.apple.quarantine Tabula.app\`).
+          - Linux: extract and run \`./tabula\` (needs X11 or Wayland, Vulkan, and a Secret Service keyring such as GNOME Keyring for saved passwords).
+          - Windows: unzip and run Tabula.exe (SmartScreen may ask the first time: More info → Run anyway)."
+          if [ -n "$missing" ]; then
+            notes="$notes
+
+          ⚠️ Not in this release (its build failed):$missing"
+          fi
+          gh release create "$TAG" "${files[@]}" \
             --target "$GITHUB_SHA" \
             --title "Tabula $TAG" \
             --generate-notes \
-            --notes "macOS builds for Apple Silicon and Intel. The app isn't notarized yet: on first launch, right-click Tabula.app → Open (or run \`xattr -dr com.apple.quarantine Tabula.app\`)."
+            --notes "$notes"

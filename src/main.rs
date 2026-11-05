@@ -1,3 +1,6 @@
+// A windowed app on Windows: no console window behind it.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod csv_import;
 mod db;
 mod export;

@@ -94,10 +94,16 @@ On Windows/Linux, use Ctrl in place of ⌘. Shortcuts work wherever focus is.
 ## Releases
 
 Every push to `main` that changes Rust code runs the tests and, if they pass,
-publishes a GitHub Release with macOS builds for Apple Silicon and Intel
-(`.github/workflows/release.yml`). Versions are `vMAJOR.MINOR.PATCH`:
-MAJOR.MINOR come from `Cargo.toml`, and PATCH counts up per release. The
-app isn't notarized yet, so on first launch right-click Tabula.app → Open.
+publishes a GitHub Release with builds for macOS (Apple Silicon and Intel),
+Linux (x86_64) and Windows (x86_64) (`.github/workflows/release.yml`).
+Versions are `vMAJOR.MINOR.PATCH`: MAJOR.MINOR come from `Cargo.toml`, and
+PATCH counts up per release. If one platform fails to build, the others are
+still published and the release notes say which is missing.
+
+- **macOS:** not notarized yet, so on first launch right-click Tabula.app → Open.
+- **Linux:** needs X11 or Wayland, Vulkan, and a Secret Service keyring
+  (GNOME Keyring, KWallet) for saved passwords.
+- **Windows:** SmartScreen may warn the first time (More info → Run anyway).
 
 ## Building
 
@@ -109,7 +115,14 @@ cargo run --release
 ```
 
 On macOS, shaders are compiled at startup (`runtime_shaders`), so Xcode's
-Metal Toolchain isn't needed.
+Metal Toolchain isn't needed. On Debian/Ubuntu, install the build
+dependencies first:
+
+```sh
+sudo apt-get install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
+  libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libzstd-dev libdbus-1-dev \
+  libssl-dev libasound2-dev pkg-config clang cmake
+```
 
 Settings and saved connections live in
 `~/Library/Application Support/tabula/` (`settings.json`,
