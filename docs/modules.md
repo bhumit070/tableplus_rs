@@ -65,6 +65,7 @@ also starts with a `//!` comment saying the same in more detail.
 | --- | --- |
 | `Cargo.toml`, `Cargo.lock` | Dependencies (see [Dependencies](dependencies.md)) and `.deb` packaging metadata. |
 | `rust-toolchain.toml` | Pins the Rust compiler version. |
+| `compose.yaml` | Throwaway database servers for the end-to-end tests (see [Building and testing](development.md#tests)). |
 | `packaging/windows/tabula.wxs` | WiX installer definition for the `.msi`. |
 | `packaging/linux/tabula.desktop` | Linux desktop entry installed by the `.deb`. |
 | `.github/workflows/release.yml` | Tests, builds and publishes releases. |

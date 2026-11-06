@@ -44,20 +44,31 @@ There are four kinds of test:
   views. Examples: run a query with ⌘↵, cancel it with ⌘., edit and commit
   a cell, switch database with ⌘K, restore a session.
 - **End-to-end tests** (`db/it.rs`) exercise every driver against a real
-  server. SQLite always runs. The others need `TABULA_IT=1` and these
-  throwaway containers:
+  server. SQLite always runs. The others need `TABULA_IT=1` and the
+  throwaway servers in `compose.yaml` at the repository root:
 
 ```sh
-docker run -d --rm --name tabula-test-pg -e POSTGRES_PASSWORD=test -p 55432:5432 postgres:17-alpine
-docker run -d --rm --name tabula-test-mysql -e MYSQL_ROOT_PASSWORD=test -e MYSQL_DATABASE=app -p 53306:3306 mysql:8.4
-docker run -d --rm --name tabula-test-redis -p 56379:6379 redis:7-alpine
-docker run -d --rm --name tabula-test-mongo -p 57017:27017 mongo:7
-docker exec tabula-test-pg createdb -U postgres tabula_it_other
+docker compose up -d --wait   # start them and wait until each is ready
+TABULA_IT=1 cargo test
+docker compose down           # stop and delete them; no data is kept
 ```
 
-With `TABULA_IT_PAUSE=1` as well, two more tests `docker pause` the Redis
-and Postgres containers to check that a server that stops answering times
-out with a clear error and recovers.
+| Server | Port | Login |
+| --- | --- | --- |
+| PostgreSQL 17 | 55432 | `postgres` / `test`, plus an empty `tabula_it_other` database |
+| MySQL 8.4 | 53306 | `root` / `test`, database `app` |
+| Redis 7 | 56379 | none |
+| MongoDB 7 | 57017 | none |
+
+Two more tests `docker pause` the Redis and Postgres containers to check
+that a server that stops answering times out with a clear error and
+recovers. They need `TABULA_IT_PAUSE=1` and must run on their own, since a
+paused server breaks the other tests running alongside:
+
+```sh
+TABULA_IT=1 TABULA_IT_PAUSE=1 cargo test frozen_server_times_out_and_recovers
+TABULA_IT=1 TABULA_IT_PAUSE=1 cargo test sidebar_shows_load_errors
+```
 
 Tests never touch your real data: `store::config_dir()` points to a temp
 folder under `cargo test`, and the keychain isn't used.

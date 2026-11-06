@@ -868,8 +868,8 @@ mod tests {
     }
 
     /// GitHub #11: ⌘K must focus the search box, and picking must switch.
-    /// Needs the throwaway Postgres container (TABULA_IT=1, port 55432) with
-    /// an extra database: `createdb -U postgres tabula_it_other`.
+    /// Needs the throwaway Postgres container from compose.yaml (TABULA_IT=1,
+    /// port 55432), which also creates the `tabula_it_other` database.
     #[gpui::test]
     fn db_picker_focuses_search_and_switches(cx: &mut TestAppContext) {
         if std::env::var("TABULA_IT").is_err() {

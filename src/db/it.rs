@@ -1,5 +1,6 @@
 //! End-to-end checks against real servers. SQLite always runs; the others
-//! run when TABULA_IT=1 and expect the throwaway containers on these ports:
+//! run when TABULA_IT=1 and expect the throwaway containers from
+//! compose.yaml (`docker compose up -d --wait`) on these ports:
 //!   pg 55432 (postgres/test), mysql 53306 (root/test, db app),
 //!   redis 56379, mongo 57017.
 

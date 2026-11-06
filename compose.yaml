@@ -1,0 +1,64 @@
+# Throwaway servers for the end-to-end tests (TABULA_IT=1 cargo test).
+#   docker compose up -d --wait    # start, and wait until all are ready
+#   docker compose down            # stop and delete them
+# Data lives in tmpfs, so nothing is left on disk after `down`.
+# Container names are fixed: the TABULA_IT_PAUSE tests `docker pause` them.
+
+name: tabula-test
+
+services:
+  pg:
+    image: postgres:17-alpine
+    container_name: tabula-test-pg
+    environment:
+      POSTGRES_PASSWORD: test
+    ports: ["55432:5432"]
+    tmpfs: /var/lib/postgresql/data
+    configs:
+      # A second database for the switch-database UI test.
+      - source: pg-init
+        target: /docker-entrypoint-initdb.d/other.sql
+    healthcheck:
+      # TCP: the init-time server listens on a socket only, so this waits
+      # until other.sql has run.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+      interval: 2s
+      retries: 30
+
+  mysql:
+    image: mysql:8.4
+    container_name: tabula-test-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: test
+      MYSQL_DATABASE: app
+    ports: ["53306:3306"]
+    tmpfs: /var/lib/mysql
+    healthcheck:
+      # TCP, so it only passes once the real server (not the init one) is up.
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-ptest"]
+      interval: 2s
+      retries: 60
+
+  redis:
+    image: redis:7-alpine
+    container_name: tabula-test-redis
+    ports: ["56379:6379"]
+    tmpfs: /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+
+  mongo:
+    image: mongo:7
+    container_name: tabula-test-mongo
+    ports: ["57017:27017"]
+    tmpfs: [/data/db, /data/configdb]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 2s
+      retries: 30
+
+configs:
+  pg-init:
+    content: CREATE DATABASE tabula_it_other;

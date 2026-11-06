@@ -146,14 +146,12 @@ cargo test                  # unit tests, SQLite end-to-end, UI keystroke tests
 TABULA_IT=1 cargo test      # also runs against real Postgres/MySQL/Redis/MongoDB
 ```
 
-`TABULA_IT=1` expects throwaway servers on these ports:
+`TABULA_IT=1` expects throwaway servers, defined in [`compose.yaml`](compose.yaml):
 
 ```sh
-docker run -d --rm --name tabula-test-pg -e POSTGRES_PASSWORD=test -p 55432:5432 postgres:17-alpine
-docker run -d --rm --name tabula-test-mysql -e MYSQL_ROOT_PASSWORD=test -e MYSQL_DATABASE=app -p 53306:3306 mysql:8.4
-docker run -d --rm --name tabula-test-redis -p 56379:6379 redis:7-alpine
-docker run -d --rm --name tabula-test-mongo -p 57017:27017 mongo:7
-docker exec tabula-test-pg createdb -U postgres tabula_it_other
+docker compose up -d --wait   # start Postgres, MySQL, Redis, MongoDB and wait until ready
+TABULA_IT=1 cargo test
+docker compose down           # stop and delete them
 ```
 
 ## Documentation
