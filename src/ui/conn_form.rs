@@ -375,10 +375,22 @@ impl Render for ConnForm {
         let theme = cx.theme().clone();
         v_flex()
             .gap_2()
-            .child(row("Type", Select::new(&self.driver).small(), cx))
+            .child(row(
+                "Type",
+                Select::new(&self.driver).cursor_pointer().small(),
+                cx,
+            ))
             .child(row("Name", Input::new(&self.name).small(), cx))
-            .child(row("Tag", Select::new(&self.tag).small(), cx))
-            .child(row("Safe mode", Select::new(&self.safe_mode).small(), cx))
+            .child(row(
+                "Tag",
+                Select::new(&self.tag).cursor_pointer().small(),
+                cx,
+            ))
+            .child(row(
+                "Safe mode",
+                Select::new(&self.safe_mode).cursor_pointer().small(),
+                cx,
+            ))
             .when(driver == Driver::Sqlite, |f| {
                 f.child(row(
                     "File",
@@ -386,9 +398,13 @@ impl Render for ConnForm {
                         .gap_1()
                         .child(div().flex_1().child(Input::new(&self.file).small()))
                         .child(
-                            Button::new("browse").label("Browse…").small().on_click(
-                                cx.listener(|this, _, window, cx| this.browse(window, cx)),
-                            ),
+                            Button::new("browse")
+                                .cursor_pointer()
+                                .label("Browse…")
+                                .small()
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.browse(window, cx)),
+                                ),
                         ),
                     cx,
                 ))
@@ -420,6 +436,7 @@ impl Render for ConnForm {
                 .child(row(
                     "SSL / TLS",
                     Checkbox::new("ssl")
+                        .cursor_pointer()
                         .checked(self.ssl)
                         .label("Require encrypted connection")
                         .on_click(cx.listener(|this, checked: &bool, _, cx| {
@@ -434,6 +451,7 @@ impl Render for ConnForm {
                         f.child(row(
                             "",
                             Checkbox::new("ssl-verify")
+                                .cursor_pointer()
                                 .checked(self.ssl_verify)
                                 .label("Verify server certificate (recommended)")
                                 .on_click(cx.listener(|this, checked: &bool, _, cx| {
@@ -449,6 +467,7 @@ impl Render for ConnForm {
                 f.child(row(
                     "SSH",
                     Checkbox::new("ssh")
+                        .cursor_pointer()
                         .checked(self.ssh)
                         .label("Connect through an SSH tunnel")
                         .on_click(cx.listener(|this, checked: &bool, _, cx| {
@@ -469,16 +488,26 @@ impl Render for ConnForm {
                     cx,
                 ))
                 .child(row("SSH user", Input::new(&self.ssh_user).small(), cx))
-                .child(row("Auth", Select::new(&self.ssh_auth).small(), cx))
+                .child(row(
+                    "Auth",
+                    Select::new(&self.ssh_auth).cursor_pointer().small(),
+                    cx,
+                ))
                 .when(auth == SshAuth::Key, |f| {
                     f.child(row(
                         "Key file",
                         h_flex()
                             .gap_1()
                             .child(div().flex_1().child(Input::new(&self.ssh_key).small()))
-                            .child(Button::new("browse-key").label("Browse…").small().on_click(
-                                cx.listener(|this, _, window, cx| this.browse_key(window, cx)),
-                            )),
+                            .child(
+                                Button::new("browse-key")
+                                    .cursor_pointer()
+                                    .label("Browse…")
+                                    .small()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.browse_key(window, cx)
+                                    })),
+                            ),
                         cx,
                     ))
                 })
@@ -507,6 +536,7 @@ impl Render for ConnForm {
                     .pt_1()
                     .child(
                         Button::new("test")
+                            .cursor_pointer()
                             .label("Test")
                             .small()
                             .loading(self.testing)
@@ -524,6 +554,7 @@ impl Render for ConnForm {
                     .when(self.unknown_host.is_some(), |f| {
                         f.child(
                             Button::new("trust-host")
+                                .cursor_pointer()
                                 .label("Trust Host")
                                 .small()
                                 .on_click(

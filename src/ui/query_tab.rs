@@ -575,6 +575,7 @@ impl QueryTab {
                     DialogFooter::new()
                         .child(
                             Button::new("save-all")
+                                .cursor_pointer()
                                 .label("Save for All Connections")
                                 .small()
                                 .on_click(move |_, window, cx| {
@@ -585,6 +586,7 @@ impl QueryTab {
                         )
                         .child(
                             Button::new("save-one")
+                                .cursor_pointer()
                                 .label("Save")
                                 .primary()
                                 .small()
@@ -966,7 +968,9 @@ impl QueryTab {
                                 .chars()
                                 .take(28)
                                 .collect::<String>();
-                            Tab::new().label(format!("{}: {first}", i + 1))
+                            Tab::new()
+                                .cursor_pointer()
+                                .label(format!("{}: {first}", i + 1))
                         }))
                         .on_click(cx.listener(|this, ix: &usize, window, cx| {
                             if *ix == this.active || this.blocked_by_edits(window, cx) {
@@ -993,6 +997,7 @@ impl QueryTab {
                     .child(div().flex_1())
                     .child(
                         Button::new("toggle-detail")
+                            .cursor_pointer()
                             .icon(IconName::PanelRight)
                             .ghost()
                             .xsmall()
@@ -1008,6 +1013,7 @@ impl QueryTab {
                         if pending > 0 {
                             bar.child(
                                 Button::new("discard-result")
+                                    .cursor_pointer()
                                     .label("Discard")
                                     .ghost()
                                     .xsmall()
@@ -1015,6 +1021,7 @@ impl QueryTab {
                             )
                             .child(
                                 Button::new("preview-result")
+                                    .cursor_pointer()
                                     .label("Preview SQL")
                                     .ghost()
                                     .xsmall()
@@ -1027,6 +1034,7 @@ impl QueryTab {
                             )
                             .child(
                                 Button::new("commit-result")
+                                    .cursor_pointer()
                                     .label(format!("Commit {pending}"))
                                     .primary()
                                     .xsmall()
@@ -1103,6 +1111,7 @@ impl Render for QueryTab {
             .border_color(theme.border)
             .child(if self.running {
                 Button::new("stop")
+                    .cursor_pointer()
                     .icon(IconName::Square)
                     .label("Stop")
                     .danger()
@@ -1111,6 +1120,7 @@ impl Render for QueryTab {
                     .on_click(cx.listener(|this, _, _, cx| this.cancel(cx)))
             } else {
                 Button::new("run")
+                    .cursor_pointer()
                     .icon(IconName::Play)
                     .label("Run")
                     .primary()
@@ -1126,6 +1136,7 @@ impl Render for QueryTab {
                 |d| {
                     d.child(
                         Button::new("explain")
+                            .cursor_pointer()
                             .label("Explain")
                             .ghost()
                             .small()
@@ -1137,6 +1148,7 @@ impl Render for QueryTab {
                     .when(self.shared.cfg.driver != Driver::Sqlite, |d| {
                         d.child(
                             Button::new("analyze")
+                                .cursor_pointer()
                                 .label("Analyze")
                                 .ghost()
                                 .small()
@@ -1150,6 +1162,7 @@ impl Render for QueryTab {
             )
             .child(
                 Button::new("save-query")
+                    .cursor_pointer()
                     .label("Save")
                     .ghost()
                     .small()
@@ -1161,6 +1174,7 @@ impl Render for QueryTab {
                 |d| {
                     d.child(
                         Button::new("format")
+                            .cursor_pointer()
                             .label("Format")
                             .ghost()
                             .small()

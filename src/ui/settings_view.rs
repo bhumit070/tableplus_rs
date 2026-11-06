@@ -2,12 +2,11 @@
 
 use gpui::{App, Context, IntoElement, ParentElement, Render, Styled, Window, div, prelude::*, px};
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
-};
+use gpui_component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit_assets::IconName;
 
 use crate::settings::{self, EDITOR_RANGE, Settings, UI_RANGE};
+use crate::ui::DisabledWhen as _;
 
 pub struct SettingsView;
 
@@ -38,9 +37,10 @@ fn stepper(
         .child(div().flex_1().text_sm().child(label))
         .child(
             Button::new((id, 0usize))
+                .cursor_pointer()
                 .icon(IconName::Minus)
                 .small()
-                .disabled(value <= range.0)
+                .disabled_when(value <= range.0)
                 .on_click(move |_, _, cx| settings::update(cx, |s| set(s, value - 1.))),
         )
         .child(
@@ -53,9 +53,10 @@ fn stepper(
         )
         .child(
             Button::new((id, 1usize))
+                .cursor_pointer()
                 .icon(IconName::Plus)
                 .small()
-                .disabled(value >= range.1)
+                .disabled_when(value >= range.1)
                 .on_click(move |_, _, cx| settings::update(cx, |s| set(s, value + 1.))),
         )
 }
@@ -84,6 +85,7 @@ impl Render for SettingsView {
             ))
             .child(
                 gpui_component::checkbox::Checkbox::new("restore-sessions")
+                    .cursor_pointer()
                     .checked(s.restore_sessions)
                     .label("Reopen last connections and tabs at launch")
                     .on_click(|v: &bool, _, cx| {
@@ -112,16 +114,18 @@ impl Render for SettingsView {
                     )
                     .child(
                         Button::new("reset-sizes")
+                            .cursor_pointer()
                             .label("Reset")
                             .ghost()
                             .small()
-                            .disabled(s == Settings::default())
+                            .disabled_when(s == Settings::default())
                             .on_click(|_, _, cx| {
                                 settings::update(cx, |s| *s = Settings::default())
                             }),
                     )
                     .child(
                         Button::new("close-settings")
+                            .cursor_pointer()
                             .label("Done")
                             .primary()
                             .small()

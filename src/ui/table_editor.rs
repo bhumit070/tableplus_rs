@@ -13,15 +13,14 @@ use gpui_component::checkbox::Checkbox;
 use gpui_component::dialog::DialogFooter;
 use gpui_component::input::{Input, InputState};
 use gpui_component::notification::Notification;
-use gpui_component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
-};
+use gpui_component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit_assets::IconName;
 
 use super::Shared;
 use crate::db::ddl::{self, ColChange, ColDef};
 use crate::db::{ColumnInfo, DbObject, Driver};
 use crate::runtime;
+use crate::ui::DisabledWhen as _;
 
 struct Row {
     /// The column as it is now; `None` for a new one.
@@ -132,6 +131,7 @@ impl TableEditor {
                     DialogFooter::new()
                         .child(
                             Button::new("preview-ddl")
+                                .cursor_pointer()
                                 .label("Preview SQL")
                                 .small()
                                 .on_click(move |_, window, cx| {
@@ -140,12 +140,14 @@ impl TableEditor {
                         )
                         .child(
                             Button::new("cancel-ddl")
+                                .cursor_pointer()
                                 .label("Cancel")
                                 .small()
                                 .on_click(|_, w, cx| w.close_dialog(cx)),
                         )
                         .child(
                             Button::new("apply-ddl")
+                                .cursor_pointer()
                                 .label("Apply")
                                 .primary()
                                 .small()
@@ -397,7 +399,7 @@ impl Render for TableEditor {
                             .child(div().w(px(180.)).child(Input::new(&r.ty).small()))
                             .child(
                                 div().w(px(50.)).child(
-                                    Checkbox::new(("null", i)).checked(r.nullable).on_click(
+                                    Checkbox::new(("null", i)).cursor_pointer().checked(r.nullable).on_click(
                                         cx.listener(move |e, v: &bool, _, cx| {
                                             if let Some(r) = e.row_mut(key) {
                                                 r.nullable = *v;
@@ -411,9 +413,9 @@ impl Render for TableEditor {
                             .child(
                                 div().w(px(50.)).child(
                                     // Only new tables set the key here.
-                                    Checkbox::new(("pk", i))
+                                    Checkbox::new(("pk", i)).cursor_pointer()
                                         .checked(r.pk)
-                                        .disabled(self.object.is_some())
+                                        .disabled_when(self.object.is_some())
                                         .on_click(cx.listener(move |e, v: &bool, _, cx| {
                                             if let Some(r) = e.row_mut(key) {
                                                 r.pk = *v;
@@ -426,7 +428,7 @@ impl Render for TableEditor {
                                 ),
                             )
                             .child(
-                                Button::new(("drop-col", i))
+                                Button::new(("drop-col", i)).cursor_pointer()
                                     .icon(if r.dropped { IconName::Undo } else { IconName::Delete })
                                     .ghost()
                                     .xsmall()
@@ -449,7 +451,7 @@ impl Render for TableEditor {
             )
             .child(
                 h_flex().child(
-                    Button::new("add-col")
+                    Button::new("add-col").cursor_pointer()
                         .icon(IconName::Plus)
                         .label("Add Column")
                         .ghost()

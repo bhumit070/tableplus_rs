@@ -108,19 +108,25 @@ impl Home {
                     DialogFooter::new()
                         .child(
                             Button::new("cancel")
+                                .cursor_pointer()
                                 .label("Cancel")
                                 .small()
                                 .on_click(|_, w, cx| w.close_dialog(cx)),
                         )
-                        .child(Button::new("save").label("Save").small().on_click(
-                            move |_, window, cx| {
-                                let cfg = f1.read(cx).config(cx);
-                                h1.update(cx, |h, cx| h.upsert(&cfg, window, cx)).ok();
-                                window.close_dialog(cx);
-                            },
-                        ))
+                        .child(
+                            Button::new("save")
+                                .cursor_pointer()
+                                .label("Save")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    let cfg = f1.read(cx).config(cx);
+                                    h1.update(cx, |h, cx| h.upsert(&cfg, window, cx)).ok();
+                                    window.close_dialog(cx);
+                                }),
+                        )
                         .child(
                             Button::new("connect")
+                                .cursor_pointer()
                                 .label("Connect")
                                 .primary()
                                 .small()
@@ -291,12 +297,14 @@ impl Home {
                     DialogFooter::new()
                         .child(
                             Button::new("cancel-import")
+                                .cursor_pointer()
                                 .label("Cancel")
                                 .small()
                                 .on_click(|_, w, cx| w.close_dialog(cx)),
                         )
                         .child(
                             Button::new("do-import")
+                                .cursor_pointer()
                                 .label("Import")
                                 .primary()
                                 .small()
@@ -477,6 +485,7 @@ impl Home {
                     .group_hover("conn-row", |s| s.visible())
                     .child(
                         Button::new(("edit", ix))
+                            .cursor_pointer()
                             .icon(IconName::Pencil)
                             .ghost()
                             .xsmall()
@@ -488,6 +497,7 @@ impl Home {
                     )
                     .child(
                         Button::new(("dup", ix))
+                            .cursor_pointer()
                             .icon(IconName::Copy)
                             .ghost()
                             .xsmall()
@@ -499,6 +509,7 @@ impl Home {
                     )
                     .child(
                         Button::new(("del", ix))
+                            .cursor_pointer()
                             .icon(IconName::Trash)
                             .ghost()
                             .xsmall()
@@ -511,6 +522,7 @@ impl Home {
             )
             .child(
                 Button::new(("open", ix))
+                    .cursor_pointer()
                     .label("Connect")
                     .small()
                     .primary()
@@ -579,6 +591,7 @@ impl Render for Home {
                 .child("No connections yet")
                 .child(
                     Button::new("first-conn")
+                        .cursor_pointer()
                         .label("Create a connection")
                         .primary()
                         .on_click(
@@ -625,7 +638,7 @@ impl Render for Home {
                         .child(div().flex_1().child(Input::new(&self.search).cleanable(true).prefix(Icon::new(IconName::Search).small())))
                         .child({
                             let (h1, h2) = (cx.entity().downgrade(), cx.entity().downgrade());
-                            Button::new("import")
+                            Button::new("import").cursor_pointer()
                                 .icon(IconName::Download)
                                 .label("Import")
                                 .dropdown_caret(true)
@@ -640,7 +653,7 @@ impl Render for Home {
                                 })
                         })
                         .child(
-                            Button::new("new-conn")
+                            Button::new("new-conn").cursor_pointer()
                                 .icon(IconName::Plus)
                                 .label("New Connection")
                                 .primary()

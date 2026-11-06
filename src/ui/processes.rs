@@ -180,6 +180,7 @@ impl Render for Processes {
                     .gap_2()
                     .child(
                         Button::new("refresh-processes")
+                            .cursor_pointer()
                             .label("Refresh")
                             .small()
                             .loading(self.loading)
@@ -187,6 +188,7 @@ impl Render for Processes {
                     )
                     .child(
                         Checkbox::new("auto-refresh")
+                            .cursor_pointer()
                             .checked(self.auto)
                             .label("Auto-refresh")
                             .on_click(cx.listener(|p, checked: &bool, _, cx| {
@@ -204,6 +206,7 @@ impl Render for Processes {
                     .when(!redis, |d| {
                         d.child(
                             Button::new("cancel-process")
+                                .cursor_pointer()
                                 .label("Cancel Query")
                                 .small()
                                 .on_click(
@@ -213,6 +216,7 @@ impl Render for Processes {
                     })
                     .child(
                         Button::new("kill-process")
+                            .cursor_pointer()
                             .label("Kill Connection")
                             .danger()
                             .small()

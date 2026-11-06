@@ -1571,10 +1571,16 @@ impl Session {
                 v_flex()
                     .gap_1()
                     .p_2()
-                    .child(Select::new(&self.db_select).small().placeholder("Database"))
+                    .child(
+                        Select::new(&self.db_select)
+                            .cursor_pointer()
+                            .small()
+                            .placeholder("Database"),
+                    )
                     .when(self.schemas.len() > 1, |d| {
                         d.child(
                             Select::new(&self.schema_select)
+                                .cursor_pointer()
                                 .small()
                                 .placeholder("Schema"),
                         )
@@ -1600,6 +1606,7 @@ impl Session {
                         .child(div().text_color(theme.foreground).child(e))
                         .child(
                             Button::new("retry-objects")
+                                .cursor_pointer()
                                 .debug_selector(|| "retry-objects".into())
                                 .label("Retry")
                                 .xsmall()
@@ -1626,6 +1633,7 @@ impl Session {
                         };
                         let s = session.clone();
                         ListItem::new(ix)
+                            .cursor_pointer()
                             .selected(selected)
                             .py_0p5()
                             .pl(px(10.) + px(14.) * entry.depth() as f32)
@@ -1675,6 +1683,7 @@ impl Session {
                         .border_color(cx.theme().border)
                         .child(
                             Button::new("new-table")
+                                .cursor_pointer()
                                 .icon(IconName::Plus)
                                 .label("New Table")
                                 .ghost()
@@ -1702,10 +1711,12 @@ impl Session {
                     ),
                 };
                 Tab::new()
+                    .cursor_pointer()
                     .prefix(Icon::new(icon).small().ml_2())
                     .label(if dirty { format!("{title} •") } else { title })
                     .suffix(
                         Button::new(("close-tab", i))
+                            .cursor_pointer()
                             .icon(IconName::X)
                             .ghost()
                             .xsmall()
@@ -1722,6 +1733,7 @@ impl Session {
             .children(tabs)
             .suffix(
                 Button::new("new-query")
+                    .cursor_pointer()
                     .icon(IconName::Plus)
                     .ghost()
                     .small()
@@ -1779,6 +1791,7 @@ impl Render for Session {
                 // Opens the connection picker: switch to another open
                 // connection, open a saved one, or add a new one.
                 Button::new("switch-connection")
+                    .cursor_pointer()
                     .label(cfg.display_name())
                     .ghost()
                     .xsmall()
@@ -1797,6 +1810,7 @@ impl Render for Session {
             .child(div().flex_1())
             .child(
                 Button::new("reload-objects")
+                    .cursor_pointer()
                     .icon(IconName::RefreshCw)
                     .ghost()
                     .xsmall()

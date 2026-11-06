@@ -17,8 +17,7 @@ use gpui_component::select::{Select, SelectState};
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::table::{TableEvent, TableState};
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, IndexPath, Selectable as _, Sizable as _, WindowExt as _,
-    h_flex, v_flex,
+    ActiveTheme as _, IndexPath, Selectable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit_assets::IconName;
 
@@ -32,6 +31,7 @@ use super::{
 };
 use crate::db::{DbObject, EnvTag, Filter, FilterOp, QueryResult, Structure, TableQuery};
 use crate::runtime;
+use crate::ui::DisabledWhen as _;
 
 pub enum TableTabEvent {
     /// Open `table` showing only rows matching `filters`.
@@ -1070,8 +1070,16 @@ impl TableTab {
             .children(self.filters.iter().enumerate().map(|(i, f)| {
                 h_flex()
                     .gap_1()
-                    .child(div().w(px(200.)).child(Select::new(&f.column).small()))
-                    .child(div().w(px(130.)).child(Select::new(&f.op).small()))
+                    .child(
+                        div()
+                            .w(px(200.))
+                            .child(Select::new(&f.column).cursor_pointer().small()),
+                    )
+                    .child(
+                        div()
+                            .w(px(130.))
+                            .child(Select::new(&f.op).cursor_pointer().small()),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -1079,6 +1087,7 @@ impl TableTab {
                     )
                     .child(
                         Button::new(("rm-filter", i))
+                            .cursor_pointer()
                             .icon(IconName::Minus)
                             .ghost()
                             .small()
@@ -1092,6 +1101,7 @@ impl TableTab {
                     .when(i == self.filters.len() - 1, |row| {
                         row.child(
                             Button::new("add-filter")
+                                .cursor_pointer()
                                 .icon(IconName::Plus)
                                 .ghost()
                                 .small()
@@ -1102,6 +1112,7 @@ impl TableTab {
                         )
                         .child(
                             Button::new("apply-filter")
+                                .cursor_pointer()
                                 .label("Apply")
                                 .primary()
                                 .small()
@@ -1135,6 +1146,7 @@ impl TableTab {
             .bg(theme.title_bar)
             .child(
                 Button::new("view-data")
+                    .cursor_pointer()
                     .label("Data")
                     .small()
                     .ghost()
@@ -1146,6 +1158,7 @@ impl TableTab {
             )
             .child(
                 Button::new("view-structure")
+                    .cursor_pointer()
                     .label("Structure")
                     .small()
                     .ghost()
@@ -1159,6 +1172,7 @@ impl TableTab {
             .when(!self.show_structure, |f| {
                 f.child(
                     Button::new("toggle-detail")
+                        .cursor_pointer()
                         .icon(IconName::PanelRight)
                         .ghost()
                         .small()
@@ -1173,6 +1187,7 @@ impl TableTab {
             .when(!self.show_structure, |f| {
                 f.child(
                     Button::new("add-row")
+                        .cursor_pointer()
                         .icon(IconName::Plus)
                         .ghost()
                         .small()
@@ -1183,6 +1198,7 @@ impl TableTab {
                 )
                 .child(
                     Button::new("del-row")
+                        .cursor_pointer()
                         .icon(IconName::Minus)
                         .ghost()
                         .small()
@@ -1193,6 +1209,7 @@ impl TableTab {
                 )
                 .child(
                     Button::new("filter")
+                        .cursor_pointer()
                         .icon(IconName::ListFilter)
                         .ghost()
                         .small()
@@ -1207,6 +1224,7 @@ impl TableTab {
                 f.child(div().w(px(8.)))
                     .child(
                         Button::new("discard")
+                            .cursor_pointer()
                             .label("Discard")
                             .small()
                             .ghost()
@@ -1216,6 +1234,7 @@ impl TableTab {
                     )
                     .child(
                         Button::new("preview")
+                            .cursor_pointer()
                             .label("Preview SQL")
                             .small()
                             .ghost()
@@ -1225,6 +1244,7 @@ impl TableTab {
                     )
                     .child(
                         Button::new("commit")
+                            .cursor_pointer()
                             .label(format!("Commit {pending}"))
                             .small()
                             .primary()
@@ -1244,10 +1264,11 @@ impl TableTab {
             .child(div().w(px(8.)))
             .child(
                 Button::new("prev-page")
+                    .cursor_pointer()
                     .icon(IconName::ChevronLeft)
                     .ghost()
                     .small()
-                    .disabled(page == 0)
+                    .disabled_when(page == 0)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.reload_unless_dirty(window, cx, |t| t.page = t.page.saturating_sub(1));
                     })),
@@ -1259,16 +1280,18 @@ impl TableTab {
             )))
             .child(
                 Button::new("next-page")
+                    .cursor_pointer()
                     .icon(IconName::ChevronRight)
                     .ghost()
                     .small()
-                    .disabled(pages.is_some_and(|p| page + 1 >= p))
+                    .disabled_when(pages.is_some_and(|p| page + 1 >= p))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.reload_unless_dirty(window, cx, |t| t.page += 1);
                     })),
             )
             .child(
                 Button::new("page-size")
+                    .cursor_pointer()
                     .label(format!("{} / page", self.page_size))
                     .ghost()
                     .small()
@@ -1286,6 +1309,7 @@ impl TableTab {
             )
             .child(
                 Button::new("refresh")
+                    .cursor_pointer()
                     .icon(IconName::RefreshCw)
                     .ghost()
                     .small()
@@ -1358,6 +1382,7 @@ impl Render for TableTab {
                             d.child(
                                 h_flex().p_1().child(
                                     Button::new("edit-columns")
+                                        .cursor_pointer()
                                         .icon(IconName::Replace)
                                         .label("Edit Columns…")
                                         .ghost()
@@ -1386,6 +1411,7 @@ impl Render for TableTab {
                             .p_1()
                             .child(
                                 Button::new("copy-ddl")
+                                    .cursor_pointer()
                                     .icon(IconName::Copy)
                                     .label("Copy")
                                     .ghost()
@@ -1402,6 +1428,7 @@ impl Render for TableTab {
                             )
                             .child(
                                 Button::new("ddl-to-query")
+                                    .cursor_pointer()
                                     .icon(IconName::SquareTerminal)
                                     .label("Open in Query Tab")
                                     .ghost()
@@ -1442,10 +1469,18 @@ impl Render for TableTab {
                         .underline()
                         .small()
                         .selected_index(section)
-                        .child(Tab::new().label("Columns"))
-                        .child(Tab::new().label(format!("Indexes ({idx_count})")))
-                        .child(Tab::new().label(format!("Foreign Keys ({fk_count})")))
-                        .child(Tab::new().label("SQL"))
+                        .child(Tab::new().cursor_pointer().label("Columns"))
+                        .child(
+                            Tab::new()
+                                .cursor_pointer()
+                                .label(format!("Indexes ({idx_count})")),
+                        )
+                        .child(
+                            Tab::new()
+                                .cursor_pointer()
+                                .label(format!("Foreign Keys ({fk_count})")),
+                        )
+                        .child(Tab::new().cursor_pointer().label("SQL"))
                         .on_click(cx.listener(|this, ix: &usize, _, cx| {
                             this.struct_section = *ix;
                             cx.notify();
@@ -1521,6 +1556,7 @@ impl Render for TableTab {
                                 .child(format!("Referenced row: {text}"))
                                 .child(
                                     Button::new("clear-fixed")
+                                        .cursor_pointer()
                                         .debug_selector(|| "clear-fixed".into())
                                         .icon(IconName::Close)
                                         .ghost()

@@ -117,6 +117,7 @@ impl Render for Choices {
                 .py_0p5()
                 .rounded_sm()
                 .whitespace_nowrap()
+                .cursor_pointer()
                 .when(o.is_none(), |d| d.text_color(theme.muted_foreground))
                 .when(i == self.ix, |d| {
                     d.bg(theme.accent).text_color(theme.accent_foreground)
@@ -366,12 +367,14 @@ fn edit_multiline<H: CellEditHost>(
                 DialogFooter::new()
                     .child(
                         Button::new("cancel-cell")
+                            .cursor_pointer()
                             .label("Cancel")
                             .small()
                             .on_click(|_, w, cx| w.close_dialog(cx)),
                     )
                     .child(
                         Button::new("save-cell")
+                            .cursor_pointer()
                             .label("Save")
                             .primary()
                             .small()

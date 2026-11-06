@@ -23,6 +23,22 @@ use tokio::sync::RwLock;
 
 use crate::db::{Connection, ConnectionConfig};
 
+/// Web-style cursors on disabled controls: gpui-component keeps the arrow,
+/// we show "not allowed" (and the hand, set where each control is built,
+/// while enabled).
+pub trait DisabledWhen: gpui_component::Disableable + gpui::Styled + Sized {
+    fn disabled_when(self, disabled: bool) -> Self {
+        let this = self.disabled(disabled);
+        if disabled {
+            this.cursor_not_allowed()
+        } else {
+            this
+        }
+    }
+}
+
+impl<T: gpui_component::Disableable + gpui::Styled> DisabledWhen for T {}
+
 gpui::actions!(
     tabula,
     [
@@ -183,12 +199,14 @@ pub fn prompt_text(
                 gpui_component::dialog::DialogFooter::new()
                     .child(
                         Button::new("prompt-cancel")
+                            .cursor_pointer()
                             .label("Cancel")
                             .small()
                             .on_click(|_, w, cx| w.close_dialog(cx)),
                     )
                     .child(
                         Button::new("prompt-ok")
+                            .cursor_pointer()
                             .label("OK")
                             .primary()
                             .small()

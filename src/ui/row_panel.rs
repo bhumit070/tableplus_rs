@@ -78,6 +78,7 @@ pub fn render<H: CellEditHost>(
                             .when(editable, |d| {
                                 d.child(
                                     Button::new(("detail-edit", c))
+                                        .cursor_pointer()
                                         .debug_selector(move || format!("detail-edit-{c}"))
                                         .icon(IconName::Replace)
                                         .ghost()
@@ -99,6 +100,7 @@ pub fn render<H: CellEditHost>(
                             })
                             .child(
                                 Button::new(("detail-copy", c))
+                                    .cursor_pointer()
                                     .icon(IconName::Copy)
                                     .ghost()
                                     .xsmall()

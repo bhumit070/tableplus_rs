@@ -365,6 +365,7 @@ impl AppView {
                         .border_color(theme.border)
                         .invisible()
                         .group_hover("rail-item", |s| s.visible())
+                        .cursor_pointer()
                         .child(Icon::new(IconName::X).xsmall())
                         .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
@@ -398,6 +399,7 @@ impl Render for AppView {
             )
             .child(
                 Button::new("rail-new")
+                    .cursor_pointer()
                     .icon(IconName::Plus)
                     .ghost()
                     .small()
@@ -434,6 +436,7 @@ impl Render for AppView {
                         .child(div().flex_1())
                         .child(
                             Button::new("theme")
+                                .cursor_pointer()
                                 .icon(if dark { IconName::Sun } else { IconName::Moon })
                                 .ghost()
                                 .small()
@@ -442,6 +445,7 @@ impl Render for AppView {
                         )
                         .child(
                             Button::new("settings")
+                                .cursor_pointer()
                                 .icon(IconName::Settings)
                                 .ghost()
                                 .small()
