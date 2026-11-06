@@ -23,7 +23,13 @@ pub fn parse(bytes: &[u8]) -> Result<Csv> {
             .as_chunks::<2>()
             .0
             .iter()
-            .map(|c| if le { u16::from_le_bytes(*c) } else { u16::from_be_bytes(*c) })
+            .map(|c| {
+                if le {
+                    u16::from_le_bytes(*c)
+                } else {
+                    u16::from_be_bytes(*c)
+                }
+            })
             .collect();
         String::from_utf16(&units)
             .map(String::into_bytes)
@@ -178,9 +184,13 @@ mod tests {
 
     #[test]
     fn parses_quotes_delimiters_and_bom() {
-        let c = parse(b"\xEF\xBB\xBFName;Note\nAda;\"semi; colon\"\n\nGrace;\"multi\nline\"\n").unwrap();
+        let c = parse(b"\xEF\xBB\xBFName;Note\nAda;\"semi; colon\"\n\nGrace;\"multi\nline\"\n")
+            .unwrap();
         assert_eq!(c.headers, ["Name", "Note"]);
-        assert_eq!(rows(&c), [vec!["Ada", "semi; colon"], vec!["Grace", "multi\nline"]]);
+        assert_eq!(
+            rows(&c),
+            [vec!["Ada", "semi; colon"], vec!["Grace", "multi\nline"]]
+        );
         let t = parse(b"a\tb\r\n1\t2\r\n").unwrap();
         assert_eq!(rows(&t), [vec!["1", "2"]]);
         // UTF-16 LE with BOM (Excel "Unicode text").
@@ -189,8 +199,18 @@ mod tests {
             le.extend(u.to_le_bytes());
         }
         assert_eq!(rows(&parse(&le).unwrap()), [vec!["1", "\u{e9}"]]);
-        assert!(parse(b"a,b\n\"open,1\n").unwrap_err().to_string().contains("never closed"));
-        assert!(parse(b"a,b\n\xff\xfe\xfd,1\n").unwrap_err().to_string().contains("UTF-8"));
+        assert!(
+            parse(b"a,b\n\"open,1\n")
+                .unwrap_err()
+                .to_string()
+                .contains("never closed")
+        );
+        assert!(
+            parse(b"a,b\n\xff\xfe\xfd,1\n")
+                .unwrap_err()
+                .to_string()
+                .contains("UTF-8")
+        );
     }
 
     fn rows(c: &Csv) -> Vec<Vec<&str>> {
@@ -204,14 +224,25 @@ mod tests {
     fn null_and_empty_string_survive_an_export() {
         // As `crate::export` writes them: NULL empty, "" quoted.
         let c = parse(b"a,b\n,\"\"\n\"\",x\n").unwrap();
-        assert_eq!(c.rows, [vec![None, Some("".into())], vec![Some("".into()), Some("x".into())]]);
+        assert_eq!(
+            c.rows,
+            [
+                vec![None, Some("".into())],
+                vec![Some("".into()), Some("x".into())]
+            ]
+        );
         // One column: a blank line is a NULL row, not skipped; a value
         // with a tab doesn't make it tab separated.
         let one = parse(b"note\nhi\n\n\"\"\na\tb\n").unwrap();
         assert_eq!(one.headers, ["note"]);
         assert_eq!(
             one.rows,
-            [vec![Some("hi".into())], vec![None], vec![Some("".into())], vec![Some("a\tb".into())]]
+            [
+                vec![Some("hi".into())],
+                vec![None],
+                vec![Some("".into())],
+                vec![Some("a\tb".into())]
+            ]
         );
     }
 
@@ -221,7 +252,9 @@ mod tests {
         let m = map_columns(&c.headers, &[col("id"), col("name"), col("age")]).unwrap();
         assert_eq!(m, [Some("name".into()), None, Some("age".into())]);
         let ch = changes(&c, &m);
-        let Change::Insert { values } = &ch[1] else { panic!() };
+        let Change::Insert { values } = &ch[1] else {
+            panic!()
+        };
         assert_eq!(
             values,
             &vec![("name".into(), Some("Linus".into())), ("age".into(), None)]

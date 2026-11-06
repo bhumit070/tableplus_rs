@@ -221,7 +221,9 @@ impl Grid {
 
     /// Row `r` as shown (staged edits applied).
     pub fn row_values(&self, r: usize) -> crate::export::Row {
-        (0..self.columns.len()).map(|c| self.cell_string(r, c)).collect()
+        (0..self.columns.len())
+            .map(|c| self.cell_string(r, c))
+            .collect()
     }
 
     /// Every row as shown, minus rows marked for deletion.

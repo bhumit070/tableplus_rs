@@ -637,7 +637,10 @@ async fn cancel_scenario(driver: Driver, sleep: &str, still_running: &str) {
         .expect("cancel returns promptly")
         .unwrap()
         .unwrap_err();
-    assert!(err.root_cause().to_string().starts_with(cancel::CANCELLED), "{err:#}");
+    assert!(
+        err.root_cause().to_string().starts_with(cancel::CANCELLED),
+        "{err:#}"
+    );
     assert!(start.elapsed().as_secs() < 5);
     // The server isn't still sleeping on our behalf.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -700,7 +703,11 @@ async fn sqlite_cancel() {
 /// and the table's CREATE statement.
 async fn fk_scenario(driver: Driver) {
     let c = Connection::connect(&cfg(driver)).await.expect("connect");
-    let int = if driver == Driver::MySql { "int" } else { "integer" };
+    let int = if driver == Driver::MySql {
+        "int"
+    } else {
+        "integer"
+    };
     c.execute(&format!(
         "drop table if exists it_child; drop table if exists it_parent; \
          create table it_parent (a {int} not null, b {int} not null, name varchar(20), primary key (a, b)); \
@@ -721,7 +728,9 @@ async fn fk_scenario(driver: Driver) {
     assert!(ddl.contains("create table"), "{driver:?}: {ddl}");
     assert!(ddl.contains("foreign key"), "{driver:?}: {ddl}");
     assert!(ddl.contains("it_parent"), "{driver:?}: {ddl}");
-    c.execute("drop table it_child; drop table it_parent").await.unwrap();
+    c.execute("drop table it_child; drop table it_parent")
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -759,8 +768,14 @@ async fn postgres_over_ssh() {
         key_path: String::new(),
         secret: ssh::test_server::PASSWORD.into(),
     });
-    let err = Connection::connect(&c).await.err().expect("host not trusted yet");
-    err.downcast_ref::<ssh::UnknownHostKey>().unwrap().trust().unwrap();
+    let err = Connection::connect(&c)
+        .await
+        .err()
+        .expect("host not trusted yet");
+    err.downcast_ref::<ssh::UnknownHostKey>()
+        .unwrap()
+        .trust()
+        .unwrap();
     let conn = Connection::connect(&c).await.expect("connect over ssh");
     let r = conn.execute("select 40 + 2").await.unwrap();
     assert_eq!(r[0].rows[0][0].as_deref(), Some("42"));
@@ -823,7 +838,10 @@ async fn redis_clients() {
         return;
     }
     let other = Connection::connect(&cfg(Driver::Redis)).await.unwrap();
-    other.execute("CLIENT SETNAME tabula-it-other").await.unwrap();
+    other
+        .execute("CLIENT SETNAME tabula-it-other")
+        .await
+        .unwrap();
     let admin = Connection::connect(&cfg(Driver::Redis)).await.unwrap();
     let list = admin.processes().await.unwrap();
     let row = list
@@ -833,7 +851,12 @@ async fn redis_clients() {
         .expect("named client listed");
     admin.kill(row[0].as_deref().unwrap(), true).await.unwrap();
     let after = admin.processes().await.unwrap();
-    assert!(after.rows.iter().all(|r| r[2].as_deref() != Some("tabula-it-other")));
+    assert!(
+        after
+            .rows
+            .iter()
+            .all(|r| r[2].as_deref() != Some("tabula-it-other"))
+    );
 }
 
 /// Read-only safe mode is enforced by the server too, so a write the
@@ -851,7 +874,10 @@ async fn read_only_scenario(driver: Driver) {
     // Looks like a read to a naive parser; the server still refuses.
     let sneaky = "select 1; insert into it_ro values (1)";
     assert!(ro.execute(sneaky).await.is_err(), "{driver:?}");
-    assert!(ro.execute("insert into it_ro values (2)").await.is_err(), "{driver:?}");
+    assert!(
+        ro.execute("insert into it_ro values (2)").await.is_err(),
+        "{driver:?}"
+    );
     let n = setup.execute("select count(*) from it_ro").await.unwrap();
     assert_eq!(n[0].rows[0][0].as_deref(), Some("0"));
     setup.execute("drop table it_ro").await.unwrap();
@@ -887,8 +913,16 @@ async fn ddl_scenario(driver: Driver) {
     use ddl::{ColChange, ColDef};
     let c = Connection::connect(&cfg(driver)).await.unwrap();
     c.execute("drop table if exists it_ddl").await.unwrap();
-    let int = if driver == Driver::MySql { "int" } else { "integer" };
-    let text = if driver == Driver::MySql { "varchar(50)" } else { "text" };
+    let int = if driver == Driver::MySql {
+        "int"
+    } else {
+        "integer"
+    };
+    let text = if driver == Driver::MySql {
+        "varchar(50)"
+    } else {
+        "text"
+    };
     let col = |n: &str, t: &str, nullable, d: Option<&str>, pk| ColDef {
         name: n.into(),
         ty: t.into(),
@@ -900,7 +934,10 @@ async fn ddl_scenario(driver: Driver) {
         driver,
         None,
         "it_ddl",
-        &[col("id", int, false, None, true), col("name", text, true, None, false)],
+        &[
+            col("id", int, false, None, true),
+            col("name", text, true, None, false),
+        ],
     )
     .unwrap();
     c.execute(&ddl::script(driver, &[create])).await.unwrap();
@@ -937,7 +974,10 @@ async fn ddl_scenario(driver: Driver) {
         );
         assert!(c.execute(&bad).await.is_err());
         let st = c.structure(&obj(&objects, "it_ddl")).await.unwrap();
-        assert!(st.columns.iter().all(|c| c.name != "extra"), "{driver:?} rolled back");
+        assert!(
+            st.columns.iter().all(|c| c.name != "extra"),
+            "{driver:?} rolled back"
+        );
     }
     c.execute("drop table it_ddl").await.unwrap();
 }
@@ -972,9 +1012,15 @@ async fn postgres_backup_restore() {
     let tag = uuid::Uuid::new_v4().simple().to_string();
     // Named to sort before "postgres", so the ⌘K picker test (which steps
     // from postgres to the next database) isn't thrown off meanwhile.
-    let (src, dst) = (format!("_tabula_bk_{}", &tag[..8]), format!("_tabula_rs_{}", &tag[..8]));
+    let (src, dst) = (
+        format!("_tabula_bk_{}", &tag[..8]),
+        format!("_tabula_rs_{}", &tag[..8]),
+    );
     for db in [&src, &dst] {
-        admin.execute(&format!("create database {db}")).await.unwrap();
+        admin
+            .execute(&format!("create database {db}"))
+            .await
+            .unwrap();
     }
     let at = |db: &str| {
         let mut c = cfg(Driver::Postgres);
@@ -986,16 +1032,33 @@ async fn postgres_backup_restore() {
         .await
         .unwrap();
     let (host, port) = c.endpoint();
-    let t = backup::Target { cfg: at(&src), host, port, database: src.clone() };
+    let t = backup::Target {
+        cfg: at(&src),
+        host,
+        port,
+        database: src.clone(),
+    };
     let file = std::env::temp_dir().join(format!("tabula-it-{tag}.sql"));
-    backup::dump(&t, backup::Scope::Everything, &file).await.unwrap();
+    backup::dump(&t, backup::Scope::Everything, &file)
+        .await
+        .unwrap();
     let text = std::fs::read_to_string(&file).unwrap();
-    assert!(text.contains("CREATE TABLE public.it_backup"), "schema dumped");
+    assert!(
+        text.contains("CREATE TABLE public.it_backup"),
+        "schema dumped"
+    );
 
-    let t2 = backup::Target { cfg: at(&dst), database: dst.clone(), ..t.clone() };
+    let t2 = backup::Target {
+        cfg: at(&dst),
+        database: dst.clone(),
+        ..t.clone()
+    };
     backup::restore(&t2, &file).await.unwrap();
     let o = Connection::connect(&at(&dst)).await.unwrap();
-    let r = o.execute("select note from it_backup order by id").await.unwrap();
+    let r = o
+        .execute("select note from it_backup order by id")
+        .await
+        .unwrap();
     assert_eq!(r[0].rows, vec![vec![Some("it's".to_string())], vec![None]]);
     // A second restore fails (table exists) and, being one transaction, changes nothing.
     assert!(backup::restore(&t2, &file).await.is_err());
@@ -1004,7 +1067,10 @@ async fn postgres_backup_restore() {
     c.close().await;
     o.close().await;
     for db in [&src, &dst] {
-        admin.execute(&format!("drop database {db} with (force)")).await.unwrap();
+        admin
+            .execute(&format!("drop database {db} with (force)"))
+            .await
+            .unwrap();
     }
     let _ = std::fs::remove_file(file);
 }
@@ -1013,30 +1079,52 @@ async fn postgres_backup_restore() {
 async fn sqlite_backup() {
     let c = cfg(Driver::Sqlite);
     let conn = Connection::connect(&c).await.unwrap();
-    conn.execute("create table t (a int); insert into t values (7)").await.unwrap();
-    let t = backup::Target { cfg: c.clone(), host: String::new(), port: 0, database: "main".into() };
+    conn.execute("create table t (a int); insert into t values (7)")
+        .await
+        .unwrap();
+    let t = backup::Target {
+        cfg: c.clone(),
+        host: String::new(),
+        port: 0,
+        database: "main".into(),
+    };
     let file = std::env::temp_dir().join(format!("tabula-it-{}.sqlite", uuid::Uuid::new_v4()));
-    backup::dump(&t, backup::Scope::Everything, &file).await.unwrap();
+    backup::dump(&t, backup::Scope::Everything, &file)
+        .await
+        .unwrap();
     let mut copy = ConnectionConfig::new(Driver::Sqlite);
     copy.file = file.to_string_lossy().into();
     let b = Connection::connect(&copy).await.unwrap();
-    assert_eq!(b.execute("select a from t").await.unwrap()[0].rows[0][0].as_deref(), Some("7"));
+    assert_eq!(
+        b.execute("select a from t").await.unwrap()[0].rows[0][0].as_deref(),
+        Some("7")
+    );
     let _ = std::fs::remove_file(file);
 }
 
 /// Real servers' plans parse into a tree.
 async fn explain_scenario(driver: Driver) {
     let c = Connection::connect(&cfg(driver)).await.unwrap();
-    let int = if driver == Driver::MySql { "int" } else { "integer" };
+    let int = if driver == Driver::MySql {
+        "int"
+    } else {
+        "integer"
+    };
     c.execute(&format!(
         "drop table if exists it_ex; create table it_ex (id {int} primary key, v int); insert into it_ex values (1, 1), (2, 2)"
     ))
     .await
     .unwrap();
     for analyze in [false, true] {
-        let sql = explain::explain_sql(driver, "select * from it_ex where id = 1 or v > 1;", analyze).unwrap();
+        let sql = explain::explain_sql(
+            driver,
+            "select * from it_ex where id = 1 or v > 1;",
+            analyze,
+        )
+        .unwrap();
         let r = c.execute(&sql).await.unwrap();
-        let plan = explain::parse(driver, &r[0]).unwrap_or_else(|e| panic!("{driver:?}: {e:#} {r:?}"));
+        let plan =
+            explain::parse(driver, &r[0]).unwrap_or_else(|e| panic!("{driver:?}: {e:#} {r:?}"));
         assert!(!plan.flatten().is_empty());
         let text = format!("{plan:?}");
         assert!(text.contains("it_ex"), "{driver:?}: {text}");
@@ -1074,17 +1162,27 @@ async fn analyze_rolls_back(driver: Driver) {
         .unwrap();
     let script = explain::explain_script(driver, "delete from it_an", true).unwrap();
     let rs = c.execute(&script).await.unwrap();
-    let r = rs.iter().find(|r| r.statement.to_uppercase().starts_with("EXPLAIN")).unwrap();
+    let r = rs
+        .iter()
+        .find(|r| r.statement.to_uppercase().starts_with("EXPLAIN"))
+        .unwrap();
     match driver {
         // MySQL only analyzes reads, and says so.
         Driver::MySql => {
             let e = explain::parse(driver, r).unwrap_err();
             assert!(format!("{e:#}").contains("only EXPLAIN ANALYZE"));
         }
-        _ => assert!(explain::parse(driver, r).unwrap().actual_ms.is_some(), "{driver:?}"),
+        _ => assert!(
+            explain::parse(driver, r).unwrap().actual_ms.is_some(),
+            "{driver:?}"
+        ),
     }
     let n = c.execute("select count(*) from it_an").await.unwrap();
-    assert_eq!(n[0].rows[0][0].as_deref(), Some("2"), "{driver:?}: delete rolled back");
+    assert_eq!(
+        n[0].rows[0][0].as_deref(),
+        Some("2"),
+        "{driver:?}: delete rolled back"
+    );
     c.execute("drop table it_an").await.unwrap();
 }
 
@@ -1126,7 +1224,9 @@ async fn object_ops(driver: Driver) {
     let r = c.execute("select v from it_ops_c").await.unwrap();
     assert_eq!(r[0].rows[0][0].as_deref(), Some("x"));
     c.maintain(&cc).await.unwrap();
-    c.execute("drop table it_ops_b; drop table it_ops_c").await.unwrap();
+    c.execute("drop table it_ops_b; drop table it_ops_c")
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -1154,10 +1254,16 @@ async fn postgres_create_drop_database() {
         return;
     }
     let c = Connection::connect(&cfg(Driver::Postgres)).await.unwrap();
-    let name = format!("_tabula_db_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let name = format!(
+        "_tabula_db_{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    );
     c.create_database(&name).await.unwrap();
     assert!(c.databases().await.unwrap().contains(&name));
-    assert!(c.drop_database("postgres").await.is_err(), "not the current one");
+    assert!(
+        c.drop_database("postgres").await.is_err(),
+        "not the current one"
+    );
     c.drop_database(&name).await.unwrap();
     assert!(!c.databases().await.unwrap().contains(&name));
 }
@@ -1166,7 +1272,12 @@ async fn postgres_create_drop_database() {
 /// not "pool timed out".
 #[tokio::test]
 async fn unreachable_server_says_why() {
-    for d in [Driver::Postgres, Driver::MySql, Driver::Redis, Driver::Mongo] {
+    for d in [
+        Driver::Postgres,
+        Driver::MySql,
+        Driver::Redis,
+        Driver::Mongo,
+    ] {
         let mut c = cfg(d);
         c.port = 1; // nothing listens there
         let start = Instant::now();
@@ -1174,7 +1285,11 @@ async fn unreachable_server_says_why() {
         let msg = format!("{e:#}");
         assert!(msg.contains("127.0.0.1:1"), "{d:?}: {msg}");
         assert!(!msg.contains("pool timed out"), "{d:?}: {msg}");
-        assert!(start.elapsed().as_secs() < 20, "{d:?} took {:?}", start.elapsed());
+        assert!(
+            start.elapsed().as_secs() < 20,
+            "{d:?} took {:?}",
+            start.elapsed()
+        );
     }
 }
 
@@ -1187,10 +1302,22 @@ async fn frozen_server_times_out_and_recovers() {
     }
     let c = Connection::connect(&cfg(Driver::Redis)).await.unwrap();
     let keys = c.list_objects().await.unwrap().remove(0);
-    let q = TableQuery { object: keys, filters: vec![], order: None, limit: 5, offset: 0 };
-    std::process::Command::new("docker").args(["pause", "tabula-test-redis"]).status().unwrap();
+    let q = TableQuery {
+        object: keys,
+        filters: vec![],
+        order: None,
+        limit: 5,
+        offset: 0,
+    };
+    std::process::Command::new("docker")
+        .args(["pause", "tabula-test-redis"])
+        .status()
+        .unwrap();
     let e = c.fetch_table(&q).await.unwrap_err();
-    std::process::Command::new("docker").args(["unpause", "tabula-test-redis"]).status().unwrap();
+    std::process::Command::new("docker")
+        .args(["unpause", "tabula-test-redis"])
+        .status()
+        .unwrap();
     assert!(format!("{e:#}").contains("Lost the connection"), "{e:#}");
     assert!(c.fetch_table(&q).await.is_ok());
 }
@@ -1208,7 +1335,11 @@ async fn redis_insert_with_ttl() {
     let keys = c.list_objects().await.unwrap().remove(0);
     let st = c.structure(&keys).await.unwrap().columns;
     let ins = |k: &str| Change::Insert {
-        values: kv(&[("key", Some(k)), ("ttl", Some("100")), ("value", Some("ours"))]),
+        values: kv(&[
+            ("key", Some(k)),
+            ("ttl", Some("100")),
+            ("value", Some("ours")),
+        ]),
     };
     c.commit(&keys, &st, &[ins("it:fresh")]).await.unwrap();
     let r = c.execute("TTL it:fresh").await.unwrap();

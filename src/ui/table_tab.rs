@@ -24,8 +24,8 @@ use gpui_kit_assets::IconName;
 
 use super::cell_edit::{self, EditStart};
 use super::copy;
-use super::row_panel;
 use super::grid::{Grid, data_table};
+use super::row_panel;
 use super::{
     AddRow, Commit, CopyCell, DeleteRows, Discard, SearchList, SetNull, Shared, ToggleFilter,
     search_list,
@@ -134,7 +134,9 @@ impl TableTab {
             }))
             .separator()
             .map(|menu| copy::copy_items(menu, w.clone(), row))
-            .item(item("Import CSV…", |t, _, window, cx| t.import_csv(window, cx)))
+            .item(item("Import CSV…", |t, _, window, cx| {
+                t.import_csv(window, cx)
+            }))
             .separator()
             .item(item("Set NULL", |t, _, window, cx| t.set_null(window, cx)))
             .item(item("Duplicate Row", |t, row, _, cx| {
@@ -766,7 +768,8 @@ impl TableTab {
         if self.shared.cfg.driver == crate::db::Driver::Redis {
             return fail("CSV import isn't available for Redis".into(), window, cx);
         }
-        if let crate::db::safety::Gate::Block(why) = crate::db::safety::gate_write(&self.shared.cfg) {
+        if let crate::db::safety::Gate::Block(why) = crate::db::safety::gate_write(&self.shared.cfg)
+        {
             return fail(why, window, cx);
         }
         // Read and parse off the UI thread: a big file mustn't freeze it.
@@ -817,7 +820,15 @@ impl TableTab {
             .headers
             .iter()
             .zip(&mapping)
-            .filter_map(|(h, m)| m.as_ref().map(|m| if h == m { m.clone() } else { format!("{m} ← {h}") }))
+            .filter_map(|(h, m)| {
+                m.as_ref().map(|m| {
+                    if h == m {
+                        m.clone()
+                    } else {
+                        format!("{m} ← {h}")
+                    }
+                })
+            })
             .collect();
         if matched.is_empty() {
             return fail(
@@ -846,7 +857,11 @@ impl TableTab {
         if !ignored.is_empty() {
             text.push_str(&format!(
                 "\nIgnored (no such column): {}",
-                ignored.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                ignored
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         text.push_str("\n\nEmpty cells get the column's default.");
@@ -869,8 +884,10 @@ impl TableTab {
                 .show_cancel(true)
                 .on_ok(move |_, window, cx| {
                     let (changes, columns) = ((*changes).clone(), columns.clone());
-                    weak.update(cx, |t, cx| t.run_import(changes, columns, atomic, window, cx))
-                        .ok();
+                    weak.update(cx, |t, cx| {
+                        t.run_import(changes, columns, atomic, window, cx)
+                    })
+                    .ok();
                     true
                 })
         });
@@ -887,9 +904,8 @@ impl TableTab {
         let n = changes.len();
         let conn = self.shared.conn.clone();
         let obj = self.object.clone();
-        let task = runtime::spawn(async move {
-            conn.read().await.commit(&obj, &columns, &changes).await
-        });
+        let task =
+            runtime::spawn(async move { conn.read().await.commit(&obj, &columns, &changes).await });
         cx.spawn_in(window, async move |this, cx| {
             let res = task.await;
             this.update_in(cx, |t, window, cx| {
@@ -938,9 +954,17 @@ impl TableTab {
             String::new()
         };
         let weak = cx.entity().downgrade();
-        if super::guarded(gate, &self.shared.cfg, "Commit", preview, window, cx, move |w, cx| {
-            weak.update(cx, |t, cx| t.do_commit(w, cx)).ok();
-        }) {
+        if super::guarded(
+            gate,
+            &self.shared.cfg,
+            "Commit",
+            preview,
+            window,
+            cx,
+            move |w, cx| {
+                weak.update(cx, |t, cx| t.do_commit(w, cx)).ok();
+            },
+        ) {
             self.do_commit(window, cx);
         }
     }
@@ -953,7 +977,9 @@ impl TableTab {
         // Writes need the column types (and keys) from the structure.
         let Some(columns) = self.structure.as_ref().map(|s| s.columns.clone()) else {
             window.push_notification(
-                Notification::warning("The table's structure isn't loaded; refresh (⌘R) and try again"),
+                Notification::warning(
+                    "The table's structure isn't loaded; refresh (⌘R) and try again",
+                ),
                 cx,
             );
             return;
@@ -971,32 +997,33 @@ impl TableTab {
                 this.committing = false;
                 cx.notify();
                 match res {
-                Ok(()) => {
-                    window.push_notification(
-                        Notification::success(format!("Committed {n} change(s)")),
-                        cx,
-                    );
-                    this.reload(cx);
-                }
-                Err(e) => {
-                    let atomic = this
-                        .shared
-                        .conn
-                        .try_read()
-                        .map_or(true, |c| c.commits_atomically());
-                    let mut msg = format!("{e:#}");
-                    if !atomic {
-                        // Some changes may be saved; keeping them all staged
-                        // would apply those twice on retry.
-                        msg.push_str(". The table was reloaded to show what was saved.");
-                        this.table.update(cx, |t, cx| {
-                            t.delegate_mut().discard();
-                            cx.notify();
-                        });
+                    Ok(()) => {
+                        window.push_notification(
+                            Notification::success(format!("Committed {n} change(s)")),
+                            cx,
+                        );
                         this.reload(cx);
                     }
-                    window.push_notification(Notification::error(msg).title("Commit failed"), cx)
-                }
+                    Err(e) => {
+                        let atomic = this
+                            .shared
+                            .conn
+                            .try_read()
+                            .map_or(true, |c| c.commits_atomically());
+                        let mut msg = format!("{e:#}");
+                        if !atomic {
+                            // Some changes may be saved; keeping them all staged
+                            // would apply those twice on retry.
+                            msg.push_str(". The table was reloaded to show what was saved.");
+                            this.table.update(cx, |t, cx| {
+                                t.delegate_mut().discard();
+                                cx.notify();
+                            });
+                            this.reload(cx);
+                        }
+                        window
+                            .push_notification(Notification::error(msg).title("Commit failed"), cx)
+                    }
                 }
             })
             .ok();
@@ -1127,16 +1154,20 @@ impl TableTab {
                     })),
             )
             .child(div().w(px(8.)))
-            .when(!self.show_structure, |f| f.child(Button::new("toggle-detail")
-                    .icon(IconName::PanelRight)
-                    .ghost()
-                    .small()
-                    .selected(self.show_detail)
-                    .tooltip("Row detail (⌘⇧I)")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_detail = !this.show_detail;
-                        cx.notify();
-                    }))))
+            .when(!self.show_structure, |f| {
+                f.child(
+                    Button::new("toggle-detail")
+                        .icon(IconName::PanelRight)
+                        .ghost()
+                        .small()
+                        .selected(self.show_detail)
+                        .tooltip("Row detail (⌘⇧I)")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_detail = !this.show_detail;
+                            cx.notify();
+                        })),
+                )
+            })
             .when(!self.show_structure, |f| {
                 f.child(
                     Button::new("add-row")
@@ -1317,8 +1348,10 @@ impl Render for TableTab {
                 0 => v_flex()
                     .size_full()
                     .when(
-                        !matches!(self.shared.cfg.driver, crate::db::Driver::Redis | crate::db::Driver::Mongo)
-                            && self.object.kind == crate::db::ObjectKind::Table,
+                        !matches!(
+                            self.shared.cfg.driver,
+                            crate::db::Driver::Redis | crate::db::Driver::Mongo
+                        ) && self.object.kind == crate::db::ObjectKind::Table,
                         |d| {
                             d.child(
                                 h_flex().p_1().child(
@@ -1334,7 +1367,12 @@ impl Render for TableTab {
                             )
                         },
                     )
-                    .child(div().flex_1().min_h_0().child(data_table(&self.struct_cols, cx)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .child(data_table(&self.struct_cols, cx)),
+                    )
                     .into_any_element(),
                 1 => data_table(&self.struct_idx, cx).into_any_element(),
                 2 => data_table(&self.struct_fks, cx).into_any_element(),
@@ -1411,14 +1449,19 @@ impl Render for TableTab {
                             cx.notify();
                         })),
                 )
-                .children(self.structure.iter().flat_map(|s| s.warnings.clone()).map(|w| {
-                    div()
-                        .px_2()
-                        .py_1()
-                        .text_xs()
-                        .bg(cx.theme().warning.opacity(0.15))
-                        .child(format!("Couldn't load {w}"))
-                }))
+                .children(
+                    self.structure
+                        .iter()
+                        .flat_map(|s| s.warnings.clone())
+                        .map(|w| {
+                            div()
+                                .px_2()
+                                .py_1()
+                                .text_xs()
+                                .bg(cx.theme().warning.opacity(0.15))
+                                .child(format!("Couldn't load {w}"))
+                        }),
+                )
                 .child(div().flex_1().min_h_0().child(content))
                 .into_any_element()
         } else {

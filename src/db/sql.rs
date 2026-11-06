@@ -20,8 +20,7 @@ use super::cancel::{CANCELLED, Cancel};
 use super::split::split_statements;
 use super::{
     Change, ColumnInfo, ConnectionConfig, DbObject, Driver, FilterOp, ForeignKey, ObjectKind,
-    QueryResult,
-    Structure, TableQuery, sql_literal,
+    QueryResult, Structure, TableQuery, sql_literal,
 };
 
 enum Pool {
@@ -78,12 +77,14 @@ async fn probe<C: sqlx::Connection>(
 /// A pool that can't get a connection says only "pool timed out": say
 /// what that means for the user.
 pub(super) fn explain_lost(e: anyhow::Error) -> anyhow::Error {
-    let lost = e
-        .downcast_ref::<sqlx::Error>()
-        .is_some_and(|e| matches!(e, sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed | sqlx::Error::Io(_)))
-        || e.downcast_ref::<redis::RedisError>().is_some_and(|e| {
-            e.is_timeout() || e.is_io_error() || e.is_connection_dropped() || e.is_connection_refusal()
-        });
+    let lost = e.downcast_ref::<sqlx::Error>().is_some_and(|e| {
+        matches!(
+            e,
+            sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed | sqlx::Error::Io(_)
+        )
+    }) || e.downcast_ref::<redis::RedisError>().is_some_and(|e| {
+        e.is_timeout() || e.is_io_error() || e.is_connection_dropped() || e.is_connection_refusal()
+    });
     if lost {
         e.context("Lost the connection to the server (it may be down or unreachable). Try again or reconnect")
     } else {
@@ -743,7 +744,14 @@ impl SqlConn {
         };
         let r = self.raw(sql).await?;
         // Postgres answers false when the process is gone or not ours.
-        if r.rows.first().and_then(|r| r.first()).cloned().flatten().as_deref() == Some("false") {
+        if r.rows
+            .first()
+            .and_then(|r| r.first())
+            .cloned()
+            .flatten()
+            .as_deref()
+            == Some("false")
+        {
             bail!("the server refused: the process is gone, or you lack permission");
         }
         Ok(())
@@ -826,7 +834,9 @@ impl SqlConn {
         };
         Ok(match self.cfg.driver {
             Driver::MySql => {
-                let r = self.raw(format!("show create table {}", self.q(&obj.name))).await?;
+                let r = self
+                    .raw(format!("show create table {}", self.q(&obj.name)))
+                    .await?;
                 format!("{};\n", first(r, 1).join("\n"))
             }
             Driver::Sqlite => {
@@ -845,7 +855,10 @@ impl SqlConn {
                 let name = self.full_name(obj);
                 if obj.kind == ObjectKind::View {
                     let r = self
-                        .raw(format!("select pg_get_viewdef(to_regclass({}), true)", self.lit(&name)))
+                        .raw(format!(
+                            "select pg_get_viewdef(to_regclass({}), true)",
+                            self.lit(&name)
+                        ))
                         .await?;
                     return Ok(format!(
                         "CREATE VIEW {name} AS\n{}\n",
@@ -1109,7 +1122,8 @@ impl SqlConn {
     pub async fn create_database(&self, name: &str) -> Result<()> {
         match self.cfg.driver {
             Driver::Postgres | Driver::MySql => {
-                self.raw(format!("create database {}", self.q(name))).await?;
+                self.raw(format!("create database {}", self.q(name)))
+                    .await?;
                 Ok(())
             }
             _ => bail!("SQLite has one database per file"),
@@ -1200,7 +1214,10 @@ impl SqlConn {
         let (sql, done) = match self.cfg.driver {
             Driver::Postgres => (format!("vacuum (analyze) {t}"), "Vacuumed and analyzed"),
             Driver::MySql => (format!("optimize table {t}"), "Optimized"),
-            _ => ("vacuum; analyze".to_string(), "Vacuumed and analyzed the database"),
+            _ => (
+                "vacuum; analyze".to_string(),
+                "Vacuumed and analyzed the database",
+            ),
         };
         self.execute(&sql, &Default::default()).await?;
         Ok(done.to_string())

@@ -180,7 +180,11 @@ impl MongoConn {
             let tls = if cfg.ssl { "&tls=true" } else { "" };
             // Through a tunnel, talk to that one server: replica-set
             // discovery would chase member addresses the tunnel doesn't reach.
-            let direct = if cfg.ssh.is_some() { "&directConnection=true" } else { "" };
+            let direct = if cfg.ssh.is_some() {
+                "&directConnection=true"
+            } else {
+                ""
+            };
             format!(
                 "mongodb://{auth}{}:{}/?authSource=admin{tls}{direct}",
                 cfg.host, cfg.port
@@ -192,7 +196,8 @@ impl MongoConn {
         // Fail in seconds, not the driver's default 30 s, unless the URI says otherwise.
         opts.server_selection_timeout
             .get_or_insert(std::time::Duration::from_secs(8));
-        opts.connect_timeout.get_or_insert(std::time::Duration::from_secs(10));
+        opts.connect_timeout
+            .get_or_insert(std::time::Duration::from_secs(10));
         let at = opts
             .hosts
             .iter()

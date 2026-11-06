@@ -1,0 +1,23 @@
+#!/bin/sh
+# Formats the staged Rust files with rustfmt and stages the result.
+# Enable once per clone: git config core.hooksPath .githooks
+
+files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs')
+[ -z "$files" ] && exit 0
+
+# Formatting a file that also has unstaged changes would stage those too,
+# so such files are only checked.
+partial=$(git diff --name-only -- $files)
+if [ -n "$partial" ]; then
+    if ! rustfmt --edition 2024 --check $partial >/dev/null 2>&1; then
+        echo "pre-commit: these files need formatting but have unstaged changes:" >&2
+        echo "$partial" | sed 's/^/  /' >&2
+        echo "Run cargo fmt, review, and stage them (or commit with --no-verify)." >&2
+        exit 1
+    fi
+fi
+
+full=$(for f in $files; do echo "$partial" | grep -qx "$f" || echo "$f"; done)
+[ -z "$full" ] && exit 0
+rustfmt --edition 2024 $full || exit 1
+git add $full

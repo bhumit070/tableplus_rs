@@ -48,7 +48,12 @@ fn column_sql(driver: Driver, c: &ColDef) -> Result<String> {
     if !c.nullable {
         s.push_str(" NOT NULL");
     }
-    if let Some(d) = c.default.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+    if let Some(d) = c
+        .default
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+    {
         s.push_str(&format!(" DEFAULT {d}"));
     }
     Ok(s)
@@ -108,14 +113,21 @@ pub fn alter_table(
     for ch in changes {
         match ch {
             ColChange::Add(c) => {
-                out.push(format!("ALTER TABLE {t} ADD COLUMN {};", column_sql(driver, c)?));
+                out.push(format!(
+                    "ALTER TABLE {t} ADD COLUMN {};",
+                    column_sql(driver, c)?
+                ));
             }
             ColChange::Drop(name) => out.push(format!("ALTER TABLE {t} DROP COLUMN {};", q(name))),
             ColChange::Alter { from, to } => {
                 let to = ColDef {
                     name: to.name.trim().to_string(),
                     ty: to.ty.trim().to_string(),
-                    default: to.default.clone().map(|d| d.trim().to_string()).filter(|d| !d.is_empty()),
+                    default: to
+                        .default
+                        .clone()
+                        .map(|d| d.trim().to_string())
+                        .filter(|d| !d.is_empty()),
                     ..to.clone()
                 };
                 if to.name.is_empty() || to.ty.is_empty() {
@@ -143,11 +155,15 @@ pub fn alter_table(
                         }
                         if null_changed {
                             let verb = if to.nullable { "DROP" } else { "SET" };
-                            out.push(format!("ALTER TABLE {t} ALTER COLUMN {col} {verb} NOT NULL;"));
+                            out.push(format!(
+                                "ALTER TABLE {t} ALTER COLUMN {col} {verb} NOT NULL;"
+                            ));
                         }
                         if default_changed {
                             out.push(match &to.default {
-                                Some(d) => format!("ALTER TABLE {t} ALTER COLUMN {col} SET DEFAULT {d};"),
+                                Some(d) => {
+                                    format!("ALTER TABLE {t} ALTER COLUMN {col} SET DEFAULT {d};")
+                                }
                                 None => format!("ALTER TABLE {t} ALTER COLUMN {col} DROP DEFAULT;"),
                             });
                         }
@@ -211,11 +227,21 @@ mod tests {
             create_table(Driver::Postgres, Some("app"), "people", &cols).unwrap(),
             "CREATE TABLE \"app\".\"people\" (\n  \"id\" integer NOT NULL,\n  \"name\" varchar(100) DEFAULT 'anon',\n  PRIMARY KEY (\"id\")\n);"
         );
-        assert!(create_table(Driver::MySql, None, "people", &cols)
-            .unwrap()
-            .starts_with("CREATE TABLE `people` (\n  `id` integer NOT NULL"));
+        assert!(
+            create_table(Driver::MySql, None, "people", &cols)
+                .unwrap()
+                .starts_with("CREATE TABLE `people` (\n  `id` integer NOT NULL")
+        );
         assert!(create_table(Driver::Sqlite, None, "", &cols).is_err());
-        assert!(create_table(Driver::Sqlite, None, "t", &[col("a", "", true, None, false)]).is_err());
+        assert!(
+            create_table(
+                Driver::Sqlite,
+                None,
+                "t",
+                &[col("a", "", true, None, false)]
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -224,7 +250,10 @@ mod tests {
         let to = col("full_name", "varchar(200)", false, Some("''"), false);
         let changes = [
             ColChange::Add(col("age", "int", true, None, false)),
-            ColChange::Alter { from: from.clone(), to: to.clone() },
+            ColChange::Alter {
+                from: from.clone(),
+                to: to.clone(),
+            },
             ColChange::Drop("legacy".into()),
         ];
         assert_eq!(
@@ -248,12 +277,27 @@ mod tests {
         // SQLite: renames work, retyping doesn't.
         let rename = ColChange::Alter {
             from: from.clone(),
-            to: ColDef { name: "n".into(), ..from.clone() },
+            to: ColDef {
+                name: "n".into(),
+                ..from.clone()
+            },
         };
-        assert_eq!(alter_table(Driver::Sqlite, None, "t", &[rename]).unwrap().len(), 1);
+        assert_eq!(
+            alter_table(Driver::Sqlite, None, "t", &[rename])
+                .unwrap()
+                .len(),
+            1
+        );
         assert!(alter_table(Driver::Sqlite, None, "t", &changes[1..2]).is_err());
         // Unchanged columns produce nothing.
-        let same = ColChange::Alter { from: from.clone(), to: from };
-        assert!(alter_table(Driver::Postgres, None, "t", &[same]).unwrap().is_empty());
+        let same = ColChange::Alter {
+            from: from.clone(),
+            to: from,
+        };
+        assert!(
+            alter_table(Driver::Postgres, None, "t", &[same])
+                .unwrap()
+                .is_empty()
+        );
     }
 }

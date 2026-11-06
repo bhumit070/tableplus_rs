@@ -156,7 +156,9 @@ fn json_object(columns: &[String], row: &Row) -> serde_json::Value {
 }
 
 fn md_esc(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('|', "\\|").replace(['\n', '\r'], " ")
+    s.replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace(['\n', '\r'], " ")
 }
 
 fn html_esc(s: &str) -> String {
@@ -180,7 +182,10 @@ pub fn inserts(target: &SqlTarget, columns: &[String], rows: &[Row]) -> String {
                 .map(|v| literal(target.driver, v))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("INSERT INTO {} ({cols}) VALUES ({vals});\n", target.table_name())
+            format!(
+                "INSERT INTO {} ({cols}) VALUES ({vals});\n",
+                target.table_name()
+            )
         })
         .collect()
 }
@@ -189,7 +194,13 @@ pub fn inserts(target: &SqlTarget, columns: &[String], rows: &[Row]) -> String {
 /// a key every column is matched, like the grid's own edits.
 pub fn updates(target: &SqlTarget, columns: &[String], key: &[bool], rows: &[Row]) -> String {
     let has_key = key.iter().any(|k| *k);
-    let is_key = |i: usize| if has_key { key.get(i).copied().unwrap_or(false) } else { true };
+    let is_key = |i: usize| {
+        if has_key {
+            key.get(i).copied().unwrap_or(false)
+        } else {
+            true
+        }
+    };
     let cond = |c: &str, v: &Option<String>| match v {
         None => format!("{} IS NULL", target.ident(c)),
         Some(_) => format!("{} = {}", target.ident(c), literal(target.driver, v)),
@@ -263,7 +274,11 @@ impl<'a> Encoder<'a> {
             Format::Json => "[".into(),
             Format::Markdown => format!(
                 "| {} |\n|{}\n",
-                self.columns.iter().map(|c| md_esc(c)).collect::<Vec<_>>().join(" | "),
+                self.columns
+                    .iter()
+                    .map(|c| md_esc(c))
+                    .collect::<Vec<_>>()
+                    .join(" | "),
                 " --- |".repeat(self.columns.len())
             ),
             Format::Html => {
@@ -405,7 +420,12 @@ mod tests {
     #[test]
     fn json_keeps_repeated_column_names() {
         let cols = vec!["id".to_string(), "id".to_string()];
-        let j = render(Format::JsonLines, &cols, &[vec![Some("1".into()), Some("2".into())]], &pg());
+        let j = render(
+            Format::JsonLines,
+            &cols,
+            &[vec![Some("1".into()), Some("2".into())]],
+            &pg(),
+        );
         assert_eq!(j.trim(), r#"{"id":"1","id_2":"2"}"#);
         let cols: Vec<String> = ["id", "id", "id_2"].map(String::from).to_vec();
         assert_eq!(json_keys(&cols), ["id", "id_3", "id_2"]);
@@ -413,9 +433,19 @@ mod tests {
 
     #[test]
     fn markdown_and_html_escape() {
-        let md = render(Format::Markdown, &cols(), &[vec![Some("a|b".into()), None]], &pg());
+        let md = render(
+            Format::Markdown,
+            &cols(),
+            &[vec![Some("a|b".into()), None]],
+            &pg(),
+        );
         assert_eq!(md, "| id | name |\n| --- | --- |\n| a\\|b | NULL |\n");
-        let h = render(Format::Html, &cols(), &[vec![Some("<b>".into()), None]], &pg());
+        let h = render(
+            Format::Html,
+            &cols(),
+            &[vec![Some("<b>".into()), None]],
+            &pg(),
+        );
         assert!(h.contains("<td>&lt;b&gt;</td><td><i>NULL</i></td>"));
     }
 

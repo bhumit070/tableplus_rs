@@ -40,7 +40,9 @@ async fn pool() -> Result<&'static SqlitePool> {
             .fetch_one(&pool)
             .await?;
         if version > 1 {
-            anyhow::bail!("history.db was written by a newer Tabula; history is off until you update");
+            anyhow::bail!(
+                "history.db was written by a newer Tabula; history is off until you update"
+            );
         }
         sqlx::raw_sql(
             "create table if not exists history (
@@ -171,7 +173,10 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(
-            got.0.iter().map(|e| (e.sql.as_str(), e.ran_at)).collect::<Vec<_>>(),
+            got.0
+                .iter()
+                .map(|e| (e.sql.as_str(), e.ran_at))
+                .collect::<Vec<_>>(),
             [("select 1", 30), ("select 2", 20)]
         );
         assert!(got.1.is_empty());

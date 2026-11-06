@@ -25,10 +25,12 @@ use super::session::Session;
 use super::settings_view::SettingsView;
 use super::table_tab::TableTab;
 use super::{
-    AddRow, CloseTab, Commit, Connection1, Connection2, Connection3, Connection4, Connection5,
-    Connection6, Connection7, Connection8, Connection9, DeleteRows, Discard, GoHome, NewQuery,
-    CancelQuery, ExportData, FormatSql, BackupDatabase, DropDatabase, ExplainQuery, NewDatabase, RestoreDatabase, SaveQuery, SavedQueries, ShowProcesses, ToggleRowDetail, NextTab, QueryHistory, OpenConnection, OpenSettings, PrevTab, Refresh, RunQuery, Shared, SwitchDatabase,
-    ToggleFilter, ToggleTheme, tag_color,
+    AddRow, BackupDatabase, CancelQuery, CloseTab, Commit, Connection1, Connection2, Connection3,
+    Connection4, Connection5, Connection6, Connection7, Connection8, Connection9, DeleteRows,
+    Discard, DropDatabase, ExplainQuery, ExportData, FormatSql, GoHome, NewDatabase, NewQuery,
+    NextTab, OpenConnection, OpenSettings, PrevTab, QueryHistory, Refresh, RestoreDatabase,
+    RunQuery, SaveQuery, SavedQueries, Shared, ShowProcesses, SwitchDatabase, ToggleFilter,
+    ToggleRowDetail, ToggleTheme, tag_color,
 };
 use crate::db::ssh::UnknownHostKey;
 use crate::db::{Connection, ConnectionConfig};
@@ -270,7 +272,8 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.pending_restore.insert(state.conn_id.clone(), (state, true));
+        self.pending_restore
+            .insert(state.conn_id.clone(), (state, true));
         self.connect(cfg, window, cx, |_, _, _| {});
     }
 
@@ -677,7 +680,9 @@ pub fn register_actions(cx: &mut App) {
     cx.on_action(|_: &BackupDatabase, cx| with_session(cx, |s, w, cx| s.backup(w, cx)));
     cx.on_action(|_: &RestoreDatabase, cx| with_session(cx, |s, w, cx| s.restore(w, cx)));
     cx.on_action(|_: &ShowProcesses, cx| {
-        with_session(cx, |s, w, cx| super::processes::Processes::open(s.shared.clone(), w, cx))
+        with_session(cx, |s, w, cx| {
+            super::processes::Processes::open(s.shared.clone(), w, cx)
+        })
     });
     cx.on_action(|_: &SavedQueries, cx| with_session(cx, |s, w, cx| s.open_saved(w, cx)));
     cx.on_action(|_: &SaveQuery, cx| {
@@ -1206,7 +1211,9 @@ mod tests {
         });
         assert!(q.read_with(&cx, |q, _| q.running()));
         cx.simulate_keystrokes("cmd-.");
-        wait_until(&mut cx, "cancelled", |cx| q.read_with(cx, |q, _| !q.running()));
+        wait_until(&mut cx, "cancelled", |cx| {
+            q.read_with(cx, |q, _| !q.running())
+        });
 
         let tabs = session.read_with(&cx, |s, _| s.tab_count());
         cx.simulate_keystrokes("cmd-y");
@@ -1269,7 +1276,10 @@ mod tests {
         wait_until(&mut cx, "rows", |cx| {
             book.read_with(cx, |t, cx| t.loaded_rows(cx) == 3)
         });
-        assert_eq!(book.read_with(&cx, |t, cx| t.links(cx)), [false, false, true]);
+        assert_eq!(
+            book.read_with(&cx, |t, cx| t.links(cx)),
+            [false, false, true]
+        );
 
         // Click the → in book row 2 ("COBOL", author 2).
         cx.run_until_parked();
@@ -1288,7 +1298,10 @@ mod tests {
         wait_until(&mut cx, "filtered", |cx| {
             author.read_with(cx, |t, cx| t.loaded_rows(cx) == 1)
         });
-        assert_eq!(author.read_with(&cx, |t, cx| t.cell(0, 1, cx)).as_deref(), Some("Grace"));
+        assert_eq!(
+            author.read_with(&cx, |t, cx| t.cell(0, 1, cx)).as_deref(),
+            Some("Grace")
+        );
 
         // The chip's ✕ clears the reference filter.
         cx.run_until_parked();
@@ -1334,7 +1347,9 @@ mod tests {
             s.open_object(i, w, cx)
         });
         let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
-        wait_until(&mut cx, "rows", |cx| tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 2));
+        wait_until(&mut cx, "rows", |cx| {
+            tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 2)
+        });
         tab.update_in(&mut cx, |t, w, cx| t.select_cell(1, 0, w, cx));
         cx.simulate_keystrokes("cmd-shift-i");
         cx.run_until_parked();
@@ -1390,13 +1405,17 @@ mod tests {
         );
 
         // ⌘E shows the plan of the editor's statement.
-        q.update_in(&mut cx, |q, w, cx| q.run_for_test("create table t (a int, b int)", w, cx));
+        q.update_in(&mut cx, |q, w, cx| {
+            q.run_for_test("create table t (a int, b int)", w, cx)
+        });
         wait_until(&mut cx, "table", |cx| q.read_with(cx, |q, _| !q.running()));
         cx.simulate_keystrokes("cmd-e");
         wait_until(&mut cx, "plan", |cx| {
             q.read_with(cx, |q, _| !q.plan_labels().is_empty())
         });
-        assert!(q.read_with(&cx, |q, _| q.plan_labels().iter().any(|l| l.contains("SCAN t"))));
+        assert!(q.read_with(&cx, |q, _| {
+            q.plan_labels().iter().any(|l| l.contains("SCAN t"))
+        }));
         let _ = std::fs::remove_file(file);
     }
 
@@ -1426,9 +1445,15 @@ mod tests {
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         let saved = crate::saved::for_connection(&conn_id).unwrap();
-        let mine: Vec<_> = saved.iter().filter(|q| q.conn_id.as_deref() == Some(&conn_id)).collect();
+        let mine: Vec<_> = saved
+            .iter()
+            .filter(|q| q.conn_id.as_deref() == Some(&conn_id))
+            .collect();
         assert_eq!(mine.len(), 1);
-        assert_eq!((mine[0].name.as_str(), mine[0].sql.as_str()), ("Kept query", "select 'kept'"));
+        assert_eq!(
+            (mine[0].name.as_str(), mine[0].sql.as_str()),
+            ("Kept query", "select 'kept'")
+        );
 
         let tabs = session.read_with(&cx, |s, _| s.tab_count());
         cx.simulate_keystrokes("cmd-shift-o");
@@ -1449,7 +1474,10 @@ mod tests {
         cx.run_until_parked();
         assert!(!cx.update(|w, cx| w.has_active_dialog(cx)));
         let again = crate::saved::for_connection(&conn_id).unwrap();
-        let mine: Vec<_> = again.iter().filter(|q| q.conn_id.as_deref() == Some(&conn_id)).collect();
+        let mine: Vec<_> = again
+            .iter()
+            .filter(|q| q.conn_id.as_deref() == Some(&conn_id))
+            .collect();
         assert_eq!(mine.len(), 1);
         assert_eq!(mine[0].sql, "select 'kept' -- v2");
         crate::saved::delete(&mine[0].id).unwrap();
@@ -1474,7 +1502,11 @@ mod tests {
         }))
         .unwrap();
         let good = std::env::temp_dir().join(format!("tabula-ui-good-{}.csv", cfg.id));
-        std::fs::write(&good, "Name,Age,Unknown\nAda,36,x\n\"Hopper, Grace\",85,y\nLinus,,z\n").unwrap();
+        std::fs::write(
+            &good,
+            "Name,Age,Unknown\nAda,36,x\n\"Hopper, Grace\",85,y\nLinus,,z\n",
+        )
+        .unwrap();
         let bad = std::env::temp_dir().join(format!("tabula-ui-bad-{}.csv", cfg.id));
         std::fs::write(&bad, "name,age\nKen,1\n,2\n").unwrap();
 
@@ -1497,20 +1529,37 @@ mod tests {
         });
 
         tab.update_in(&mut cx, |t, w, cx| t.import_csv_file(&good, w, cx));
-        wait_until(&mut cx, "confirmation", |cx| cx.update(|w, cx| w.has_active_dialog(cx)));
+        wait_until(&mut cx, "confirmation", |cx| {
+            cx.update(|w, cx| w.has_active_dialog(cx))
+        });
         cx.simulate_keystrokes("enter");
-        wait_until(&mut cx, "imported", |cx| tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 3));
-        assert_eq!(tab.read_with(&cx, |t, cx| t.cell(1, 1, cx)).as_deref(), Some("Hopper, Grace"));
-        assert_eq!(tab.read_with(&cx, |t, cx| t.cell(2, 2, cx)), None, "empty → NULL");
+        wait_until(&mut cx, "imported", |cx| {
+            tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 3)
+        });
+        assert_eq!(
+            tab.read_with(&cx, |t, cx| t.cell(1, 1, cx)).as_deref(),
+            Some("Hopper, Grace")
+        );
+        assert_eq!(
+            tab.read_with(&cx, |t, cx| t.cell(2, 2, cx)),
+            None,
+            "empty → NULL"
+        );
 
         // The second row has no name (NOT NULL): the whole file is rejected.
         tab.update_in(&mut cx, |t, w, cx| t.import_csv_file(&bad, w, cx));
-        wait_until(&mut cx, "confirmation", |cx| cx.update(|w, cx| w.has_active_dialog(cx)));
+        wait_until(&mut cx, "confirmation", |cx| {
+            cx.update(|w, cx| w.has_active_dialog(cx))
+        });
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         std::thread::sleep(std::time::Duration::from_millis(200));
         cx.run_until_parked();
-        assert_eq!(tab.read_with(&cx, |t, cx| t.loaded_rows(cx)), 3, "nothing inserted");
+        assert_eq!(
+            tab.read_with(&cx, |t, cx| t.loaded_rows(cx)),
+            3,
+            "nothing inserted"
+        );
         for f in [file, good, bad] {
             let _ = std::fs::remove_file(f);
         }
@@ -1548,8 +1597,13 @@ mod tests {
             s.open_object(i, w, cx)
         });
         let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
-        wait_until(&mut cx, "structure", |cx| tab.read_with(cx, |t, _| t.has_structure()));
-        assert_eq!(tab.read_with(&cx, |t, _| t.column_names()), ["id", "title", "legacy"]);
+        wait_until(&mut cx, "structure", |cx| {
+            tab.read_with(cx, |t, _| t.has_structure())
+        });
+        assert_eq!(
+            tab.read_with(&cx, |t, _| t.column_names()),
+            ["id", "title", "legacy"]
+        );
         let ed = tab
             .update_in(&mut cx, |t, w, cx| t.edit_columns_for_test(w, cx))
             .unwrap();
@@ -1575,7 +1629,8 @@ mod tests {
         let setup = cfg.clone();
         futures::executor::block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&setup).await?;
-            c.execute("create table old_name (id integer primary key)").await?;
+            c.execute("create table old_name (id integer primary key)")
+                .await?;
             c.close().await;
             Ok(())
         }))
@@ -1595,7 +1650,9 @@ mod tests {
         cx.simulate_input("new_name");
         cx.simulate_keystrokes("enter");
         wait_until(&mut cx, "renamed", |cx| {
-            session.read_with(cx, |s, _| s.object("new_name").is_some() && s.object("old_name").is_none())
+            session.read_with(cx, |s, _| {
+                s.object("new_name").is_some() && s.object("old_name").is_none()
+            })
         });
         assert!(!cx.update(|w, cx| w.has_active_dialog(cx)));
         let _ = std::fs::remove_file(file);
@@ -1613,16 +1670,23 @@ mod tests {
         let setup = cfg.clone();
         futures::executor::block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&setup).await?;
-            c.execute("create table kept (id integer primary key)").await?;
+            c.execute("create table kept (id integer primary key)")
+                .await?;
             c.close().await;
             Ok(())
         }))
         .unwrap();
         let (app, mut cx) = open(cx);
-        app.update_in(&mut cx, |a, w, cx| a.connect(cfg.clone(), w, cx, |_, _, _| {}));
-        wait_until(&mut cx, "connection", |cx| app.read_with(cx, |a, _| a.sessions.len() == 1));
+        app.update_in(&mut cx, |a, w, cx| {
+            a.connect(cfg.clone(), w, cx, |_, _, _| {})
+        });
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
         let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
-        wait_until(&mut cx, "tables", |cx| session.read_with(cx, |s, _| s.object_index("kept").is_some()));
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("kept").is_some())
+        });
         session.update_in(&mut cx, |s, w, cx| {
             let i = s.object_index("kept").unwrap();
             s.open_object(i, w, cx);
@@ -1637,7 +1701,9 @@ mod tests {
         app.update_in(&mut cx, |a, w, cx| {
             a.reopen_for_test(state.sessions[0].clone(), cfg, w, cx)
         });
-        wait_until(&mut cx, "reopened", |cx| app.read_with(cx, |a, _| a.sessions.len() == 1));
+        wait_until(&mut cx, "reopened", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
         let s = app.read_with(&cx, |a, _| a.sessions[0].clone());
         assert_eq!(s.read_with(&cx, |s, _| s.tab_count()), 2);
         let q = s.read_with(&cx, |s, _| s.active_query().expect("query tab in front"));
@@ -1655,7 +1721,9 @@ mod tests {
         cfg.file = file.to_string_lossy().into();
         let (app, mut cx) = open(cx);
         app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
-        wait_until(&mut cx, "connection", |cx| app.read_with(cx, |a, _| a.sessions.len() == 1));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
         let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
         for _ in 0..3 {
             session.update_in(&mut cx, |s, w, cx| s.new_query_for_test(w, cx));
@@ -1683,10 +1751,15 @@ mod tests {
         cfg.database = "postgres".into();
         let (app, mut cx) = open(cx);
         app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
-        wait_until(&mut cx, "connection", |cx| app.read_with(cx, |a, _| a.sessions.len() == 1));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
         let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
         cx.run_until_parked();
-        std::process::Command::new("docker").args(["pause", "tabula-test-pg"]).status().unwrap();
+        std::process::Command::new("docker")
+            .args(["pause", "tabula-test-pg"])
+            .status()
+            .unwrap();
         session.update_in(&mut cx, |s, w, cx| s.refresh(w, cx));
         let start = Instant::now();
         while session.read_with(&cx, |s, _| s.load_error().is_none()) {
@@ -1694,13 +1767,21 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
             cx.run_until_parked();
         }
-        std::process::Command::new("docker").args(["unpause", "tabula-test-pg"]).status().unwrap();
+        std::process::Command::new("docker")
+            .args(["unpause", "tabula-test-pg"])
+            .status()
+            .unwrap();
         let e = session.read_with(&cx, |s, _| s.load_error().unwrap());
-        assert!(e.contains("Lost the connection") || e.contains("didn't answer"), "{e}");
+        assert!(
+            e.contains("Lost the connection") || e.contains("didn't answer"),
+            "{e}"
+        );
         cx.run_until_parked();
         let retry = cx.debug_bounds("retry-objects").expect("Retry shown");
         cx.simulate_click(retry.center(), gpui::Modifiers::none());
-        wait_until(&mut cx, "recovered", |cx| session.read_with(cx, |s, _| s.load_error().is_none()));
+        wait_until(&mut cx, "recovered", |cx| {
+            session.read_with(cx, |s, _| s.load_error().is_none())
+        });
     }
 
     /// ⌘1/⌘2 switch connections; ⌘N opens the connection picker, which

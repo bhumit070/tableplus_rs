@@ -12,7 +12,8 @@ pub enum Gate {
     Block(String),
 }
 
-const READ_ONLY: &str = "This connection is read-only (Safe mode). Change it in the connection's settings.";
+const READ_ONLY: &str =
+    "This connection is read-only (Safe mode). Change it in the connection's settings.";
 
 /// For editor text.
 pub fn gate_query(cfg: &ConnectionConfig, text: &str) -> Gate {
@@ -255,7 +256,10 @@ mod tests {
         // Comment markers inside strings don't hide the rest of the statement.
         assert!(!ro(pg, "select '--' as a into backup from users"));
         assert!(!ro(pg, "with x as (select '/*') delete from t -- */"));
-        assert!(!ro(Driver::MySql, r"select 'a\' -- ' into outfile '/tmp/x'"));
+        assert!(!ro(
+            Driver::MySql,
+            r"select 'a\' -- ' into outfile '/tmp/x'"
+        ));
         assert!(!ro(pg, "update t set a = 1"));
         assert!(!ro(pg, ""), "nothing to run → ask");
         assert!(ro(Driver::Sqlite, "pragma table_info(t)"));
@@ -278,7 +282,11 @@ mod tests {
         assert_eq!(gate_query(&c, write), Gate::Confirm);
         assert_eq!(gate_write(&c), Gate::Confirm);
         c.safe_mode = SafeMode::Off;
-        assert_eq!(gate_query(&c, write), Gate::Run, "explicit off wins over the tag");
+        assert_eq!(
+            gate_query(&c, write),
+            Gate::Run,
+            "explicit off wins over the tag"
+        );
         c.safe_mode = SafeMode::ConfirmAll;
         assert_eq!(gate_query(&c, read), Gate::Confirm);
         c.safe_mode = SafeMode::ReadOnly;

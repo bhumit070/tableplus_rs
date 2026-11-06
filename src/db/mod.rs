@@ -545,14 +545,15 @@ impl Connection {
     /// Returns the page of rows plus the total row count (for the pager).
     pub async fn fetch_table(&self, q: &TableQuery) -> Result<(QueryResult, Option<u64>)> {
         let start = Instant::now();
-        let (mut res, total) = self.bounded("Loading rows", async {
-            Ok(match &self.inner {
-                Conn::Sql(c) => c.fetch_table(q).await?,
-                Conn::Redis(c) => c.fetch_table(q).await?,
-                Conn::Mongo(c) => c.fetch_table(q).await?,
+        let (mut res, total) = self
+            .bounded("Loading rows", async {
+                Ok(match &self.inner {
+                    Conn::Sql(c) => c.fetch_table(q).await?,
+                    Conn::Redis(c) => c.fetch_table(q).await?,
+                    Conn::Mongo(c) => c.fetch_table(q).await?,
+                })
             })
-        })
-        .await?;
+            .await?;
         res.elapsed_ms = start.elapsed().as_millis();
         Ok((res, total))
     }

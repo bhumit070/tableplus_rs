@@ -334,7 +334,10 @@ mod tests {
         assert_eq!(r.unsupported, vec!["SQLServer"]);
         // The SSH password counts too, and failures are per connection.
         assert!(r.summary().contains("2 with passwords saved"));
-        let r = ImportReport { keychain_failed: 1, ..r };
+        let r = ImportReport {
+            keychain_failed: 1,
+            ..r
+        };
         assert!(r.summary().contains("1 with passwords saved"));
         // Passwords never reach connections.json.
         let json = serde_json::to_string(&r.added).unwrap();

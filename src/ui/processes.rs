@@ -138,30 +138,31 @@ impl Processes {
         let text: SharedString = format!("{what} process {id}{prod}?").into();
         window.open_alert_dialog(cx, move |d, _, _| {
             let (me, conn, id) = (me.clone(), conn.clone(), id.clone());
-            d.title(if whole { "Kill Connection?" } else { "Cancel Query?" })
-                .description(text.clone())
-                .show_cancel(true)
-                .on_ok(move |_, window, cx| {
-                    let (conn, id) = (conn.clone(), id.clone());
-                    let task = runtime::spawn(async move { conn.read().await.kill(&id, whole).await });
-                    let me = me.clone();
-                    window
-                        .spawn(cx, async move |cx| {
-                            let res = task.await;
-                            cx.update(|window, cx| {
-                                if let Err(e) = res {
-                                    window.push_notification(
-                                        Notification::error(format!("{e:#}")),
-                                        cx,
-                                    );
-                                }
-                                me.update(cx, |p, cx| p.refresh(cx)).ok();
-                            })
-                            .ok();
+            d.title(if whole {
+                "Kill Connection?"
+            } else {
+                "Cancel Query?"
+            })
+            .description(text.clone())
+            .show_cancel(true)
+            .on_ok(move |_, window, cx| {
+                let (conn, id) = (conn.clone(), id.clone());
+                let task = runtime::spawn(async move { conn.read().await.kill(&id, whole).await });
+                let me = me.clone();
+                window
+                    .spawn(cx, async move |cx| {
+                        let res = task.await;
+                        cx.update(|window, cx| {
+                            if let Err(e) = res {
+                                window.push_notification(Notification::error(format!("{e:#}")), cx);
+                            }
+                            me.update(cx, |p, cx| p.refresh(cx)).ok();
                         })
-                        .detach();
-                    true
-                })
+                        .ok();
+                    })
+                    .detach();
+                true
+            })
         });
     }
 }

@@ -89,13 +89,13 @@ fn pg_env(cmd: &mut Command, t: &Target) {
     cmd.env("PGPASSWORD", &t.cfg.password)
         .env("PGCONNECT_TIMEOUT", "15")
         .env(
-        "PGSSLMODE",
-        match (t.cfg.ssl, t.cfg.ssl_verify) {
-            (true, true) => "verify-full",
-            (true, false) => "require",
-            _ => "prefer",
-        },
-    );
+            "PGSSLMODE",
+            match (t.cfg.ssl, t.cfg.ssl_verify) {
+                (true, true) => "verify-full",
+                (true, false) => "require",
+                _ => "prefer",
+            },
+        );
 }
 
 /// A `[client]` options file readable only by us, holding the password.

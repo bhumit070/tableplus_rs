@@ -29,7 +29,11 @@ pub fn current_row<H: CellEditHost>(host: &H, cx: &App) -> Option<usize> {
 }
 
 /// `types[i]` is column i's type, when known.
-pub fn render<H: CellEditHost>(host: &H, types: &[Option<String>], cx: &mut Context<H>) -> AnyElement {
+pub fn render<H: CellEditHost>(
+    host: &H,
+    types: &[Option<String>],
+    cx: &mut Context<H>,
+) -> AnyElement {
     let theme = cx.theme().clone();
     let row = current_row(host, cx);
     let g = host.grid().read(cx).delegate();
@@ -47,7 +51,9 @@ pub fn render<H: CellEditHost>(host: &H, types: &[Option<String>], cx: &mut Cont
                 let edited = g.edits.contains_key(&(r, c));
                 let editable = g.can_edit(r, c);
                 let ty = types.get(c).cloned().flatten();
-                let shown = value.as_deref().map(|v| pretty_json(v).unwrap_or_else(|| v.to_string()));
+                let shown = value
+                    .as_deref()
+                    .map(|v| pretty_json(v).unwrap_or_else(|| v.to_string()));
                 let copy_value = value.clone().unwrap_or_default();
                 v_flex()
                     .px_2()
@@ -78,8 +84,16 @@ pub fn render<H: CellEditHost>(host: &H, types: &[Option<String>], cx: &mut Cont
                                         .xsmall()
                                         .tooltip("Edit")
                                         .on_click(cx.listener(move |h: &mut H, _, window, cx| {
-                                            h.grid().update(cx, |t, cx| t.set_selected_cell(r, c, cx));
-                                            cell_edit::start_edit(h, r, c, EditStart::Keep, window, cx);
+                                            h.grid()
+                                                .update(cx, |t, cx| t.set_selected_cell(r, c, cx));
+                                            cell_edit::start_edit(
+                                                h,
+                                                r,
+                                                c,
+                                                EditStart::Keep,
+                                                window,
+                                                cx,
+                                            );
                                         })),
                                 )
                             })

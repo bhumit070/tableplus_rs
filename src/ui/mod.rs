@@ -101,10 +101,9 @@ pub fn guarded(
     use gpui_component::WindowExt as _;
     match gate {
         Gate::Run => return true,
-        Gate::Block(why) => window.push_notification(
-            gpui_component::notification::Notification::warning(why),
-            cx,
-        ),
+        Gate::Block(why) => {
+            window.push_notification(gpui_component::notification::Notification::warning(why), cx)
+        }
         Gate::Confirm => {
             let target = if cfg.tag == crate::db::EnvTag::Production {
                 "PRODUCTION".to_string()
@@ -149,8 +148,8 @@ pub fn prompt_text(
     let first = std::cell::Cell::new(true);
     window.open_dialog(cx, move |dialog, window, cx| {
         use gpui::prelude::FluentBuilder as _;
-        use gpui_component::button::{Button, ButtonVariants as _};
         use gpui_component::Sizable as _;
+        use gpui_component::button::{Button, ButtonVariants as _};
         if first.replace(false) {
             input.update(cx, |i, cx| {
                 i.focus(window, cx);

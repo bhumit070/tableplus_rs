@@ -123,26 +123,28 @@ impl client::Handler for Client {
                 Ok(true) => return Ok(true),
                 Ok(false) => {}
                 Err(russh::keys::Error::KeyChanged { line }) => {
-                    *self.problem.lock().unwrap_or_else(|e| e.into_inner()) = Some(KeyProblem::Changed(format!(
-                        "the SSH host key for {}:{} has CHANGED (it doesn't match line {line} \
+                    *self.problem.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(KeyProblem::Changed(format!(
+                            "the SSH host key for {}:{} has CHANGED (it doesn't match line {line} \
                          of {}). Someone could be intercepting the connection. If the server \
                          was reinstalled, remove that line and connect again.",
-                        self.host,
-                        self.port,
-                        file.display()
-                    )));
+                            self.host,
+                            self.port,
+                            file.display()
+                        )));
                     return Ok(false);
                 }
                 // An unreadable line or file: keep looking elsewhere.
                 Err(_) => {}
             }
         }
-        *self.problem.lock().unwrap_or_else(|e| e.into_inner()) = Some(KeyProblem::Unknown(UnknownHostKey {
-            host: self.host.clone(),
-            port: self.port,
-            fingerprint: key.fingerprint(HashAlg::Sha256).to_string(),
-            key: key.clone(),
-        }));
+        *self.problem.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(KeyProblem::Unknown(UnknownHostKey {
+                host: self.host.clone(),
+                port: self.port,
+                fingerprint: key.fingerprint(HashAlg::Sha256).to_string(),
+                key: key.clone(),
+            }));
         Ok(false)
     }
 }
@@ -163,7 +165,10 @@ impl Tunnel {
         if self.task.is_finished() {
             return Some("the tunnel stopped".into());
         }
-        self.reopen_error.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.reopen_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 
@@ -186,12 +191,14 @@ async fn session(ssh: &SshConfig) -> Result<client::Handle<Client>> {
         Err(_) => bail!("SSH: timed out connecting to {}:{port}", ssh.host),
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            return Err(match problem.lock().unwrap_or_else(|e| e.into_inner()).take() {
-                Some(KeyProblem::Unknown(u)) => anyhow::Error::new(u),
-                Some(KeyProblem::Changed(msg)) => anyhow::anyhow!("SSH: {msg}"),
-                None => anyhow::Error::new(e)
-                    .context(format!("SSH: couldn't connect to {}:{port}", ssh.host)),
-            });
+            return Err(
+                match problem.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                    Some(KeyProblem::Unknown(u)) => anyhow::Error::new(u),
+                    Some(KeyProblem::Changed(msg)) => anyhow::anyhow!("SSH: {msg}"),
+                    None => anyhow::Error::new(e)
+                        .context(format!("SSH: couldn't connect to {}:{port}", ssh.host)),
+                },
+            );
         }
     };
     // An agent waiting for a hardware-key touch, or a stalled server,
@@ -220,7 +227,9 @@ impl Tunnel {
     /// local port to `target_host:target_port`.
     pub async fn open(ssh: &SshConfig, target_host: &str, target_port: u16) -> Result<Tunnel> {
         if target_host.starts_with("mongodb") {
-            bail!("a MongoDB connection string can't go through an SSH tunnel; enter host and port instead");
+            bail!(
+                "a MongoDB connection string can't go through an SSH tunnel; enter host and port instead"
+            );
         }
         let first = session(ssh).await?;
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -282,7 +291,9 @@ impl Tunnel {
                         }
                         // Closing the socket makes the driver fail; the log
                         // says it was the tunnel (the driver can't know).
-                        Err(e) => eprintln!("SSH tunnel: couldn't open a channel to the database: {e}"),
+                        Err(e) => {
+                            eprintln!("SSH tunnel: couldn't open a channel to the database: {e}")
+                        }
                     }
                 });
                 // Reap finished forwards so the set doesn't grow forever.
@@ -314,9 +325,9 @@ async fn agent_login(session: &mut client::Handle<Client>, user: &str) -> Result
     match AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await {
         Ok(agent) => try_agent_keys(session, user, agent).await,
         Err(_) => {
-            let agent = AgentClient::connect_pageant()
-                .await
-                .context("SSH: no agent found (start the OpenSSH Authentication Agent service, or Pageant)")?;
+            let agent = AgentClient::connect_pageant().await.context(
+                "SSH: no agent found (start the OpenSSH Authentication Agent service, or Pageant)",
+            )?;
             try_agent_keys(session, user, agent).await
         }
     }
@@ -423,8 +434,8 @@ pub(crate) mod test_server {
 
     use std::sync::Arc;
 
-    use russh::keys::{Algorithm, PrivateKey};
     use russh::Channel;
+    use russh::keys::{Algorithm, PrivateKey};
     use russh::server::{self, Auth, ChannelOpenHandle, Msg, Session};
     use tokio::net::{TcpListener, TcpStream};
 
@@ -561,22 +572,34 @@ mod tests {
             }
         });
 
-        let err = Tunnel::open(&cfg(ssh_port, test_server::PASSWORD), "127.0.0.1", echo_port)
-            .await
-            .err()
-            .expect("unknown host key is refused");
-        let unknown = err.downcast_ref::<UnknownHostKey>().expect("UnknownHostKey");
+        let err = Tunnel::open(
+            &cfg(ssh_port, test_server::PASSWORD),
+            "127.0.0.1",
+            echo_port,
+        )
+        .await
+        .err()
+        .expect("unknown host key is refused");
+        let unknown = err
+            .downcast_ref::<UnknownHostKey>()
+            .expect("UnknownHostKey");
         assert!(unknown.fingerprint.starts_with("SHA256:"));
         unknown.trust().unwrap();
 
         let bad = Tunnel::open(&cfg(ssh_port, "nope"), "127.0.0.1", echo_port).await;
         assert!(format!("{:#}", bad.err().unwrap()).contains("authentication failed"));
 
-        let t = Tunnel::open(&cfg(ssh_port, test_server::PASSWORD), "127.0.0.1", echo_port)
-            .await
-            .unwrap();
+        let t = Tunnel::open(
+            &cfg(ssh_port, test_server::PASSWORD),
+            "127.0.0.1",
+            echo_port,
+        )
+        .await
+        .unwrap();
         for msg in [&b"hello"[..], b"second connection"] {
-            let mut c = tokio::net::TcpStream::connect(("127.0.0.1", t.port)).await.unwrap();
+            let mut c = tokio::net::TcpStream::connect(("127.0.0.1", t.port))
+                .await
+                .unwrap();
             c.write_all(msg).await.unwrap();
             let mut buf = vec![0; msg.len()];
             c.read_exact(&mut buf).await.unwrap();
@@ -586,7 +609,9 @@ mod tests {
         drop(t);
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(
-            tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err(),
+            tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_err(),
             "closed with the connection"
         );
     }
@@ -599,7 +624,11 @@ mod tests {
         let (ssh_port, _) = test_server::start(Some(key.public_key().clone())).await;
         let file = std::env::temp_dir().join(format!("tabula-ssh-key-{}", uuid::Uuid::new_v4()));
         let locked = key.encrypt(&mut rand::rng(), "pass phrase").unwrap();
-        std::fs::write(&file, locked.to_openssh(Default::default()).unwrap().as_bytes()).unwrap();
+        std::fs::write(
+            &file,
+            locked.to_openssh(Default::default()).unwrap().as_bytes(),
+        )
+        .unwrap();
         let mut c = cfg(ssh_port, "pass phrase");
         c.auth = SshAuth::Key;
         c.key_path = file.to_string_lossy().into();
@@ -634,7 +663,9 @@ mod tests {
         }
         let t = Tunnel::open(&c, "127.0.0.1", echo_port).await.unwrap();
         let roundtrip = |port: u16| async move {
-            let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
             s.write_all(b"ping").await.unwrap();
             let mut buf = [0u8; 4];
             tokio::time::timeout(Duration::from_secs(5), s.read_exact(&mut buf))

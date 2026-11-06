@@ -51,7 +51,10 @@ pub fn read_json<T: serde::de::DeserializeOwned + Default>(
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (T::default(), None),
         Err(e) => {
-            PROTECTED.lock().unwrap_or_else(|e| e.into_inner()).push(p.to_path_buf());
+            PROTECTED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(p.to_path_buf());
             return (
                 T::default(),
                 Some(format!(
@@ -72,11 +75,17 @@ pub fn read_json<T: serde::de::DeserializeOwned + Default>(
             let kept = match std::fs::rename(p, &backup) {
                 Ok(()) => format!("It was kept as {}", backup.display()),
                 Err(re) => {
-                    PROTECTED.lock().unwrap_or_else(|e| e.into_inner()).push(p.to_path_buf());
+                    PROTECTED
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(p.to_path_buf());
                     format!("It couldn't be moved aside ({re}), so changes won't be saved over it")
                 }
             };
-            (T::default(), Some(format!("Couldn't read {what} ({e}). {kept}.")))
+            (
+                T::default(),
+                Some(format!("Couldn't read {what} ({e}). {kept}.")),
+            )
         }
     }
 }
@@ -90,7 +99,10 @@ pub fn write_atomic(p: &std::path::Path, text: &str) -> Result<()> {
         .iter()
         .any(|x| x == p)
     {
-        anyhow::bail!("not saved: {} couldn't be read earlier, so it isn't overwritten", p.display());
+        anyhow::bail!(
+            "not saved: {} couldn't be read earlier, so it isn't overwritten",
+            p.display()
+        );
     }
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir)?;
@@ -119,7 +131,9 @@ fn password(id: &str) -> Result<String> {
     match keyring::Entry::new(SERVICE, id).and_then(|e| e.get_password()) {
         Ok(p) => Ok(p),
         Err(keyring::Error::NoEntry) => Ok(String::new()),
-        Err(e) => Err(anyhow::anyhow!("Keychain: couldn't read the saved password ({e})")),
+        Err(e) => Err(anyhow::anyhow!(
+            "Keychain: couldn't read the saved password ({e})"
+        )),
     }
 }
 

@@ -94,7 +94,11 @@ impl TableEditor {
                     ed.push_row(Some(ColDef::from_info(c)), window, cx);
                 }
             } else {
-                let int = if ed.shared.cfg.driver == Driver::Postgres { "bigint" } else { "integer" };
+                let int = if ed.shared.cfg.driver == Driver::Postgres {
+                    "bigint"
+                } else {
+                    "integer"
+                };
                 let id = ColDef {
                     name: "id".into(),
                     ty: int.into(),
@@ -237,7 +241,8 @@ impl TableEditor {
             Ok(s) if s.is_empty() => window.push_notification("No changes", cx),
             Ok(s) => {
                 let sql: SharedString = s.join("\n").into();
-                window.open_alert_dialog(cx, move |d, _, _| d.title("SQL").description(sql.clone()));
+                window
+                    .open_alert_dialog(cx, move |d, _, _| d.title("SQL").description(sql.clone()));
             }
             Err(e) => {
                 self.error = Some(format!("{e:#}"));
@@ -266,9 +271,17 @@ impl TableEditor {
         let detail = stmts.join("\n");
         let me = cx.entity().downgrade();
         let s2 = stmts.clone();
-        if super::guarded(gate, &self.shared.cfg, "Change structure", detail, window, cx, move |w, cx| {
-            me.update(cx, |e, cx| e.run(s2.clone(), w, cx)).ok();
-        }) {
+        if super::guarded(
+            gate,
+            &self.shared.cfg,
+            "Change structure",
+            detail,
+            window,
+            cx,
+            move |w, cx| {
+                me.update(cx, |e, cx| e.run(s2.clone(), w, cx)).ok();
+            },
+        ) {
             self.run(stmts, window, cx);
         }
     }
@@ -279,7 +292,12 @@ impl TableEditor {
         cx.notify();
         let script = ddl::script(self.shared.cfg.driver, &stmts);
         let conn = self.shared.conn.clone();
-        let task = runtime::spawn(async move { conn.read().await.execute_cancellable(&script, &crate::db::Cancel::default()).await });
+        let task = runtime::spawn(async move {
+            conn.read()
+                .await
+                .execute_cancellable(&script, &crate::db::Cancel::default())
+                .await
+        });
         let on_done = self.on_done.clone();
         cx.spawn_in(window, async move |this, cx| {
             let res = task.await;
@@ -317,7 +335,14 @@ impl TableEditor {
     }
 
     #[cfg(test)]
-    pub fn set_row(&mut self, i: usize, name: &str, ty: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn set_row(
+        &mut self,
+        i: usize,
+        name: &str,
+        ty: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         while self.rows.len() <= i {
             self.push_row(None, window, cx);
         }

@@ -59,7 +59,12 @@ pub fn copy_items<H: ExportHost>(menu: PopupMenu, host: WeakEntity<H>, row: usiz
         label("Copy Row as JSON"),
         Rc::new(move |h: &H, w, cx| {
             let g = h.export_grid().read(cx).delegate();
-            let text = export::render(Format::Json, &g.columns, &[g.row_values(row)], &h.sql_target(cx));
+            let text = export::render(
+                Format::Json,
+                &g.columns,
+                &[g.row_values(row)],
+                &h.sql_target(cx),
+            );
             // A single object, not a one-element array.
             let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
             let text = serde_json::to_string_pretty(&v[0]).unwrap_or_default();
@@ -78,8 +83,7 @@ pub fn copy_items<H: ExportHost>(menu: PopupMenu, host: WeakEntity<H>, row: usiz
         label("Copy Row as UPDATE"),
         Rc::new(move |h: &H, w, cx| {
             let g = h.export_grid().read(cx).delegate();
-            let text =
-                export::updates(&h.sql_target(cx), &g.columns, &g.pk, &[g.row_values(row)]);
+            let text = export::updates(&h.sql_target(cx), &g.columns, &g.pk, &[g.row_values(row)]);
             copy(text, "row as UPDATE", w, cx)
         }),
     ))

@@ -104,7 +104,13 @@ fn tokenize(sql: &str, backslash_escapes: bool) -> Vec<Tok> {
                 out.push(Tok::Lit(take(s, j)));
                 i = j;
             }
-        } else if ch.is_alphanumeric() || ch == '_' || ch == '@' || ch == '#' || ch == '$' || ch == ':' && next.is_some_and(|n| n.is_alphabetic()) {
+        } else if ch.is_alphanumeric()
+            || ch == '_'
+            || ch == '@'
+            || ch == '#'
+            || ch == '$'
+            || ch == ':' && next.is_some_and(|n| n.is_alphabetic())
+        {
             let s = i;
             i += 1;
             while i < c.len() && (c[i].is_alphanumeric() || c[i] == '_' || c[i] == '$') {
@@ -117,7 +123,8 @@ fn tokenize(sql: &str, backslash_escapes: bool) -> Vec<Tok> {
                     let signed_exp = matches!(c[i - 1], 'e' | 'E')
                         && matches!(c.get(i), Some('+' | '-'))
                         && c.get(i + 1).is_some_and(char::is_ascii_digit);
-                    if signed_exp || (i < c.len() && (c[i].is_ascii_alphanumeric() || c[i] == '.')) {
+                    if signed_exp || (i < c.len() && (c[i].is_ascii_alphanumeric() || c[i] == '.'))
+                    {
                         i += 1;
                     } else {
                         break;
@@ -155,18 +162,118 @@ fn tokenize(sql: &str, backslash_escapes: bool) -> Vec<Tok> {
 /// Words written in upper case. Anything else (identifiers, functions not
 /// listed) keeps the user's spelling.
 const KEYWORDS: &[&str] = &[
-    "select", "from", "where", "and", "or", "not", "in", "is", "null", "as", "on", "join",
-    "inner", "left", "right", "full", "outer", "cross", "natural", "using", "group", "by",
-    "order", "having", "limit", "offset", "fetch", "first", "next", "rows", "only", "union",
-    "all", "intersect", "except", "distinct", "insert", "into", "values", "update", "set",
-    "delete", "returning", "with", "recursive", "case", "when", "then", "else", "end", "asc",
-    "desc", "nulls", "last", "between", "like", "ilike", "exists", "any", "some", "create",
-    "table", "view", "index", "unique", "primary", "key", "foreign", "references", "default",
-    "constraint", "check", "alter", "add", "column", "drop", "truncate", "if", "cascade",
-    "begin", "commit", "rollback", "transaction", "true", "false", "window", "over",
-    "partition", "lateral", "conflict", "do", "nothing", "for", "share", "explain", "analyze",
-    "count", "sum", "avg", "min", "max", "coalesce", "cast", "interval", "current_date",
-    "current_timestamp", "now", "lower", "upper", "replace", "ignore", "duplicate",
+    "select",
+    "from",
+    "where",
+    "and",
+    "or",
+    "not",
+    "in",
+    "is",
+    "null",
+    "as",
+    "on",
+    "join",
+    "inner",
+    "left",
+    "right",
+    "full",
+    "outer",
+    "cross",
+    "natural",
+    "using",
+    "group",
+    "by",
+    "order",
+    "having",
+    "limit",
+    "offset",
+    "fetch",
+    "first",
+    "next",
+    "rows",
+    "only",
+    "union",
+    "all",
+    "intersect",
+    "except",
+    "distinct",
+    "insert",
+    "into",
+    "values",
+    "update",
+    "set",
+    "delete",
+    "returning",
+    "with",
+    "recursive",
+    "case",
+    "when",
+    "then",
+    "else",
+    "end",
+    "asc",
+    "desc",
+    "nulls",
+    "last",
+    "between",
+    "like",
+    "ilike",
+    "exists",
+    "any",
+    "some",
+    "create",
+    "table",
+    "view",
+    "index",
+    "unique",
+    "primary",
+    "key",
+    "foreign",
+    "references",
+    "default",
+    "constraint",
+    "check",
+    "alter",
+    "add",
+    "column",
+    "drop",
+    "truncate",
+    "if",
+    "cascade",
+    "begin",
+    "commit",
+    "rollback",
+    "transaction",
+    "true",
+    "false",
+    "window",
+    "over",
+    "partition",
+    "lateral",
+    "conflict",
+    "do",
+    "nothing",
+    "for",
+    "share",
+    "explain",
+    "analyze",
+    "count",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "coalesce",
+    "cast",
+    "interval",
+    "current_date",
+    "current_timestamp",
+    "now",
+    "lower",
+    "upper",
+    "replace",
+    "ignore",
+    "duplicate",
 ];
 
 /// Keywords that are also functions: their parens hug.
@@ -280,7 +387,10 @@ pub fn format_sql(sql: &str, backslash_escapes: bool) -> String {
                             out.word(&lower[i + k].to_ascii_uppercase(), true);
                         }
                         let head = lower[i].as_str();
-                        in_list = matches!(head, "select" | "set" | "order" | "group" | "partition" | "returning");
+                        in_list = matches!(
+                            head,
+                            "select" | "set" | "order" | "group" | "partition" | "returning"
+                        );
                         in_cond = matches!(head, "where" | "having");
                         // Long lists start on the next line, indented.
                         if in_list || in_cond {
@@ -332,7 +442,9 @@ pub fn format_sql(sql: &str, backslash_escapes: bool) -> String {
             }
             Tok::BlockComment(s) => out.word(s, true),
             Tok::Open => {
-                let sub = lower.get(i + 1).is_some_and(|w| w == "select" || w == "with");
+                let sub = lower
+                    .get(i + 1)
+                    .is_some_and(|w| w == "select" || w == "with");
                 // A call's paren hugs its name: `count(*)`, `my_fn(x)`; but
                 // not `IN (…)`, `VALUES (…)`, `INSERT INTO t (…)`.
                 let prev = if i > 0 { lower[i - 1].as_str() } else { "" };
@@ -342,7 +454,10 @@ pub fn format_sql(sql: &str, backslash_escapes: bool) -> String {
                     && matches!(toks[i - 1], Tok::Word(_))
                     && (FUNCS.contains(&prev)
                         || (!KEYWORDS.contains(&prev)
-                            && !matches!(before, "into" | "table" | "index" | "view" | "references")));
+                            && !matches!(
+                                before,
+                                "into" | "table" | "index" | "view" | "references"
+                            )));
                 if hug {
                     out.text.push('(');
                     out.fresh = false;
@@ -438,7 +553,9 @@ mod tests {
     #[test]
     fn breaks_clauses_and_lists() {
         assert_eq!(
-            f("select id, name, count(*) as n from users u left join orders o on o.user_id = u.id and o.paid where u.active = true and u.age between 18 and 65 group by id, name order by n desc limit 10"),
+            f(
+                "select id, name, count(*) as n from users u left join orders o on o.user_id = u.id and o.paid where u.active = true and u.age between 18 and 65 group by id, name order by n desc limit 10"
+            ),
             "SELECT\n  id,\n  name,\n  COUNT(*) AS n\nFROM users u\nLEFT JOIN orders o\n  ON o.user_id = u.id\n  AND o.paid\nWHERE\n  u.active = TRUE\n  AND u.age BETWEEN 18 AND 65\nGROUP BY\n  id,\n  name\nORDER BY\n  n DESC\nLIMIT 10"
         );
     }
@@ -453,7 +570,9 @@ mod tests {
 
     #[test]
     fn keeps_meaningful_tokens_intact() {
-        let out = f("SELECT \"Order\".\"Select\", data->>'k', x::int, $1, $$a;b$$ FROM \"Order\" -- note\n;");
+        let out = f(
+            "SELECT \"Order\".\"Select\", data->>'k', x::int, $1, $$a;b$$ FROM \"Order\" -- note\n;",
+        );
         assert!(out.contains("\"Order\".\"Select\""), "{out}");
         assert!(out.contains("data ->> 'k'"), "{out}");
         assert!(out.contains("x::int"), "{out}");

@@ -151,9 +151,7 @@ impl Home {
             Ok(()) => false,
             Err(e) => {
                 window.push_notification(
-                    Notification::warning(format!(
-                        "{e:#}. Connecting without the saved password."
-                    )),
+                    Notification::warning(format!("{e:#}. Connecting without the saved password.")),
                     cx,
                 );
                 true
@@ -242,7 +240,10 @@ impl Home {
                 Notification::warning(format!(
                     "{e:#}. Those connections will ask for their password when you open them."
                 ))
-                .title(format!("{} password(s) couldn't be saved", report.keychain_failed)),
+                .title(format!(
+                    "{} password(s) couldn't be saved",
+                    report.keychain_failed
+                )),
                 cx,
             );
         }
@@ -375,8 +376,9 @@ impl Home {
                         h.connections.retain(|c| c.id != id);
                         if let Err(e) = store::delete_password(&id) {
                             window.push_notification(
-                                Notification::warning(format!("{e:#}"))
-                                    .title("The connection was removed, but its Keychain item wasn't"),
+                                Notification::warning(format!("{e:#}")).title(
+                                    "The connection was removed, but its Keychain item wasn't",
+                                ),
                                 cx,
                             );
                         }

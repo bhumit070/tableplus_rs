@@ -43,7 +43,8 @@ async fn open(cfg: &ConnectionConfig, db: &str) -> Result<ConnectionManager> {
     let db = if db.is_empty() { "0" } else { db };
     let url = format!("{scheme}://{auth}{}:{}/{db}", cfg.host, cfg.port);
     let at = format!("{}:{}", cfg.host, cfg.port);
-    let fail = |e: redis::RedisError| anyhow::Error::new(e).context(format!("couldn't connect to {at}"));
+    let fail =
+        |e: redis::RedisError| anyhow::Error::new(e).context(format!("couldn't connect to {at}"));
     // RESP3 returns hashes as maps; servers older than Redis 6 only speak
     // RESP2 and reject the HELLO handshake.
     let mut client = redis::Client::open(format!("{url}?protocol=resp3"))?;
@@ -54,8 +55,12 @@ async fn open(cfg: &ConnectionConfig, db: &str) -> Result<ConnectionManager> {
             .set_connection_timeout(std::time::Duration::from_secs(15))
             .set_response_timeout(std::time::Duration::from_secs(15))
     };
-    if let Err(e) = client.get_multiplexed_async_connection_with_config(&probe_cfg()).await {
-        let old_server = e.kind() == redis::ErrorKind::ResponseError || e.to_string().contains("HELLO");
+    if let Err(e) = client
+        .get_multiplexed_async_connection_with_config(&probe_cfg())
+        .await
+    {
+        let old_server =
+            e.kind() == redis::ErrorKind::ResponseError || e.to_string().contains("HELLO");
         if !old_server {
             return Err(fail(e));
         }
@@ -78,9 +83,24 @@ async fn open(cfg: &ConnectionConfig, db: &str) -> Result<ConnectionManager> {
 /// Commands that block or turn the connection into a subscriber: on the
 /// shared connection they would freeze every other view.
 const BLOCKING: &[&str] = &[
-    "BLPOP", "BRPOP", "BLMOVE", "BRPOPLPUSH", "BZPOPMIN", "BZPOPMAX", "BLMPOP", "BZMPOP",
-    "XREAD", "XREADGROUP", "WAIT", "WAITAOF", "SUBSCRIBE", "PSUBSCRIBE", "SSUBSCRIBE", "MONITOR",
-    "SYNC", "PSYNC",
+    "BLPOP",
+    "BRPOP",
+    "BLMOVE",
+    "BRPOPLPUSH",
+    "BZPOPMIN",
+    "BZPOPMAX",
+    "BLMPOP",
+    "BZMPOP",
+    "XREAD",
+    "XREADGROUP",
+    "WAIT",
+    "WAITAOF",
+    "SUBSCRIBE",
+    "PSUBSCRIBE",
+    "SSUBSCRIBE",
+    "MONITOR",
+    "SYNC",
+    "PSYNC",
 ];
 
 pub fn render(v: &Value) -> Option<String> {
@@ -193,7 +213,10 @@ impl RedisConn {
     pub async fn processes(&self) -> Result<QueryResult> {
         let mut con = self.con.clone();
         let me: i64 = redis::cmd("CLIENT").arg("ID").query_async(&mut con).await?;
-        let list: String = redis::cmd("CLIENT").arg("LIST").query_async(&mut con).await?;
+        let list: String = redis::cmd("CLIENT")
+            .arg("LIST")
+            .query_async(&mut con)
+            .await?;
         let cols = ["id", "addr", "name", "db", "age", "idle", "cmd"];
         let rows = list
             .lines()
@@ -385,8 +408,11 @@ impl RedisConn {
             let v: Value = match c.query_async(&mut con).await {
                 Ok(v) => v,
                 // The key changed type or vanished between SCAN and here.
-                Err(e) if e.kind() == redis::ErrorKind::TypeError
-                    || e.code() == Some("WRONGTYPE") => Value::Nil,
+                Err(e)
+                    if e.kind() == redis::ErrorKind::TypeError || e.code() == Some("WRONGTYPE") =>
+                {
+                    Value::Nil
+                }
                 Err(e) => return Err(e.into()),
             };
             let value = if ty == "stream" {

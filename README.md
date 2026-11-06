@@ -154,6 +154,8 @@ TABULA_IT=1 cargo test
 docker compose down           # stop and delete them
 ```
 
+To format code on every commit, enable the hook once: `git config core.hooksPath .githooks`.
+
 ## Documentation
 
 The docs site is built from [`docs/`](docs/) with MkDocs Material and

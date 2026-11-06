@@ -159,7 +159,10 @@ fn pg_node(p: &Value) -> PlanNode {
             Some(Value::String(v)) => details.push(format!("{k}: {v}")),
             Some(Value::Array(a)) => details.push(format!(
                 "{k}: {}",
-                a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )),
             _ => {}
         }
@@ -194,7 +197,9 @@ fn numbers(s: &str, key: &str) -> Option<String> {
 
 fn mysql_tree(text: &str) -> Result<PlanNode> {
     if text.contains("not executable by iterator executor") {
-        bail!("MySQL can only EXPLAIN ANALYZE queries that read (SELECT / TABLE); use Explain instead");
+        bail!(
+            "MySQL can only EXPLAIN ANALYZE queries that read (SELECT / TABLE); use Explain instead"
+        );
     }
     let mut root = PlanNode {
         label: "Query plan".into(),
@@ -219,7 +224,9 @@ fn mysql_tree(text: &str) -> Result<PlanNode> {
         };
         if let Some(a) = rest.find("(actual ") {
             let act = &rest[a..];
-            let loops: f64 = numbers(act, "loops=").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+            let loops: f64 = numbers(act, "loops=")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1.0);
             node.actual_ms = numbers(act, "time=")
                 .and_then(|t| t.split("..").nth(1).and_then(|e| e.parse::<f64>().ok()))
                 .map(|t| t * loops);
@@ -280,10 +287,20 @@ mod tests {
         let root = parse(Driver::Postgres, &result(&[&[json]])).unwrap();
         assert_eq!(root.label, "Hash Join (Inner)");
         assert_eq!(root.details[0], "Planning time: 0.200 ms");
-        assert!(root.details.contains(&"Hash Cond: (o.user_id = u.id)".to_string()));
+        assert!(
+            root.details
+                .contains(&"Hash Cond: (o.user_id = u.id)".to_string())
+        );
         assert_eq!(root.children[0].label, "Seq Scan on orders o");
-        assert!(root.children[0].details.contains(&"Rows removed by filter: 5".to_string()));
-        assert_eq!(root.children[1].label, "Index Scan on users using users_pkey");
+        assert!(
+            root.children[0]
+                .details
+                .contains(&"Rows removed by filter: 5".to_string())
+        );
+        assert_eq!(
+            root.children[1].label,
+            "Index Scan on users using users_pkey"
+        );
         // 0.01 ms × 10 loops.
         assert_eq!(root.children[1].actual_ms, Some(0.1));
         assert_eq!(root.flatten().len(), 3);
@@ -300,14 +317,23 @@ mod tests {
         assert_eq!(root.children.len(), 2);
         assert_eq!(root.children[0].children[0].label, "Table scan on o");
         assert_eq!(root.children[0].children[0].rows, Some(6.0));
-        assert!(root.children[1].label.starts_with("Single-row index lookup"));
+        assert!(
+            root.children[1]
+                .label
+                .starts_with("Single-row index lookup")
+        );
     }
 
     #[test]
     fn sqlite_query_plan() {
         let r = result(&[
             &["2", "0", "0", "SCAN o"],
-            &["5", "0", "0", "SEARCH u USING INTEGER PRIMARY KEY (rowid=?)"],
+            &[
+                "5",
+                "0",
+                "0",
+                "SEARCH u USING INTEGER PRIMARY KEY (rowid=?)",
+            ],
             &["7", "5", "0", "nested"],
         ]);
         let root = parse(Driver::Sqlite, &r).unwrap();

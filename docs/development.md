@@ -73,6 +73,17 @@ TABULA_IT=1 TABULA_IT_PAUSE=1 cargo test sidebar_shows_load_errors
 Tests never touch your real data: `store::config_dir()` points to a temp
 folder under `cargo test`, and the keychain isn't used.
 
+## Formatting
+
+Code is formatted with rustfmt (default settings). A pre-commit hook in
+`.githooks/` formats the Rust files you stage; turn it on once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+`cargo fmt` formats everything by hand.
+
 ## Conventions
 
 - **Errors are values.** Return `anyhow::Result` and add context; don't

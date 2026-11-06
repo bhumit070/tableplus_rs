@@ -85,7 +85,10 @@ impl ConnForm {
         });
         let database = input(&cfg.database, "database (optional)", window, cx);
         let file = input(&cfg.file, "/path/to/database.sqlite", window, cx);
-        let si = SafeMode::ALL.iter().position(|m| *m == cfg.safe_mode).unwrap_or(0);
+        let si = SafeMode::ALL
+            .iter()
+            .position(|m| *m == cfg.safe_mode)
+            .unwrap_or(0);
         let safe_mode = cx.new(|cx| {
             SelectState::new(
                 SafeMode::ALL.iter().map(|m| m.label()).collect(),
@@ -97,13 +100,20 @@ impl ConnForm {
         let ssh = cfg.ssh.clone().unwrap_or_default();
         let ssh_host = input(&ssh.host, "ssh.example.com", window, cx);
         let ssh_port = input(
-            &if ssh.port == 0 { "22".into() } else { ssh.port.to_string() },
+            &if ssh.port == 0 {
+                "22".into()
+            } else {
+                ssh.port.to_string()
+            },
             "22",
             window,
             cx,
         );
         let ssh_user = input(&ssh.user, "ssh user", window, cx);
-        let ai = SSH_AUTHS.iter().position(|(a, _)| *a == ssh.auth).unwrap_or(0);
+        let ai = SSH_AUTHS
+            .iter()
+            .position(|(a, _)| *a == ssh.auth)
+            .unwrap_or(0);
         let ssh_auth = cx.new(|cx| {
             SelectState::new(
                 SSH_AUTHS.iter().map(|(_, l)| *l).collect(),
@@ -112,7 +122,12 @@ impl ConnForm {
                 cx,
             )
         });
-        let ssh_key = input(&ssh.key_path, "~/.ssh/id_ed25519 (empty = default keys)", window, cx);
+        let ssh_key = input(
+            &ssh.key_path,
+            "~/.ssh/id_ed25519 (empty = default keys)",
+            window,
+            cx,
+        );
         let ssh_secret = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
@@ -120,32 +135,34 @@ impl ConnForm {
         });
 
         let subs = vec![
-            cx.subscribe_in(&ssh_auth, window, |_, _, _: &SelectEvent<Vec<&'static str>>, _, cx| {
-                cx.notify()
-            }),
             cx.subscribe_in(
-            &driver,
-            window,
-            |this, _, ev: &SelectEvent<Vec<&'static str>>, window, cx| {
-                let SelectEvent::Confirm(Some(label)) = ev else {
-                    return;
-                };
-                let Some(d) = Driver::ALL.into_iter().find(|d| d.label() == *label) else {
-                    return;
-                };
-                // Swap the port only if it still holds some driver's default.
-                let cur: u16 = this.port.read(cx).value().parse().unwrap_or(0);
-                if cur == 0 || Driver::ALL.iter().any(|x| x.default_port() == cur) {
-                    let p = if d.default_port() == 0 {
-                        String::new()
-                    } else {
-                        d.default_port().to_string()
+                &ssh_auth,
+                window,
+                |_, _, _: &SelectEvent<Vec<&'static str>>, _, cx| cx.notify(),
+            ),
+            cx.subscribe_in(
+                &driver,
+                window,
+                |this, _, ev: &SelectEvent<Vec<&'static str>>, window, cx| {
+                    let SelectEvent::Confirm(Some(label)) = ev else {
+                        return;
                     };
-                    this.port.update(cx, |i, cx| i.set_value(p, window, cx));
-                }
-                cx.notify();
-            },
-        ),
+                    let Some(d) = Driver::ALL.into_iter().find(|d| d.label() == *label) else {
+                        return;
+                    };
+                    // Swap the port only if it still holds some driver's default.
+                    let cur: u16 = this.port.read(cx).value().parse().unwrap_or(0);
+                    if cur == 0 || Driver::ALL.iter().any(|x| x.default_port() == cur) {
+                        let p = if d.default_port() == 0 {
+                            String::new()
+                        } else {
+                            d.default_port().to_string()
+                        };
+                        this.port.update(cx, |i, cx| i.set_value(p, window, cx));
+                    }
+                    cx.notify();
+                },
+            ),
         ];
 
         Self {
@@ -205,7 +222,12 @@ impl ConnForm {
             ssl_verify: self.ssl && self.ssl_verify,
             password: self.password.read(cx).value().to_string(),
             safe_mode: {
-                let l = self.safe_mode.read(cx).selected_value().copied().unwrap_or("");
+                let l = self
+                    .safe_mode
+                    .read(cx)
+                    .selected_value()
+                    .copied()
+                    .unwrap_or("");
                 SafeMode::ALL
                     .into_iter()
                     .find(|m| m.label() == l)
@@ -223,7 +245,12 @@ impl ConnForm {
     }
 
     fn ssh_auth(&self, cx: &App) -> SshAuth {
-        let label = self.ssh_auth.read(cx).selected_value().copied().unwrap_or("");
+        let label = self
+            .ssh_auth
+            .read(cx)
+            .selected_value()
+            .copied()
+            .unwrap_or("");
         SSH_AUTHS
             .iter()
             .find(|(_, l)| *l == label)
@@ -259,7 +286,8 @@ impl ConnForm {
             };
             this.update_in(cx, |this, window, cx| {
                 let path = p.to_string_lossy().to_string();
-                this.ssh_key.update(cx, |i, cx| i.set_value(path, window, cx));
+                this.ssh_key
+                    .update(cx, |i, cx| i.set_value(path, window, cx));
             })
             .ok();
         })
@@ -467,10 +495,9 @@ impl Render for ConnForm {
                 })
                 .child(row(
                     "",
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child("Host and port above are as seen from the SSH server, e.g. 127.0.0.1."),
+                    div().text_xs().text_color(theme.muted_foreground).child(
+                        "Host and port above are as seen from the SSH server, e.g. 127.0.0.1.",
+                    ),
                     cx,
                 ))
             })

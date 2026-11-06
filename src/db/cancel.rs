@@ -36,8 +36,15 @@ impl Cancel {
     /// The message for a cancelled run: says when the server may still be
     /// running the statement.
     pub fn message(&self) -> String {
-        match self.server_error.lock().unwrap_or_else(|e| e.into_inner()).as_deref() {
-            Some(e) => format!("{CANCELLED}. The server may still be running it ({e}); see Processes (⌘⇧P)."),
+        match self
+            .server_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_deref()
+        {
+            Some(e) => format!(
+                "{CANCELLED}. The server may still be running it ({e}); see Processes (⌘⇧P)."
+            ),
             None => CANCELLED.to_string(),
         }
     }

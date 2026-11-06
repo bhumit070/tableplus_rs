@@ -193,7 +193,10 @@ impl Session {
                         this.rebuild_tree(cx);
                         // Redis has a single "keys" view: open it straight away.
                         if this.tabs.is_empty()
-                            && this.objects.first().is_some_and(|o| o.kind == ObjectKind::Keys)
+                            && this
+                                .objects
+                                .first()
+                                .is_some_and(|o| o.kind == ObjectKind::Keys)
                         {
                             this.open_object(0, window, cx);
                         }
@@ -401,7 +404,8 @@ impl Session {
     ) {
         let shared = self.shared.clone();
         let tab = cx.new(|cx| TableTab::new(shared, obj, fixed, window, cx));
-        self._subs.push(cx.subscribe_in(&tab, window, Self::on_table_event));
+        self._subs
+            .push(cx.subscribe_in(&tab, window, Self::on_table_event));
         self.tabs.push(TabItem::Table(tab));
         let i = self.tabs.len() - 1;
         self.activate(i, window, cx);
@@ -533,7 +537,8 @@ impl Session {
             if id == "clear" {
                 let me = me.clone();
                 window.defer(cx, move |window, cx| {
-                    me.update(cx, |s, cx| s.confirm_clear_history(window, cx)).ok();
+                    me.update(cx, |s, cx| s.confirm_clear_history(window, cx))
+                        .ok();
                 });
                 return;
             }
@@ -572,9 +577,16 @@ impl Session {
         }
         let item = |q: &crate::saved::SavedQuery| {
             let first = q.sql.split_whitespace().collect::<Vec<_>>().join(" ");
-            let scope = if q.conn_id.is_none() { " · all connections" } else { "" };
+            let scope = if q.conn_id.is_none() {
+                " · all connections"
+            } else {
+                ""
+            };
             PickItem {
-                detail: Some(format!("{}{scope}", first.chars().take(60).collect::<String>())),
+                detail: Some(format!(
+                    "{}{scope}",
+                    first.chars().take(60).collect::<String>()
+                )),
                 ..PickItem::new(q.id.clone(), q.name.clone())
             }
         };
@@ -585,7 +597,8 @@ impl Session {
             let me = me.clone();
             if id == "delete" {
                 window.defer(cx, move |window, cx| {
-                    me.update(cx, |s, cx| s.pick_saved_to_delete(window, cx)).ok();
+                    me.update(cx, |s, cx| s.pick_saved_to_delete(window, cx))
+                        .ok();
                 });
                 return;
             }
@@ -671,10 +684,8 @@ impl Session {
                             let res = task.await;
                             cx.update(|window, cx| match res {
                                 Ok(()) => window.push_notification("Query history cleared", cx),
-                                Err(e) => window.push_notification(
-                                    Notification::error(format!("{e:#}")),
-                                    cx,
-                                ),
+                                Err(e) => window
+                                    .push_notification(Notification::error(format!("{e:#}")), cx),
                             })
                             .ok();
                         })
@@ -954,22 +965,34 @@ impl Session {
                 }
             }),
         ))
-        .item(item("New Table…", Rc::new(|s, _, w, cx| s.new_table(w, cx))))
-        .item(item("Rename…", Rc::new(|s, o, w, cx| {
-            if s.is_sql() {
-                s.rename_object(o.clone(), w, cx)
-            }
-        })))
-        .item(item("Duplicate…", Rc::new(|s, o, w, cx| {
-            if s.is_sql() && o.kind == ObjectKind::Table {
-                s.duplicate_object(o.clone(), w, cx)
-            }
-        })))
-        .item(item("Vacuum / Optimize", Rc::new(|s, o, w, cx| {
-            if s.is_sql() && o.kind == ObjectKind::Table {
-                s.maintain_object(o.clone(), w, cx)
-            }
-        })))
+        .item(item(
+            "New Table…",
+            Rc::new(|s, _, w, cx| s.new_table(w, cx)),
+        ))
+        .item(item(
+            "Rename…",
+            Rc::new(|s, o, w, cx| {
+                if s.is_sql() {
+                    s.rename_object(o.clone(), w, cx)
+                }
+            }),
+        ))
+        .item(item(
+            "Duplicate…",
+            Rc::new(|s, o, w, cx| {
+                if s.is_sql() && o.kind == ObjectKind::Table {
+                    s.duplicate_object(o.clone(), w, cx)
+                }
+            }),
+        ))
+        .item(item(
+            "Vacuum / Optimize",
+            Rc::new(|s, o, w, cx| {
+                if s.is_sql() && o.kind == ObjectKind::Table {
+                    s.maintain_object(o.clone(), w, cx)
+                }
+            }),
+        ))
         .separator()
         .item(item(
             "Truncate…",
@@ -1008,7 +1031,9 @@ impl Session {
             let ext = if sqlite { "sqlite" } else { "sql" };
             let date = chrono_like_date();
             let name = format!("{}-{date}.{ext}", target.database);
-            let dir = dirs::download_dir().or_else(dirs::home_dir).unwrap_or_default();
+            let dir = dirs::download_dir()
+                .or_else(dirs::home_dir)
+                .unwrap_or_default();
             let path = cx.prompt_for_new_path(&dir, Some(&name));
             let target = target.clone();
             window
@@ -1016,7 +1041,8 @@ impl Session {
                     let Ok(Ok(Some(path))) = path.await else {
                         return;
                     };
-                    cx.update(|w, cx| w.push_notification("Backing up…", cx)).ok();
+                    cx.update(|w, cx| w.push_notification("Backing up…", cx))
+                        .ok();
                     let p2 = path.clone();
                     let res = runtime::spawn(async move {
                         crate::db::backup::dump(&target, scope, &p2).await
@@ -1025,7 +1051,10 @@ impl Session {
                     cx.update(|w, cx| match res {
                         Ok(()) => {
                             w.push_notification(
-                                Notification::success(format!("Backup saved to {}", path.display())),
+                                Notification::success(format!(
+                                    "Backup saved to {}",
+                                    path.display()
+                                )),
                                 cx,
                             );
                             cx.reveal_path(&path);
@@ -1053,7 +1082,15 @@ impl Session {
                 start(*scope, window, cx);
             }
         });
-        Picker::open("Backup", "What to include…", IconName::HardDrive, items, on_pick, window, cx);
+        Picker::open(
+            "Backup",
+            "What to include…",
+            IconName::HardDrive,
+            items,
+            on_pick,
+            window,
+            cx,
+        );
     }
 
     /// Restore…: runs a SQL dump file against the current database.
@@ -1062,7 +1099,8 @@ impl Session {
             window.push_notification("Restore is available for Postgres and MySQL", cx);
             return;
         }
-        if let crate::db::safety::Gate::Block(why) = crate::db::safety::gate_write(&self.shared.cfg) {
+        if let crate::db::safety::Gate::Block(why) = crate::db::safety::gate_write(&self.shared.cfg)
+        {
             window.push_notification(Notification::warning(why), cx);
             return;
         }
@@ -1146,7 +1184,9 @@ impl Session {
         on_ok: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
         op: impl FnOnce(
             std::sync::Arc<tokio::sync::RwLock<crate::db::Connection>>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<String>>> + Send>>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = anyhow::Result<Option<String>>> + Send>,
+        >,
     ) {
         let task = runtime::spawn(op(self.shared.conn.clone()));
         cx.spawn_in(window, async move |this, cx| {
@@ -1191,20 +1231,37 @@ impl Session {
             return;
         }
         let me = cx.entity().downgrade();
-        super::prompt_text("New Database", "", "", window, cx, move |name, window, cx| {
-            me.update(cx, |s, cx| {
-                s.run_op("Database created", window, cx, |_, _| {}, move |c| {
-                    Box::pin(async move { c.read().await.create_database(&name).await.map(|_| None) })
+        super::prompt_text(
+            "New Database",
+            "",
+            "",
+            window,
+            cx,
+            move |name, window, cx| {
+                me.update(cx, |s, cx| {
+                    s.run_op(
+                        "Database created",
+                        window,
+                        cx,
+                        |_, _| {},
+                        move |c| {
+                            Box::pin(async move {
+                                c.read().await.create_database(&name).await.map(|_| None)
+                            })
+                        },
+                    )
                 })
-            })
-            .ok();
-            true
-        });
+                .ok();
+                true
+            },
+        );
     }
 
     /// Drop Database…: pick one (not the current), then type its name.
     pub fn drop_database(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.shared.cfg.driver, Driver::Postgres | Driver::MySql) || self.blocked(window, cx) {
+        if !matches!(self.shared.cfg.driver, Driver::Postgres | Driver::MySql)
+            || self.blocked(window, cx)
+        {
             return;
         }
         let items: Vec<PickItem> = self
@@ -1234,9 +1291,17 @@ impl Session {
                             return false;
                         }
                         me.update(cx, |s, cx| {
-                            s.run_op("Database dropped", window, cx, |_, _| {}, move |c| {
-                                Box::pin(async move { c.read().await.drop_database(&typed).await.map(|_| None) })
-                            })
+                            s.run_op(
+                                "Database dropped",
+                                window,
+                                cx,
+                                |_, _| {},
+                                move |c| {
+                                    Box::pin(async move {
+                                        c.read().await.drop_database(&typed).await.map(|_| None)
+                                    })
+                                },
+                            )
                         })
                         .ok();
                         true
@@ -1244,31 +1309,59 @@ impl Session {
                 );
             });
         });
-        Picker::open("Drop Database", "Choose a database…", IconName::Delete, items, on_pick, window, cx);
+        Picker::open(
+            "Drop Database",
+            "Choose a database…",
+            IconName::Delete,
+            items,
+            on_pick,
+            window,
+            cx,
+        );
     }
 
-    pub(crate) fn rename_object(&mut self, obj: DbObject, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn rename_object(
+        &mut self,
+        obj: DbObject,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.blocked(window, cx) {
             return;
         }
         let me = cx.entity().downgrade();
         let old = obj.name.clone();
         let initial = old.clone();
-        super::prompt_text(&format!("Rename {}", obj.title()), "", &initial, window, cx, move |name, window, cx| {
-            if name == old {
-                return true;
-            }
-            let o = obj.clone();
-            me.update(cx, |s, cx| {
-                // Once renamed, tabs of the old name point at nothing.
-                let old = o.clone();
-                s.run_op("Renamed", window, cx, move |s, cx| s.close_tabs_of(&old, cx), move |c| {
-                    Box::pin(async move { c.read().await.rename_object(&o, &name).await.map(|_| None) })
+        super::prompt_text(
+            &format!("Rename {}", obj.title()),
+            "",
+            &initial,
+            window,
+            cx,
+            move |name, window, cx| {
+                if name == old {
+                    return true;
+                }
+                let o = obj.clone();
+                me.update(cx, |s, cx| {
+                    // Once renamed, tabs of the old name point at nothing.
+                    let old = o.clone();
+                    s.run_op(
+                        "Renamed",
+                        window,
+                        cx,
+                        move |s, cx| s.close_tabs_of(&old, cx),
+                        move |c| {
+                            Box::pin(async move {
+                                c.read().await.rename_object(&o, &name).await.map(|_| None)
+                            })
+                        },
+                    )
                 })
-            })
-            .ok();
-            true
-        });
+                .ok();
+                true
+            },
+        );
     }
 
     fn duplicate_object(&mut self, obj: DbObject, window: &mut Window, cx: &mut Context<Self>) {
@@ -1286,9 +1379,21 @@ impl Session {
             move |name, window, cx| {
                 let o = obj.clone();
                 me.update(cx, |s, cx| {
-                    s.run_op("Table duplicated", window, cx, |_, _| {}, move |c| {
-                        Box::pin(async move { c.read().await.duplicate_table(&o, &name, true).await.map(|_| None) })
-                    })
+                    s.run_op(
+                        "Table duplicated",
+                        window,
+                        cx,
+                        |_, _| {},
+                        move |c| {
+                            Box::pin(async move {
+                                c.read()
+                                    .await
+                                    .duplicate_table(&o, &name, true)
+                                    .await
+                                    .map(|_| None)
+                            })
+                        },
+                    )
                 })
                 .ok();
                 true
@@ -1301,9 +1406,13 @@ impl Session {
             return;
         }
         window.push_notification("Working…", cx);
-        self.run_op("Done", window, cx, |_, _| {}, move |c| {
-            Box::pin(async move { c.read().await.maintain(&obj).await.map(Some) })
-        });
+        self.run_op(
+            "Done",
+            window,
+            cx,
+            |_, _| {},
+            move |c| Box::pin(async move { c.read().await.maintain(&obj).await.map(Some) }),
+        );
     }
 
     fn is_sql(&self) -> bool {
@@ -1363,7 +1472,8 @@ impl Session {
                     let me = cx.entity().downgrade();
                     let o2 = obj.clone();
                     let on_done: super::table_editor::OnDone = Rc::new(move |window, cx| {
-                        me.update(cx, |s, cx| s.reload_table_tabs(&o2, window, cx)).ok();
+                        me.update(cx, |s, cx| s.reload_table_tabs(&o2, window, cx))
+                            .ok();
                     });
                     super::table_editor::TableEditor::open(
                         s.shared.clone(),
@@ -1421,7 +1531,11 @@ impl Session {
                         let o = obj.clone();
                         let task = runtime::spawn(async move {
                             let c = conn.read().await;
-                            if drop { c.drop_object(&o).await } else { c.truncate(&o).await }
+                            if drop {
+                                c.drop_object(&o).await
+                            } else {
+                                c.truncate(&o).await
+                            }
                         });
                         cx.spawn_in(window, async move |this, cx| {
                             let res = task.await;
@@ -1433,7 +1547,8 @@ impl Session {
                                     this.load_objects(window, cx);
                                     window.push_notification(Notification::success("Done"), cx);
                                 }
-                                Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
+                                Err(e) => window
+                                    .push_notification(Notification::error(format!("{e:#}")), cx),
                             })
                             .ok();
                         })
@@ -1489,7 +1604,9 @@ impl Session {
                                 .label("Retry")
                                 .xsmall()
                                 .loading(self.loading)
-                                .on_click(cx.listener(|s, _, window, cx| s.load_objects(window, cx))),
+                                .on_click(
+                                    cx.listener(|s, _, window, cx| s.load_objects(window, cx)),
+                                ),
                         ),
                 )
             })
