@@ -752,6 +752,66 @@ async fn mysql_foreign_keys() {
     }
 }
 
+/// Enum columns list their values in order, and a picked value (or NULL)
+/// commits.
+async fn enum_scenario(driver: Driver) {
+    let c = Connection::connect(&cfg(driver)).await.expect("connect");
+    let setup = if driver == Driver::Postgres {
+        "drop table if exists it_enum; drop type if exists it_mood; \
+         create type it_mood as enum ('sad', 'it''s ok', 'happy'); \
+         create table it_enum (id int primary key, mood it_mood, label text); \
+         insert into it_enum values (1, 'sad', 'x')"
+    } else {
+        "drop table if exists it_enum; \
+         create table it_enum (id int primary key, mood enum('sad', 'it''s ok', 'happy'), label text); \
+         insert into it_enum values (1, 'sad', 'x')"
+    };
+    c.execute(setup).await.unwrap();
+    let objects = c.list_objects().await.unwrap();
+    let t = obj(&objects, "it_enum");
+    let st = c.structure(&t).await.unwrap();
+    let values = |name: &str| {
+        st.columns
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap()
+            .enum_values
+            .clone()
+    };
+    assert_eq!(values("mood"), ["sad", "it's ok", "happy"], "{driver:?}");
+    assert!(values("label").is_empty(), "{driver:?}");
+    assert!(values("id").is_empty(), "{driver:?}");
+    for v in [Some("it's ok"), None] {
+        let changes = [Change::Update {
+            key: kv(&[("id", Some("1"))]),
+            set: kv(&[("mood", v)]),
+        }];
+        c.commit(&t, &st.columns, &changes).await.expect("commit");
+        let r = c.execute("select mood from it_enum").await.unwrap();
+        assert_eq!(r[0].rows[0][0].as_deref(), v, "{driver:?}");
+    }
+    let cleanup = if driver == Driver::Postgres {
+        "drop table it_enum; drop type it_mood"
+    } else {
+        "drop table it_enum"
+    };
+    c.execute(cleanup).await.unwrap();
+}
+
+#[tokio::test]
+async fn postgres_enum_values() {
+    if it_enabled() {
+        enum_scenario(Driver::Postgres).await;
+    }
+}
+
+#[tokio::test]
+async fn mysql_enum_values() {
+    if it_enabled() {
+        enum_scenario(Driver::MySql).await;
+    }
+}
+
 /// Postgres through an SSH tunnel (in-process SSH server → the test container).
 #[tokio::test]
 async fn postgres_over_ssh() {

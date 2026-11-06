@@ -313,6 +313,7 @@ impl RedisConn {
             nullable: !pk,
             default: None,
             is_pk: pk,
+            enum_values: vec![],
         };
         Ok(Structure {
             columns: vec![

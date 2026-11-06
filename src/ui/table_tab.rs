@@ -479,6 +479,7 @@ impl TableTab {
             .unwrap_or_default();
         self.total = total;
         self.elapsed = data.elapsed_ms;
+        let table_cols = self.structure.as_ref().map(|s| s.columns.clone());
         let fk_cols: Vec<String> = self
             .structure
             .iter()
@@ -490,6 +491,7 @@ impl TableTab {
             g.set_result(&data);
             g.pk = g.columns.iter().map(|c| pk_names.contains(c)).collect();
             g.links = g.columns.iter().map(|c| fk_cols.contains(c)).collect();
+            g.set_choices(table_cols.as_deref().unwrap_or_default());
             g.editable = vec![true; g.columns.len()];
             t.refresh(cx);
             cx.notify();

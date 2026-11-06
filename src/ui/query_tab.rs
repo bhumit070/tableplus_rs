@@ -698,6 +698,7 @@ impl QueryTab {
                             let g = t.delegate_mut();
                             g.editable = editable;
                             g.pk = pk;
+                            g.set_choices(&cols);
                             cx.notify();
                         });
                         this.target = Some(EditTarget { obj, columns: cols });
@@ -1207,6 +1208,7 @@ mod tests {
             nullable: true,
             default: None,
             is_pk: pk,
+            enum_values: vec![],
         }
     }
 

@@ -22,6 +22,8 @@
   database supports it.
 - **Inline cell editing:** Enter or typing starts editing, Tab / ⇧Tab move
   between cells, Esc cancels. Multi-line values open a larger editor.
+  Enum columns (PostgreSQL and MySQL) open a dropdown of their values,
+  plus NULL when the column allows it.
 - **Row detail panel** (⌘⇧I): every field of the selected row, with JSON
   pretty-printed.
 - **Foreign keys:** a → in a foreign-key cell opens the referenced row.

@@ -8,13 +8,14 @@ use std::rc::Rc;
 
 use gpui::{App, Context, Entity, IntoElement, ParentElement, Styled, Window, div, prelude::*, px};
 use gpui_component::Size;
-use gpui_component::input::{Input, InputState};
+use gpui_component::input::Input;
 use gpui_component::menu::PopupMenu;
 use gpui_component::notification::Notification;
 use gpui_component::table::{Column, ColumnSort, DataTable, TableDelegate, TableState};
 use gpui_component::{ActiveTheme as _, Sizable as _, WindowExt as _};
 
-use crate::db::{Change, QueryResult};
+use super::cell_edit::CellEditor;
+use crate::db::{Change, ColumnInfo, QueryResult};
 
 /// A data table whose row height follows the interface font size
 /// (30px rows at the default 16px, like the library's "small" size).
@@ -45,7 +46,7 @@ pub struct Grid {
     pub base_rows: usize,
     pub edits: BTreeMap<(usize, usize), Option<String>>,
     pub deleted: BTreeSet<usize>,
-    pub editing: Option<(usize, usize, Entity<InputState>)>,
+    pub editing: Option<(usize, usize, CellEditor)>,
     /// Which columns can be edited; empty = read-only grid.
     pub editable: Vec<bool>,
     pub loading: bool,
@@ -53,6 +54,9 @@ pub struct Grid {
     /// Server-side sort; when unset the grid sorts the loaded rows itself.
     pub on_sort: Option<SortFn>,
     pub on_menu: Option<MenuFn>,
+    /// Per column: the values an enum column allows (`None` = NULL), edited
+    /// with a dropdown; empty = free text.
+    pub choices: Vec<Vec<Option<String>>>,
     /// Columns that reference another table: their values get a → link.
     pub links: Vec<bool>,
     pub on_follow: Option<FollowFn>,
@@ -88,6 +92,7 @@ impl Grid {
         self.base_rows = self.rows.len();
         // Flags from the previous result don't describe these columns.
         self.pk = vec![false; self.columns.len()];
+        self.choices = vec![vec![]; self.columns.len()];
         self.edits.clear();
         self.deleted.clear();
         self.editing = None;
@@ -102,6 +107,25 @@ impl Grid {
                     .unwrap_or(0)
                     .max(self.columns[c].chars().count() + 2);
                 (longest as f32 * 7.2 + 24.).clamp(64., 380.)
+            })
+            .collect();
+    }
+
+    /// Dropdown values for the result columns that are enum columns of
+    /// `table` (NULL last when the column allows it).
+    pub fn set_choices(&mut self, table: &[ColumnInfo]) {
+        self.choices = self
+            .columns
+            .iter()
+            .map(|name| match table.iter().find(|t| &t.name == name) {
+                Some(t) if !t.enum_values.is_empty() => t
+                    .enum_values
+                    .iter()
+                    .cloned()
+                    .map(Some)
+                    .chain(t.nullable.then_some(None))
+                    .collect(),
+                _ => vec![],
             })
             .collect();
     }
@@ -313,14 +337,17 @@ impl TableDelegate for Grid {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        if let Some((r, c, input)) = &self.editing {
+        if let Some((r, c, editor)) = &self.editing {
             if *r == row_ix && *c == col_ix {
                 // Borderless and cell-sized, so editing happens in place.
-                return div()
-                    .size_full()
-                    .key_context("CellEditor")
-                    .child(Input::new(input).appearance(false).h_full())
-                    .into_any_element();
+                let cell = div().size_full().key_context("CellEditor");
+                return match editor {
+                    CellEditor::Text(input) => {
+                        cell.child(Input::new(input).appearance(false).h_full())
+                    }
+                    CellEditor::Choice(choices) => cell.child(choices.clone()),
+                }
+                .into_any_element();
             }
         }
         let theme = cx.theme();

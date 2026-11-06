@@ -275,6 +275,7 @@ impl MongoConn {
                         nullable: k != "_id",
                         default: None,
                         is_pk: k == "_id",
+                        enum_values: vec![],
                     };
                     if k == "_id" {
                         columns.insert(0, c)

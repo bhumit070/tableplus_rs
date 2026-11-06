@@ -179,6 +179,7 @@ mod tests {
             nullable: true,
             default: None,
             is_pk: false,
+            enum_values: vec![],
         }
     }
 

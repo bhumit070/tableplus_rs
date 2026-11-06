@@ -44,6 +44,9 @@ gpui::actions!(
         CancelCellEdit,
         NextCell,
         PrevCell,
+        ChoiceUp,
+        ChoiceDown,
+        ChoicePick,
         SwitchDatabase,
         Commit,
         Discard,
@@ -278,6 +281,13 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("escape", CancelCellEdit, Some("CellEditor > Input")),
         KeyBinding::new("tab", NextCell, Some("CellEditor > Input")),
         KeyBinding::new("shift-tab", PrevCell, Some("CellEditor > Input")),
+        // The enum dropdown that replaces the text input.
+        KeyBinding::new("up", ChoiceUp, Some("CellChoices")),
+        KeyBinding::new("down", ChoiceDown, Some("CellChoices")),
+        KeyBinding::new("enter", ChoicePick, Some("CellChoices")),
+        KeyBinding::new("escape", CancelCellEdit, Some("CellEditor > CellChoices")),
+        KeyBinding::new("tab", NextCell, Some("CellEditor > CellChoices")),
+        KeyBinding::new("shift-tab", PrevCell, Some("CellEditor > CellChoices")),
         // Copy stays local to the grid so ⌘C in text fields copies text.
         KeyBinding::new(sec!("c"), CopyCell, Some("TableTab")),
         KeyBinding::new(

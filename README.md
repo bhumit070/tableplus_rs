@@ -89,6 +89,7 @@ On Windows/Linux, use Ctrl in place of ⌘. Shortcuts work wherever focus is.
 | Enter / typing | Edit the selected cell (typing replaces the value) |
 | Tab / ⇧Tab | While editing: save and edit the next / previous cell |
 | Esc | While editing: cancel |
+| ↑ / ↓, Enter | Enum cells: choose a value from the dropdown (typing a letter jumps to it) |
 | Ctrl+Space | Show autocomplete |
 | ⌘N or ⌘⇧K | Open a connection: switch to an open one, open a saved one, or add new |
 | ⌘1 … ⌘9 | Switch to the 1st … 9th open connection |

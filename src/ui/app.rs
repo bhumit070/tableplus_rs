@@ -1107,6 +1107,95 @@ mod tests {
         let _ = std::fs::remove_file(file);
     }
 
+    /// Enum columns edit with a dropdown of their values: typing jumps to a
+    /// value, arrows move (NULL is last), Enter picks, Esc cancels.
+    /// Needs the Postgres container (TABULA_IT=1).
+    #[gpui::test]
+    fn enum_cells_edit_with_a_dropdown(cx: &mut TestAppContext) {
+        if std::env::var("TABULA_IT").is_err() {
+            return;
+        }
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Postgres);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = 55432;
+        cfg.user = "postgres".into();
+        cfg.password = "test".into();
+        cfg.database = "postgres".into();
+        let setup = cfg.clone();
+        let sql = |text: &'static str| {
+            let setup = setup.clone();
+            futures::executor::block_on(crate::runtime::spawn(async move {
+                let c = crate::db::Connection::connect(&setup).await?;
+                c.execute(text).await?;
+                c.close().await;
+                Ok(())
+            }))
+            .unwrap()
+        };
+        sql(
+            "drop table if exists it_ui_enum; drop type if exists it_ui_mood; \
+             create type it_ui_mood as enum ('sad', 'ok', 'happy'); \
+             create table it_ui_enum (id int primary key, mood it_ui_mood, label text); \
+             insert into it_ui_enum values (1, 'sad', 'x')",
+        );
+
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("it_ui_enum").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let i = s.object_index("it_ui_enum").unwrap();
+            s.open_object(i, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "rows", |cx| {
+            tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 1)
+        });
+        let editing = |cx: &mut VisualTestContext| tab.read_with(cx, |t, cx| t.editing_cell(cx));
+        let staged =
+            |cx: &mut VisualTestContext, r, c| tab.read_with(cx, |t, cx| t.staged(r, c, cx));
+
+        // A typed letter picks the value starting with it, not text "h".
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(0, 1, w, cx));
+        cx.simulate_keystrokes("h");
+        cx.run_until_parked();
+        assert_eq!(editing(&mut cx), Some((0, 1)));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(editing(&mut cx), None);
+        assert_eq!(staged(&mut cx, 0, 1), Some(Some("happy".into())));
+
+        // Opens on the current value; Down from the last value reaches NULL.
+        cx.simulate_keystrokes("enter down enter");
+        cx.run_until_parked();
+        assert_eq!(staged(&mut cx, 0, 1), Some(None));
+
+        // Up, then Esc: nothing changes.
+        cx.simulate_keystrokes("enter up escape");
+        cx.run_until_parked();
+        assert_eq!(editing(&mut cx), None);
+        assert_eq!(staged(&mut cx, 0, 1), Some(None));
+
+        // Up twice from NULL, Tab saves and moves on to the text column,
+        // which still edits as text (value selected, so typing replaces it).
+        cx.simulate_keystrokes("enter up up tab");
+        cx.run_until_parked();
+        assert_eq!(staged(&mut cx, 0, 1), Some(Some("ok".into())));
+        assert_eq!(editing(&mut cx), Some((0, 2)));
+        cx.simulate_input("hi");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(staged(&mut cx, 0, 2), Some(Some("hi".into())));
+
+        sql("drop table it_ui_enum; drop type it_ui_mood");
+    }
+
     /// Editing query results, TablePlus-style: a single-table SELECT with its
     /// primary key is editable and ⌘S saves to the table; others are read-only.
     #[gpui::test]

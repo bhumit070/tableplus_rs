@@ -298,6 +298,8 @@ pub struct ColumnInfo {
     pub nullable: bool,
     pub default: Option<String>,
     pub is_pk: bool,
+    /// The allowed values of an enum column, in order; empty otherwise.
+    pub enum_values: Vec<String>,
 }
 
 /// A foreign key: `columns` of this table reference `ref_columns` of

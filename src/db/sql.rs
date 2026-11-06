@@ -111,6 +111,32 @@ fn fk_action(code: &str) -> String {
 
 // ---- row decoding ---------------------------------------------------------
 
+/// The values of a MySQL `enum('a','it''s')` column type; empty for any
+/// other type.
+fn mysql_enum(ty: &str) -> Vec<String> {
+    let Some(list) = ty.strip_prefix("enum(").and_then(|t| t.strip_suffix(')')) else {
+        return vec![];
+    };
+    let (mut out, mut cur, mut quoted) = (vec![], String::new(), false);
+    let mut chars = list.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match (ch, quoted) {
+            ('\'', true) if chars.peek() == Some(&'\'') => {
+                chars.next();
+                cur.push('\'');
+            }
+            ('\'', true) => {
+                out.push(std::mem::take(&mut cur));
+                quoted = false;
+            }
+            ('\'', false) => quoted = true,
+            (ch, true) => cur.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
 fn pg_row(row: &PgRow) -> Vec<Option<String>> {
     (0..row.len())
         .map(|i| {
@@ -640,7 +666,9 @@ impl SqlConn {
                     "select a.attname, format_type(a.atttypid, a.atttypmod), (not a.attnotnull)::text, \
                      pg_get_expr(d.adbin, d.adrelid), \
                      (exists (select 1 from pg_index i where i.indrelid = a.attrelid and i.indisprimary \
-                       and a.attnum = any(i.indkey)))::text \
+                       and a.attnum = any(i.indkey)))::text, \
+                     (select json_agg(e.enumlabel order by e.enumsortorder) from pg_enum e \
+                       where e.enumtypid = a.atttypid)::text \
                      from pg_attribute a left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum \
                      where a.attrelid = to_regclass({}) and a.attnum > 0 and not a.attisdropped order by a.attnum",
                     self.lit(&self.full_name(obj))
@@ -684,6 +712,12 @@ impl SqlConn {
                 nullable: r[2].as_deref() == Some("true"),
                 default: r[3].clone(),
                 is_pk: r[4].as_deref() == Some("true"),
+                // Postgres lists the labels in a sixth column; MySQL spells
+                // them out in the column type.
+                enum_values: match r.get(5).cloned().flatten() {
+                    Some(json) => serde_json::from_str(&json).unwrap_or_default(),
+                    None => mysql_enum(r[1].as_deref().unwrap_or_default()),
+                },
             })
             .collect();
         // Extras: when one can't be read (permissions, old servers…) the
@@ -1255,6 +1289,14 @@ mod tests {
         cfg.ssl_verify = true;
         assert!(matches!(pg_ssl_mode(&cfg), PgSslMode::VerifyFull));
         assert!(matches!(my_ssl_mode(&cfg), MySqlSslMode::VerifyIdentity));
+    }
+
+    #[test]
+    fn reads_mysql_enum_values() {
+        assert_eq!(mysql_enum("enum('a','it''s','b,c')"), ["a", "it's", "b,c"]);
+        assert_eq!(mysql_enum("enum('')"), [""]);
+        assert!(mysql_enum("varchar(20)").is_empty());
+        assert!(mysql_enum("set('a','b')").is_empty());
     }
 
     fn after(stmts: &[&str]) -> SessionEffects {

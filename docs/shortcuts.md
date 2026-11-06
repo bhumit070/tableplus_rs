@@ -57,6 +57,9 @@ command is also in the menu bar.
 | Tab / ⇧Tab | Save and edit the next / previous cell |
 | Esc | Cancel the edit |
 
+In an enum column's dropdown: ↑ / ↓ move, Enter or a click picks, and
+typing a letter jumps to the next value starting with it.
+
 ## App
 
 | Shortcut | Action |
