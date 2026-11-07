@@ -101,16 +101,29 @@ On Windows/Linux, use Ctrl in place of ⌘. Shortcuts work wherever focus is.
 
 Every push to `main` that changes Rust code runs the tests and, if they pass,
 publishes a GitHub Release with builds for macOS (Apple Silicon and Intel),
-Linux (x86_64) and Windows (x86_64) (`.github/workflows/release.yml`).
+Linux (x86_64) and Windows (x86_64) (`.github/workflows/release.yml`), then
+updates the Homebrew tap and the apt repository (`packages.yml`).
 Versions are `vMAJOR.MINOR.PATCH`: MAJOR.MINOR come from `Cargo.toml`, and
 PATCH counts up per release. If one platform fails to build, the others are
 still published and the release notes say which is missing.
 
-- **macOS** (`.dmg`): drag Tabula to Applications. Not notarized yet, so on
-  first launch right-click Tabula → Open.
+- **macOS** (`.dmg`): drag Tabula to Applications, or install with
+  Homebrew: `brew install --cask bhumit070/tap/tabula`. Not notarized yet, so
+  macOS blocks the first launch, with Homebrew too: open Tabula once, then
+  System Settings → Privacy & Security → Open Anyway (or run
+  `xattr -dr com.apple.quarantine /Applications/Tabula.app`).
 - **Linux** (`.deb` for Debian/Ubuntu, `.tar.gz` for others): needs X11 or
   Wayland, Vulkan, and a Secret Service keyring (GNOME Keyring, KWallet) for
-  saved passwords. The `.deb` installs Vulkan and GNOME Keyring for you.
+  saved passwords. The `.deb` installs Vulkan and GNOME Keyring for you. On
+  Debian/Ubuntu, the apt repository gives you updates with `apt upgrade`:
+
+  ```sh
+  curl -fsSL https://bhumit070.github.io/tabula-apt/tabula.gpg \
+    | sudo tee /usr/share/keyrings/tabula.gpg >/dev/null
+  echo "deb [arch=amd64 signed-by=/usr/share/keyrings/tabula.gpg] https://bhumit070.github.io/tabula-apt stable main" \
+    | sudo tee /etc/apt/sources.list.d/tabula.list
+  sudo apt update && sudo apt install tabula
+  ```
 - **Windows** (`.msi` installer, or the bare `.exe` to run without
   installing): not signed yet, so SmartScreen may warn the first time (More
   info → Run anyway).

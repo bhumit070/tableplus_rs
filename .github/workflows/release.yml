@@ -114,7 +114,7 @@ jobs:
           </plist>
           EOF
           # Ad-hoc signature: required to run on Apple Silicon. Not notarized,
-          # so the first launch needs right-click → Open.
+          # so macOS blocks the first launch until it's allowed in Privacy & Security.
           codesign --force --deep --sign - "$app"
           # Disk image with an Applications shortcut to drag the app onto.
           mkdir dmg
@@ -188,8 +188,8 @@ jobs:
           done
           notes="Builds for macOS (Apple Silicon, Intel), Linux (x86_64) and Windows (x86_64).
 
-          - macOS (.dmg): open it and drag Tabula to Applications. Not notarized yet, so on first launch right-click Tabula → Open (or run \`xattr -dr com.apple.quarantine /Applications/Tabula.app\`).
-          - Linux: on Debian/Ubuntu, \`sudo apt install ./Tabula-*.deb\`; elsewhere extract the .tar.gz and run \`./tabula\` (needs X11 or Wayland, Vulkan, and a Secret Service keyring such as GNOME Keyring for saved passwords).
+          - macOS (.dmg): open it and drag Tabula to Applications, or \`brew install --cask bhumit070/tap/tabula\`. Not notarized yet, so macOS blocks the first launch: open Tabula once, then System Settings → Privacy & Security → Open Anyway (or run \`xattr -dr com.apple.quarantine /Applications/Tabula.app\`).
+          - Linux: on Debian/Ubuntu, use the apt repository (https://bhumit070.github.io/tableplus_rs/getting-started/) or \`sudo apt install ./Tabula-*.deb\`; elsewhere extract the .tar.gz and run \`./tabula\` (needs X11 or Wayland, Vulkan, and a Secret Service keyring such as GNOME Keyring for saved passwords).
           - Windows: the .msi installs Tabula with a Start menu entry; the .exe runs without installing. Neither is signed yet, so SmartScreen may ask the first time: More info → Run anyway."
           if [ -n "$missing" ]; then
             notes="$notes
@@ -201,3 +201,12 @@ jobs:
             --title "Tabula $TAG" \
             --generate-notes \
             --notes "$notes"
+
+  # Homebrew tap and apt repository (packages.yml).
+  packages:
+    needs: [version, release]
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    uses: ./.github/workflows/packages.yml
+    with:
+      tag: ${{ needs.version.outputs.tag }}
+    secrets: inherit

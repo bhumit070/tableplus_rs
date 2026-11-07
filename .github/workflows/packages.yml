@@ -1,0 +1,97 @@
+# Publishes a release to the Homebrew tap (bhumit070/homebrew-tap) and the apt
+# repository (bhumit070/tabula-apt, served by GitHub Pages). release.yml calls
+# this after each release; run it by hand to republish a tag.
+#
+# Secrets: HOMEBREW_TAP_DEPLOY_KEY and APT_REPO_DEPLOY_KEY are SSH deploy keys
+# with write access to those two repos; APT_SIGNING_KEY is the armored private
+# GPG key that signs the apt repository.
+
+name: Packages
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, e.g. v0.1.5
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  homebrew:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the disk images
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$TAG" -p '*-macos-*.dmg' -D dist
+      - uses: actions/checkout@v4
+        with:
+          repository: bhumit070/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          path: tap
+      - name: Update the cask
+        run: |
+          version=${TAG#v}
+          mkdir -p tap/Casks
+          packaging/homebrew/cask.sh "$version" \
+            "dist/Tabula-$version-macos-apple-silicon.dmg" \
+            "dist/Tabula-$version-macos-intel.dmg" > tap/Casks/tabula.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/tabula.rb
+          if git diff --cached --quiet; then
+            echo "The cask is already at $version."
+            exit 0
+          fi
+          git commit -m "tabula $version"
+          git push
+
+  apt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the .deb
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$TAG" -p '*-linux-x86_64.deb' -D dist
+      - uses: actions/checkout@v4
+        with:
+          repository: bhumit070/tabula-apt
+          ssh-key: ${{ secrets.APT_REPO_DEPLOY_KEY }}
+          path: apt
+      - name: Add the package and sign the repository
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          command -v apt-ftparchive >/dev/null || { sudo apt-get update && sudo apt-get install -y apt-utils; }
+          echo "$APT_SIGNING_KEY" | gpg --batch --import
+          KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ { print $10; exit }')
+          export KEY_ID
+          packaging/apt/update-repo.sh apt dist/Tabula-*-linux-x86_64.deb
+      - name: Publish
+        run: |
+          cd apt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # A single force-pushed commit: the repo holds only the current
+          # files, so old .debs don't pile up in its history.
+          git checkout --orphan publish
+          git add -A
+          git commit -m "tabula ${TAG#v}"
+          git push --force origin publish:main

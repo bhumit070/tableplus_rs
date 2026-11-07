@@ -7,12 +7,19 @@ Download the file for your platform from the
 
 === "macOS"
 
-    Download the `.dmg` for your Mac (`macos-apple-silicon` for M-series
+    With [Homebrew](https://brew.sh):
+
+    ```sh
+    brew install --cask bhumit070/tap/tabula
+    ```
+
+    `brew upgrade` keeps it up to date. Or download the `.dmg` for your Mac (`macos-apple-silicon` for M-series
     chips, `macos-intel` for Intel), open it and drag **Tabula** onto
     **Applications**.
 
-    Tabula isn't notarized by Apple yet, so the first launch needs
-    **right-click → Open** (then **Open** again in the dialog). Or run:
+    Tabula isn't notarized by Apple yet, so macOS blocks the first launch
+    (with Homebrew too). Open Tabula once, then go to **System Settings →
+    Privacy & Security** and click **Open Anyway**. Or run:
 
     ```sh
     xattr -dr com.apple.quarantine /Applications/Tabula.app
@@ -30,8 +37,19 @@ Download the file for your platform from the
 
 === "Linux"
 
-    On Debian or Ubuntu, install the `.deb`. It also installs the Vulkan
-    loader and GNOME Keyring, which Tabula needs:
+    On Debian or Ubuntu (x86_64), add the Tabula apt repository once, then
+    install it. `sudo apt upgrade` picks up new releases:
+
+    ```sh
+    curl -fsSL https://bhumit070.github.io/tabula-apt/tabula.gpg \
+      | sudo tee /usr/share/keyrings/tabula.gpg >/dev/null
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/tabula.gpg] https://bhumit070.github.io/tabula-apt stable main" \
+      | sudo tee /etc/apt/sources.list.d/tabula.list
+    sudo apt update && sudo apt install tabula
+    ```
+
+    This also installs the Vulkan loader and GNOME Keyring, which Tabula
+    needs. Or install a downloaded `.deb` directly (no updates):
 
     ```sh
     sudo apt install ./Tabula-*-linux-x86_64.deb
