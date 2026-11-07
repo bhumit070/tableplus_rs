@@ -60,6 +60,7 @@ also starts with a `//!` comment saying the same in more detail.
 | `row_panel.rs` | ~160 | Row detail panel (⌘⇧I). |
 | `table_editor.rs` | ~430 | New Table / Edit Columns dialog. |
 | `processes.rs` | ~230 | Process list (⌘⇧P). |
+| `passwords.rs` | ~210 | The "Passwords" step shown before Tabula first uses the keychain; "Don't save passwords" turns it off. |
 | `picker.rs` | ~250 | Searchable pick-one dialog. |
 | `settings_view.rs` | ~640 | Settings dialog: sections, and the shortcut list built from `key_bindings()` with names from the menu bar. |
 | `theme.rs` | ~70 | Bundled Geist fonts and the Tabula Dark / Light themes. |

@@ -2,6 +2,7 @@
 //! grouped Open now / Saved, with search (`/`), an environment filter,
 //! Import and New connection.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -25,6 +26,7 @@ use uuid::Uuid;
 use super::app::{AppView, shortcut_hint};
 use super::conn_form::{ConnForm, OnDone};
 use super::dialog;
+use super::passwords;
 use super::theme::{caps, dp, engine_badge, env_pill, kbd, keychain_name, safe_mode_badge, tokens};
 use crate::db::{ConnectionConfig, Driver, EnvTag, SafeMode};
 use crate::restore::State;
@@ -82,8 +84,38 @@ impl Home {
         }
     }
 
+    /// Runs `f`, after the "Passwords" step (design.md 24.4) the first time
+    /// the keychain may be involved (`needed`), so its system prompt never
+    /// comes without context.
+    fn with_keychain(
+        &mut self,
+        needed: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        let s = settings::get(cx);
+        if !needed || s.keychain_explained || !s.save_passwords {
+            f(self, window, cx);
+            return;
+        }
+        let me = cx.entity().downgrade();
+        let f = RefCell::new(Some(f));
+        passwords::gate(
+            window,
+            cx,
+            Rc::new(move |window, cx| {
+                if let Some(f) = f.borrow_mut().take() {
+                    me.update(cx, |h, cx| f(h, window, cx)).ok();
+                }
+            }),
+        );
+    }
+
     fn upsert(&mut self, cfg: &ConnectionConfig, window: &mut Window, cx: &mut Context<Self>) {
-        if let Err(e) = store::save_secrets(cfg) {
+        if !settings::get(cx).save_passwords {
+            // Kept in memory for this run only (connections.json never has it).
+        } else if let Err(e) = store::save_secrets(cfg) {
             window.push_notification(
                 Notification::warning(format!("Couldn't store password in Keychain: {e:#}")),
                 cx,
@@ -103,6 +135,18 @@ impl Home {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let needed = cfg.as_ref().is_none_or(|c| c.driver != Driver::Sqlite);
+        self.with_keychain(needed, window, cx, move |h, window, cx| {
+            h.open_form_now(cfg, window, cx)
+        });
+    }
+
+    fn open_form_now(
+        &mut self,
+        cfg: Option<ConnectionConfig>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let is_new = cfg.is_none();
         let mut cfg = cfg.unwrap_or_else(|| {
             let mut c = ConnectionConfig::new(Driver::Postgres);
@@ -111,7 +155,10 @@ impl Home {
         });
         // The form must show the real secret: a blank field saved back
         // would delete the stored password.
-        if !is_new && let Err(e) = store::load_secrets(&mut cfg) {
+        if !is_new
+            && settings::get(cx).save_passwords
+            && let Err(e) = store::load_secrets(&mut cfg)
+        {
             window.push_notification(
                 Notification::error(format!("{e:#}")).title("Can't edit this connection right now"),
                 cx,
@@ -131,16 +178,31 @@ impl Home {
         ConnForm::open(cfg, is_new, on_done, window, cx);
     }
 
-    pub fn connect(
+    pub fn connect(&mut self, cfg: ConnectionConfig, window: &mut Window, cx: &mut Context<Self>) {
+        let needed = cfg.driver != Driver::Sqlite;
+        self.with_keychain(needed, window, cx, move |h, window, cx| {
+            h.connect_now(cfg, window, cx)
+        });
+    }
+
+    fn connect_now(
         &mut self,
         mut cfg: ConnectionConfig,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Passwords off: whatever this run was given (in memory) or none;
+        // a failed login then opens the form to ask (below).
+        let use_keychain = settings::get(cx).save_passwords;
         // A keychain that can't be read (locked, no Secret Service on
         // Linux) mustn't block connections that need no password: try
         // without it, and say so.
-        let keychain_failed = match store::load_secrets(&mut cfg) {
+        let loaded = if use_keychain {
+            store::load_secrets(&mut cfg)
+        } else {
+            Ok(())
+        };
+        let keychain_failed = match loaded {
             Ok(()) => false,
             Err(e) => {
                 window.push_notification(
@@ -231,7 +293,10 @@ impl Home {
         for c in &report.added {
             let has_secret =
                 !c.password.is_empty() || c.ssh.as_ref().is_some_and(|s| !s.secret.is_empty());
-            if has_secret && let Err(e) = store::save_secrets(c) {
+            if has_secret
+                && settings::get(cx).save_passwords
+                && let Err(e) = store::save_secrets(c)
+            {
                 report.keychain_failed += 1;
                 keychain_err.get_or_insert(e);
             }
@@ -320,6 +385,12 @@ impl Home {
     }
 
     fn import_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.with_keychain(true, window, cx, |h, window, cx| {
+            h.import_file_now(window, cx)
+        });
+    }
+
+    fn import_file_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -340,6 +411,12 @@ impl Home {
     }
 
     fn import_tableplus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.with_keychain(true, window, cx, |h, window, cx| {
+            h.import_tableplus_now(window, cx)
+        });
+    }
+
+    fn import_tableplus_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let path = import::tableplus_store();
         if !path.exists() {
             window.push_notification(
@@ -352,8 +429,23 @@ impl Home {
     }
 
     fn duplicate(&mut self, cfg: &ConnectionConfig, window: &mut Window, cx: &mut Context<Self>) {
+        let cfg = cfg.clone();
+        let needed = cfg.driver != Driver::Sqlite;
+        self.with_keychain(needed, window, cx, move |h, window, cx| {
+            h.duplicate_now(&cfg, window, cx)
+        });
+    }
+
+    fn duplicate_now(
+        &mut self,
+        cfg: &ConnectionConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let mut copy = cfg.clone();
-        if let Err(e) = store::load_secrets(&mut copy) {
+        if settings::get(cx).save_passwords
+            && let Err(e) = store::load_secrets(&mut copy)
+        {
             window.push_notification(
                 Notification::error(format!("{e:#}")).title("Couldn't duplicate the connection"),
                 cx,

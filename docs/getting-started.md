@@ -82,7 +82,10 @@ Download the file for your platform from the
 
 The password goes to the operating system's credential store (Keychain on
 macOS, Credential Manager on Windows, Secret Service on Linux), never into
-Tabula's files.
+Tabula's files. The first time a password is involved, Tabula explains this
+before the system asks for access (on macOS, choose **Always Allow**). You
+can also choose **Don't save passwords**: then nothing is stored and Tabula
+asks when you connect. Settings → General → Save passwords changes it later.
 
 ## Import from TablePlus
 

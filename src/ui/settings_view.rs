@@ -205,12 +205,19 @@ impl SettingsView {
                     ))
                 })
                 .child(row(
-                    "Passwords",
-                    format!(
-                        "Saved in {}, never in Tabula's files.",
-                        keychain_name()
-                    ),
-                    div(),
+                    "Save passwords",
+                    if s.save_passwords {
+                        format!("In {}, never in Tabula's files.", keychain_name())
+                    } else {
+                        "Off: nothing is saved; Tabula asks when you connect.".to_string()
+                    },
+                    Checkbox::new("save-passwords")
+                        .cursor_pointer()
+                        .checked(s.save_passwords)
+                        .on_click(|on: &bool, _, cx| {
+                            let on = *on;
+                            settings::update(cx, |s| s.save_passwords = on)
+                        }),
                     cx,
                 ))
                 .into_any_element(),

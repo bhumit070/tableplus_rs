@@ -51,6 +51,13 @@ which stores secrets in:
 - **Windows:** Credential Manager;
 - **Linux:** the Secret Service (GNOME Keyring, KWallet).
 
+Tabula touches the keychain only when a password is involved (connecting
+to, editing, duplicating or importing a connection that isn't SQLite), never
+at launch. The first such time it shows the "Passwords" step
+(`ui/passwords.rs`) and records `keychain_explained` in `settings.json`.
+With `save_passwords` off, `home.rs` neither reads nor writes the keychain;
+passwords typed in the form stay in memory for that run.
+
 Each connection has up to two entries under the service name `tabula`:
 
 | Account | Secret |

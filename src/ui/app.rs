@@ -1127,6 +1127,7 @@ mod tests {
 
     use super::*;
     use crate::db::{ConnectionConfig, Driver, EnvTag};
+    use crate::settings::Settings;
     use chrono::NaiveTime;
     use futures::executor::block_on;
     use gpui::{ClipboardItem, Modifiers};
@@ -1139,6 +1140,12 @@ mod tests {
             init(cx);
             cx.bind_keys(crate::ui::key_bindings());
             register_actions(cx);
+            // Tests run as an install that has seen the "Passwords" step;
+            // `passwords_step_comes_first` covers the step itself.
+            cx.set_global(Settings {
+                keychain_explained: true,
+                ..Settings::default()
+            });
         });
         let mut app = None;
         let window = cx.add_window(|window, cx| {
@@ -1949,6 +1956,58 @@ mod tests {
         for f in files {
             let _ = remove_file(f);
         }
+    }
+
+    /// The first time the keychain may be involved, the "Passwords" step
+    /// comes before it; afterwards it doesn't. "Don't save passwords"
+    /// turns the keychain off.
+    #[gpui::test]
+    fn passwords_step_comes_first(cx: &mut TestAppContext) {
+        let (app, mut cx) = open(cx);
+        let home = app.read_with(&cx, |a, _| a.home.clone());
+        let fresh = |cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                cx.set_global(Settings {
+                    keychain_explained: false,
+                    ..Settings::default()
+                })
+            })
+        };
+        let close = |cx: &mut VisualTestContext| {
+            cx.update(|w, cx| w.close_dialog(cx));
+            cx.executor().advance_clock(Duration::from_secs(1));
+            cx.run_until_parked();
+        };
+
+        fresh(&mut cx);
+        home.update_in(&mut cx, |h, w, cx| h.open_form(None, w, cx));
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("passwords-continue").is_some(),
+            "step first"
+        );
+        assert!(cx.debug_bounds("engine-pg").is_none(), "form not yet");
+        let b = cx.debug_bounds("passwords-continue").unwrap();
+        cx.simulate_click(b.center(), Modifiers::none());
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("engine-pg").is_some(), "then the form");
+        let s = cx.update(|_, cx| crate::settings::get(cx));
+        assert!(s.keychain_explained && s.save_passwords);
+        close(&mut cx);
+
+        // Shown once.
+        home.update_in(&mut cx, |h, w, cx| h.open_form(None, w, cx));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("passwords-continue").is_none());
+        close(&mut cx);
+
+        // SQLite needs no keychain: no step even on a fresh install.
+        fresh(&mut cx);
+        let lite = ConnectionConfig::new(Driver::Sqlite);
+        home.update_in(&mut cx, |h, w, cx| h.open_form(Some(lite), w, cx));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("passwords-continue").is_none());
     }
 
     /// Launch offers last session instead of connecting: nothing opens until

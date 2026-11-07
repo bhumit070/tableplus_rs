@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::db::ConnectionConfig;
+use crate::db::{ConnectionConfig, Driver};
 use anyhow::{Error, anyhow, bail};
 use dirs::config_dir as dirs_config_dir;
 use keyring::{Entry, Error as KeyringError};
@@ -149,7 +149,7 @@ fn ssh_account(id: &str) -> String {
 /// passphrase) from the keychain, where they aren't set already.
 pub fn load_secrets(cfg: &mut ConnectionConfig) -> Result<()> {
     // SQLite files have no password: don't depend on the keychain at all.
-    if cfg.driver == crate::db::Driver::Sqlite {
+    if cfg.driver == Driver::Sqlite {
         return Ok(());
     }
     if cfg.password.is_empty() {
@@ -165,6 +165,10 @@ pub fn load_secrets(cfg: &mut ConnectionConfig) -> Result<()> {
 
 /// Stores a connection's secrets in the keychain (empty ones are removed).
 pub fn save_secrets(cfg: &ConnectionConfig) -> Result<()> {
+    // SQLite has none: leave the keychain alone.
+    if cfg.driver == Driver::Sqlite && cfg.ssh.is_none() {
+        return Ok(());
+    }
     set_password(&cfg.id, &cfg.password)?;
     let ssh = cfg.ssh.as_ref().map(|s| s.secret.as_str()).unwrap_or("");
     set_password(&ssh_account(&cfg.id), ssh)

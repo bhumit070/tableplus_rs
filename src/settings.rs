@@ -39,6 +39,12 @@ pub struct Settings {
     /// reopen"). Off: launch asks first, so nothing connects (or touches
     /// the keychain) on its own.
     pub always_reopen: bool,
+    /// The "Passwords" step (design.md 24.4) was shown, so the keychain may
+    /// be used without explaining again.
+    pub keychain_explained: bool,
+    /// Off: passwords are never read from or written to the keychain; a
+    /// connection that needs one asks for it (kept in memory only).
+    pub save_passwords: bool,
     pub appearance: Appearance,
     /// Rows per page when a table opens (one of `PAGE_SIZES`).
     pub page_size: usize,
@@ -54,6 +60,8 @@ impl Default for Settings {
             editor_font_size: 13.,
             restore_sessions: true,
             always_reopen: false,
+            keychain_explained: false,
+            save_passwords: true,
             appearance: Appearance::System,
             page_size: PAGE_SIZES[1],
             default_safe_mode: SafeMode::Auto,

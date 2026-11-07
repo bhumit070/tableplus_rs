@@ -13,6 +13,8 @@ use gpui_component::{Root, Theme, ThemeMode};
 
 use super::*;
 use crate::db::{ConnectionConfig, Driver};
+use crate::settings::Settings;
+use crate::ui::passwords::gate_always;
 use chrono::Utc;
 use futures::executor::block_on;
 use gpui_component::init;
@@ -44,6 +46,10 @@ impl Shots {
             init(cx);
             crate::ui::theme::init(cx);
             crate::settings::init(cx);
+            cx.set_global(Settings {
+                keychain_explained: true,
+                ..settings::get(cx)
+            });
             cx.bind_keys(crate::ui::key_bindings());
             register_actions(cx);
             Theme::change(ThemeMode::Dark, None, cx);
@@ -446,4 +452,8 @@ fn screenshots() {
         })
     });
     s.snap("24-welcome-back");
+    s.in_window(|w, cx| gate_always(w, cx));
+    s.snap("24-passwords");
+    s.in_window(|w, cx| w.close_dialog(cx));
+    s.settle();
 }
