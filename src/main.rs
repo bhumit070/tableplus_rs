@@ -9,6 +9,7 @@ mod import;
 mod restore;
 mod rncryptor;
 mod runtime;
+mod sample;
 mod saved;
 mod settings;
 mod store;

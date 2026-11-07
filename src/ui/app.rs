@@ -1958,6 +1958,42 @@ mod tests {
         }
     }
 
+    /// "Try the sample database" opens it, saved once as a connection.
+    #[gpui::test]
+    fn sample_database_opens(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let (app, mut cx) = open(cx);
+        let home = app.read_with(&cx, |a, _| a.home.clone());
+        home.update_in(&mut cx, |h, w, cx| h.open_sample(w, cx));
+        wait_until(&mut cx, "sample open", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "sample tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("orders").is_some())
+        });
+        let saved = |cx: &mut VisualTestContext| {
+            home.read_with(cx, |h, _| {
+                h.connections
+                    .iter()
+                    .filter(|c| c.name == "Sample shop")
+                    .count()
+            })
+        };
+        assert_eq!(saved(&mut cx), 1);
+        // Again: no second copy.
+        home.update_in(&mut cx, |h, w, cx| h.open_sample(w, cx));
+        wait_until(&mut cx, "second open", |cx| {
+            home.read_with(cx, |h, _| h.connecting.is_empty())
+        });
+        assert_eq!(saved(&mut cx), 1);
+        assert_eq!(
+            app.read_with(&cx, |a, _| a.sessions.len()),
+            1,
+            "not opened twice"
+        );
+    }
+
     /// The first time the keychain may be involved, the "Passwords" step
     /// comes before it; afterwards it doesn't. "Don't save passwords"
     /// turns the keychain off.

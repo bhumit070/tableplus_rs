@@ -12,6 +12,7 @@ also starts with a `//!` comment saying the same in more detail.
 | `store.rs` | ~230 | Config folder, saved connections, keychain access, `read_json` (moves damaged files aside), `write_atomic`. |
 | `settings.rs` | ~170 | User settings (font sizes, session restore, appearance, rows per page, default safe mode) as a gpui global, saved to `settings.json`. |
 | `restore.rs` | ~80 | What `session.json` holds, for reopening last time's connections and tabs. |
+| `sample.rs` | ~170 | The sample database: a SQLite shop generated in SQL on first use. |
 | `saved.rs` | ~100 | Saved queries in `saved_queries.json`, per connection or global. |
 | `history.rs` | ~190 | Query history in `history.db` (SQLite through sqlx), pruned to 5,000 entries per connection, with a schema version. |
 | `export.rs` | ~450 | Grid data → text: Copy as JSON / INSERT / UPDATE / CSV / Markdown / `IN (…)`, and streaming export (`Encoder`: header, rows, footer) to CSV, TSV, JSON, JSON Lines, Markdown, HTML or SQL. |

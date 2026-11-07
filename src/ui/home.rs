@@ -4,6 +4,7 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::rc::Rc;
 
 use chrono::Utc;
@@ -30,7 +31,7 @@ use super::passwords;
 use super::theme::{caps, dp, engine_badge, env_pill, kbd, keychain_name, safe_mode_badge, tokens};
 use crate::db::{ConnectionConfig, Driver, EnvTag, SafeMode};
 use crate::restore::State;
-use crate::{import, settings, store};
+use crate::{import, runtime, sample, settings, store};
 
 pub struct Home {
     app: WeakEntity<AppView>,
@@ -495,6 +496,40 @@ impl Home {
     #[cfg(test)]
     pub fn failure(&self, id: &str) -> Option<String> {
         self.failed.get(id).cloned()
+    }
+
+    /// "Try the sample database": writes it on first use, saves a connection
+    /// for it (once) and opens it.
+    pub fn open_sample(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let file = sample::path();
+        let existing = self
+            .connections
+            .iter()
+            .find(|c| c.driver == Driver::Sqlite && Path::new(&c.file) == file)
+            .cloned();
+        let target = file.clone();
+        let task = runtime::spawn(async move { sample::ensure(&target).await });
+        cx.spawn_in(window, async move |home, cx| {
+            let result = task.await;
+            home.update_in(cx, |home, window, cx| match result {
+                Ok(()) => {
+                    let cfg = existing.unwrap_or_else(|| {
+                        let cfg = sample::connection();
+                        home.upsert(&cfg, window, cx);
+                        cfg
+                    });
+                    // Switches to it when it's already open.
+                    home.open(&cfg, window, cx);
+                }
+                Err(e) => window.push_notification(
+                    Notification::error(format!("{e:#}"))
+                        .title("Couldn't create the sample database"),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Puts last session on offer ("Pick up where you left off?").
@@ -997,6 +1032,15 @@ impl Home {
                             ),
                     )
                     .child(self.import_button(cx)),
+            )
+            .child(
+                Button::new("try-sample")
+                    .cursor_pointer()
+                    .icon(IconName::Sparkles)
+                    .label("Or try the sample database")
+                    .ghost()
+                    .small()
+                    .on_click(cx.listener(|home, _, window, cx| home.open_sample(window, cx))),
             )
             .child(
                 h_flex()

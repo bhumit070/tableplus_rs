@@ -6,6 +6,10 @@
   endpoint, SSH / TLS / safe-mode tags, environment and when it was last
   used. Search with `/`, filter by environment. Clicking an open
   connection switches to it; a saved one opens with a double click.
+- **Sample database:** "Try the sample database" (on an empty Connections
+  screen, and in onboarding) opens a small SQLite shop of customers,
+  products and orders, about 2,000 rows, written to the config folder on
+  first use. No password, no network; delete it like any connection.
 - **Environment tags** (local, development, staging, production), shown as
   colored badges. Connections saved with the old
   *testing* tag open as development.
