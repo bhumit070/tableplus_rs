@@ -109,6 +109,8 @@ pub fn render(v: &Value) -> Option<String> {
         Value::Int(n) => n.to_string(),
         Value::BulkString(b) => String::from_utf8_lossy(b).into_owned(),
         Value::SimpleString(s) => s.clone(),
+        // RESP3 replies to INFO and similar.
+        Value::VerbatimString { text, .. } => text.clone(),
         Value::Okay => "OK".into(),
         Value::Double(d) => d.to_string(),
         Value::Boolean(b) => b.to_string(),

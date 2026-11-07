@@ -73,6 +73,14 @@ TABULA_IT=1 TABULA_IT_PAUSE=1 cargo test sidebar_shows_load_errors
 Tests never touch your real data: `store::config_dir()` points to a temp
 folder under `cargo test`, and the keychain isn't used.
 
+## Screenshots
+
+`cargo test screenshots -- --ignored` renders the real app offscreen with
+the GPU renderer (macOS) and saves each screen in dark and light to
+`target/shots/`. The data is a synthetic SQLite file, so it needs no
+servers. Use it to check a UI change in both themes
+(`src/ui/app/shots.rs`).
+
 ## Formatting
 
 Code is formatted with rustfmt (default settings). A pre-commit hook in

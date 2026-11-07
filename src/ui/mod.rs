@@ -20,10 +20,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{App, Hsla, KeyBinding};
-use gpui_component::ActiveTheme as _;
 use tokio::sync::RwLock;
 
-use crate::db::{Connection, ConnectionConfig, EnvTag};
+use crate::db::{Connection, ConnectionConfig};
 
 /// Web-style cursors on disabled controls: gpui-component keeps the arrow,
 /// we show "not allowed" (and the hand, set where each control is built,
@@ -66,6 +65,7 @@ gpui::actions!(
         ChoiceDown,
         ChoicePick,
         SwitchDatabase,
+        GoTo,
         Commit,
         Discard,
         Refresh,
@@ -232,13 +232,7 @@ pub fn search_list(items: Vec<String>) -> SearchList {
 
 /// The connection's environment colour (design.md, Environment tags).
 pub fn tag_color(cfg: &ConnectionConfig, cx: &App) -> Hsla {
-    let theme = cx.theme();
-    match cfg.tag {
-        EnvTag::Local => theme.success,
-        EnvTag::Development => theme.info,
-        EnvTag::Staging => theme.warning,
-        EnvTag::Production => theme.danger,
-    }
+    theme::env_color(cfg.tag, cx)
 }
 
 /// `sec!` is ⌘ on macOS and Ctrl elsewhere. Bindings without a context
@@ -272,6 +266,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new(sec!("shift-p"), ShowProcesses, None),
         KeyBinding::new(sec!("e"), ExplainQuery, None),
         KeyBinding::new(sec!("k"), SwitchDatabase, None),
+        KeyBinding::new(sec!("p"), GoTo, None),
         KeyBinding::new(sec!("s"), Commit, None),
         KeyBinding::new(sec!("shift-backspace"), Discard, None),
         KeyBinding::new(sec!("r"), Refresh, None),

@@ -119,6 +119,11 @@ fn main() {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     // Linux desktops match this to tabula.desktop for the icon.
                     app_id: Some("tabula".into()),
+                    // Centred in the 44px title bar.
+                    titlebar: Some(gpui::TitlebarOptions {
+                        traffic_light_position: Some(gpui::point(px(16.), px(16.))),
+                        ..TitleBar::title_bar_options()
+                    }),
                     ..TitleBar::window_options()
                 },
                 |window, cx| {

@@ -6,8 +6,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyWindowHandle, App, Context, Entity, FocusHandle, Global, InteractiveElement, IntoElement,
-    ParentElement, Render, SharedString, Styled, WeakEntity, Window, div, prelude::*, px,
+    AnyWindowHandle, App, Context, Entity, FocusHandle, FontWeight, Global, InteractiveElement,
+    IntoElement, ParentElement, Render, SharedString, Styled, WeakEntity, Window, div, prelude::*,
+    px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::notification::Notification;
@@ -24,13 +25,14 @@ use super::picker::{OnPick, PickItem, Picker};
 use super::session::Session;
 use super::settings_view::SettingsView;
 use super::table_tab::TableTab;
+use super::theme::{dp, env_pill, kbd, keychain_name, safe_mode_badge, tokens};
 use super::{
     AddRow, BackupDatabase, CancelQuery, CloseTab, Commit, Connection1, Connection2, Connection3,
     Connection4, Connection5, Connection6, Connection7, Connection8, Connection9, DeleteRows,
-    Discard, DropDatabase, ExplainQuery, ExportData, FormatSql, GoHome, NewDatabase, NewQuery,
-    NextTab, OpenConnection, OpenSettings, PrevTab, QueryHistory, Refresh, RestoreDatabase,
-    RunQuery, SaveQuery, SavedQueries, Shared, ShowProcesses, SwitchDatabase, ToggleFilter,
-    ToggleRowDetail, ToggleTheme, tag_color,
+    Discard, DropDatabase, ExplainQuery, ExportData, FormatSql, GoHome, GoTo, NewDatabase,
+    NewQuery, NextTab, OpenConnection, OpenSettings, PrevTab, QueryHistory, Refresh,
+    RestoreDatabase, RunQuery, SaveQuery, SavedQueries, Shared, ShowProcesses, SwitchDatabase,
+    ToggleFilter, ToggleRowDetail, ToggleTheme, tag_color,
 };
 use crate::db::ssh::UnknownHostKey;
 use crate::db::{Connection, ConnectionConfig};
@@ -282,11 +284,17 @@ impl AppView {
         self.snapshot(cx)
     }
 
+    pub fn active_session(&self) -> Option<Entity<Session>> {
+        self.active.and_then(|i| self.sessions.get(i)).cloned()
+    }
+
+    /// A connection tile on the rail (design.md, Components: Connection
+    /// tile), or the home tile with `None`.
     fn rail_button(&self, ix: Option<usize>, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
+        let t = tokens(cx);
         let selected = self.active == ix;
         let (label, color, tip) = match ix {
-            None => (None, theme.primary, "Connections (⌘0)".to_string()),
+            None => (None, t.text_secondary, "Connections (⌘0)".to_string()),
             Some(i) => {
                 let s = self.sessions[i].read(cx);
                 let cfg = &s.shared.cfg;
@@ -307,43 +315,46 @@ impl AppView {
             }
         };
         let id = ix.map_or(usize::MAX, |i| i);
-        div()
+        let tile = div()
             .id(("rail", id))
             .group("rail-item")
             .relative()
-            .size(px(38.))
-            .rounded_lg()
+            .size(dp(36.))
+            .rounded(dp(10.))
             .flex()
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .text_xs()
-            .font_weight(gpui::FontWeight::BOLD)
-            .border_2()
-            .border_color(if selected {
-                color
-            } else {
-                gpui::transparent_black()
-            })
-            .bg(if selected {
-                theme.accent
-            } else {
-                theme.secondary
-            })
-            .hover(|s| s.bg(theme.accent))
-            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .text_size(dp(12.))
+            .font_weight(FontWeight::SEMIBOLD)
             .map(|d| match &label {
-                None => d.child(Icon::new(IconName::LayoutDashboard).small()),
-                Some(l) => d.child(l.clone()).child(
-                    div()
-                        .absolute()
-                        .bottom(px(3.))
-                        .right(px(3.))
-                        .size(px(6.))
-                        .rounded_full()
-                        .bg(color),
-                ),
+                // Env colour mixed into the surface, initials in the env colour.
+                Some(l) => d
+                    .bg(t.surface.blend(color.opacity(0.20)))
+                    .text_color(color.blend(t.text.opacity(0.35)))
+                    .hover(|d| d.bg(t.surface.blend(color.opacity(0.30))))
+                    .child(l.clone())
+                    .child(
+                        div()
+                            .absolute()
+                            .bottom(dp(-2.))
+                            .right(dp(-2.))
+                            .size(dp(10.))
+                            .rounded_full()
+                            .border_2()
+                            .border_color(t.rail)
+                            .bg(color),
+                    ),
+                None => d
+                    .text_color(if selected { t.text } else { t.text_secondary })
+                    .when(selected, |d| d.bg(t.hover))
+                    .hover(|d| d.bg(t.hover))
+                    .child(Icon::new(IconName::LayoutGrid).small()),
             })
+            .when(selected && label.is_some(), |d| {
+                d.border_2().border_color(t.accent)
+            })
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.active = ix;
                 cx.notify();
@@ -353,16 +364,17 @@ impl AppView {
                     div()
                         .id(("rail-close", i))
                         .absolute()
-                        .top(px(-5.))
-                        .right(px(-5.))
-                        .size(px(16.))
+                        .top(dp(-5.))
+                        .right(dp(-5.))
+                        .size(dp(16.))
                         .rounded_full()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .bg(theme.background)
+                        .bg(t.raised)
                         .border_1()
-                        .border_color(theme.border)
+                        .border_color(t.border)
+                        .text_color(t.text_secondary)
                         .invisible()
                         .group_hover("rail-item", |s| s.visible())
                         .cursor_pointer()
@@ -372,95 +384,303 @@ impl AppView {
                             this.close_session(i, window, cx);
                         })),
                 )
+            });
+        // The active tile also gets a bar on the rail's left edge.
+        h_flex()
+            .w_full()
+            .h(dp(40.))
+            .justify_center()
+            .relative()
+            .when(selected, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top(dp(10.))
+                        .w(dp(3.))
+                        .h(dp(20.))
+                        .rounded_r(dp(2.))
+                        .bg(t.accent),
+                )
             })
+            .child(tile)
+    }
+
+    fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = tokens(cx);
+        v_flex()
+            .w(dp(60.))
+            .h_full()
+            .flex_none()
+            .items_center()
+            .gap(dp(4.))
+            .py(dp(10.))
+            .bg(t.rail)
+            .border_r_1()
+            .border_color(t.border)
+            .child(self.rail_button(None, cx))
+            .child(div().w(dp(24.)).h(px(1.)).my(dp(4.)).bg(t.border))
+            .children(
+                (0..self.sessions.len()).map(|i| self.rail_button(Some(i), cx).into_any_element()),
+            )
+            .child(
+                div()
+                    .id("rail-new")
+                    .mt(dp(2.))
+                    .size(dp(36.))
+                    .rounded(dp(10.))
+                    .border_1()
+                    .border_dashed()
+                    .border_color(t.border)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_color(t.text_muted)
+                    .hover(|d| d.bg(t.hover).text_color(t.text))
+                    .child(Icon::new(IconName::Plus).small())
+                    .tooltip(|window, cx| Tooltip::new("Open connection (⌘N)").build(window, cx))
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_connection_picker(window, cx)),
+                    ),
+            )
+            .child(div().flex_1())
+            .child(
+                Button::new("settings")
+                    .cursor_pointer()
+                    .icon(IconName::Settings)
+                    .ghost()
+                    .tooltip("Settings (⌘,)")
+                    .on_click(|_, window, cx| SettingsView::open(window, cx)),
+            )
+    }
+
+    /// Title bar: where you are (env, connection / database / schema), the
+    /// go-to box, and safe mode (design.md, screen 01).
+    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = tokens(cx);
+        let dark = cx.theme().mode.is_dark();
+        let session = self.active_session();
+        let crumb = |id: &'static str, text: String| {
+            h_flex()
+                .id(id)
+                .h(dp(26.))
+                .px(dp(6.))
+                .gap(dp(4.))
+                .rounded(dp(6.))
+                .cursor_pointer()
+                .text_size(dp(13.))
+                .text_color(t.text_secondary)
+                .hover(|d| d.bg(t.hover).text_color(t.text))
+                .child(text)
+                .child(
+                    Icon::new(IconName::ChevronDown)
+                        .xsmall()
+                        .text_color(t.text_muted),
+                )
+        };
+        let slash = || div().text_color(t.text_faint).child("/");
+        let left = match &session {
+            None => h_flex().gap(dp(8.)).child(
+                div()
+                    .text_size(dp(13.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Tabula"),
+            ),
+            Some(s) => {
+                let sr = s.read(cx);
+                let cfg = sr.cfg();
+                let (s_db, s_schema) = (s.downgrade(), s.downgrade());
+                h_flex()
+                    .gap(dp(6.))
+                    .min_w_0()
+                    .child(env_pill(cfg.tag, cx))
+                    .child(
+                        div()
+                            .text_size(dp(13.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .truncate()
+                            .child(cfg.display_name()),
+                    )
+                    .when(!sr.current_db().is_empty(), |d| {
+                        d.child(slash()).child(
+                            crumb("crumb-db", sr.current_db().to_string())
+                                .tooltip(|window, cx| {
+                                    Tooltip::new("Switch database (⌘K)").build(window, cx)
+                                })
+                                .on_click(move |_, window, cx| {
+                                    s_db.update(cx, |s, cx| s.open_db_picker(window, cx)).ok();
+                                }),
+                        )
+                    })
+                    .when_some(sr.schema_choice(), |d, schema| {
+                        d.child(slash()).child(
+                            crumb("crumb-schema", schema.unwrap_or("all schemas").to_string())
+                                .tooltip(|window, cx| {
+                                    Tooltip::new("Schema for unqualified names").build(window, cx)
+                                })
+                                .on_click(move |_, window, cx| {
+                                    s_schema
+                                        .update(cx, |s, cx| s.open_schema_picker(window, cx))
+                                        .ok();
+                                }),
+                        )
+                    })
+            }
+        };
+        let goto = h_flex()
+            .id("goto")
+            .w(dp(360.))
+            .h(dp(28.))
+            .px(dp(10.))
+            .gap(dp(8.))
+            .rounded(dp(7.))
+            .bg(t.surface)
+            .border_1()
+            .border_color(t.border)
+            .cursor_pointer()
+            .text_size(dp(12.))
+            .text_color(t.text_muted)
+            .hover(|d| d.border_color(t.text_faint))
+            .child(Icon::new(IconName::Search).small())
+            .child(div().flex_1().truncate().child(if session.is_some() {
+                "Go to table, query, command…"
+            } else {
+                "Go to connection…"
+            }))
+            .child(kbd("⌘P", cx))
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(GoTo), cx));
+        let right = h_flex()
+            .gap(dp(8.))
+            .justify_end()
+            .when_some(session.as_ref(), |d, s| {
+                let (label, color, icon) = safe_mode_badge(s.read(cx).cfg(), cx);
+                d.child(
+                    h_flex()
+                        .id("safe-mode")
+                        .h(dp(26.))
+                        .px(dp(10.))
+                        .gap(dp(6.))
+                        .rounded(dp(7.))
+                        .bg(color.opacity(0.12))
+                        .text_size(dp(12.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(color)
+                        .map(|d| match icon {
+                            Some(i) => d.child(Icon::new(i).xsmall()),
+                            None => d.child(div().size(dp(6.)).rounded_full().bg(color)),
+                        })
+                        .child(label)
+                        .tooltip(|window, cx| {
+                            Tooltip::new("Safe mode: set in the connection's settings")
+                                .build(window, cx)
+                        }),
+                )
+                .child(
+                    Button::new("new-query")
+                        .cursor_pointer()
+                        .icon(IconName::Plus)
+                        .label("New Query")
+                        .primary()
+                        .small()
+                        .tooltip("New query (⌘T)")
+                        .on_click(|_, window, cx| window.dispatch_action(Box::new(NewQuery), cx)),
+                )
+            })
+            .child(
+                Button::new("theme")
+                    .cursor_pointer()
+                    .icon(if dark { IconName::Sun } else { IconName::Moon })
+                    .outline()
+                    .small()
+                    .tooltip("Toggle theme (⌘⇧L)")
+                    .on_click(cx.listener(|_, _, window, cx| toggle_theme(window, cx))),
+            );
+        TitleBar::new()
+            .h(px(44.))
+            .bg(t.rail)
+            .border_color(t.border)
+            .child(
+                h_flex()
+                    .w_full()
+                    .h_full()
+                    .pr(dp(12.))
+                    .gap(dp(12.))
+                    .child(div().flex_1().min_w_0().child(left))
+                    .child(goto)
+                    .child(div().flex_1().flex().justify_end().child(right)),
+            )
+    }
+
+    /// Status bar: connection and server on the left, what the active tab
+    /// shows on the right.
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = tokens(cx);
+        let sep = || div().text_color(t.text_faint).child("·");
+        let bar = h_flex()
+            .h(dp(26.))
+            .flex_none()
+            .px(dp(12.))
+            .gap(dp(6.))
+            .bg(t.rail)
+            .border_t_1()
+            .border_color(t.border)
+            .text_size(dp(11.5))
+            .text_color(t.text_muted);
+        match self.active_session() {
+            None => {
+                let saved = self.home.read(cx).connections.len();
+                bar.child(format!("{} open", self.sessions.len()))
+                    .child(sep())
+                    .child(format!(
+                        "{saved} saved connection{}",
+                        if saved == 1 { "" } else { "s" }
+                    ))
+                    .child(sep())
+                    .child(format!("passwords stored in {}", keychain_name()))
+            }
+            Some(s) => {
+                let s = s.read(cx);
+                let cfg = s.cfg();
+                let server = match s.server_version() {
+                    Some(v) => format!("{} {v}", cfg.driver.label()),
+                    None => cfg.driver.label().to_string(),
+                };
+                bar.child(div().size(dp(7.)).rounded_full().bg(t.success))
+                    .child(div().text_color(t.text_secondary).child("Connected"))
+                    .child(server)
+                    .when_some(cfg.ssh.as_ref(), |d, ssh| {
+                        d.child(sep()).child(format!("via SSH tunnel {}", ssh.host))
+                    })
+                    .child(div().flex_1())
+                    .when_some(s.status_context(cx), |d, c| d.child(c))
+            }
+        }
     }
 }
 
 impl Render for AppView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let content = match self.active.and_then(|i| self.sessions.get(i)) {
-            Some(s) => s.clone().into_any_element(),
+        let t = tokens(cx);
+        let content = match self.active_session() {
+            Some(s) => s.into_any_element(),
             None => self.home.clone().into_any_element(),
         };
-        let rail = v_flex()
-            .w(px(58.))
-            .h_full()
-            .items_center()
-            .gap_2()
-            .py_2()
-            .bg(theme.sidebar)
-            .border_r_1()
-            .border_color(theme.border)
-            .child(self.rail_button(None, cx))
-            .child(div().w(px(24.)).h(px(1.)).bg(theme.border))
-            .children(
-                (0..self.sessions.len()).map(|i| self.rail_button(Some(i), cx).into_any_element()),
-            )
-            .child(
-                Button::new("rail-new")
-                    .cursor_pointer()
-                    .icon(IconName::Plus)
-                    .ghost()
-                    .small()
-                    .tooltip("Open connection (⌘⇧K)")
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.open_connection_picker(window, cx)),
-                    ),
-            );
-        let dark = theme.mode.is_dark();
         v_flex()
             .size_full()
-            .bg(theme.background)
-            .text_color(theme.foreground)
+            .bg(t.canvas)
+            .text_color(t.text)
             .key_context("App")
             .track_focus(&self.focus)
-            .child(
-                TitleBar::new().child(
-                    h_flex()
-                        .w_full()
-                        .pr_2()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("Tabula"),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child(format!("{} open", self.sessions.len())),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                            Button::new("theme")
-                                .cursor_pointer()
-                                .icon(if dark { IconName::Sun } else { IconName::Moon })
-                                .ghost()
-                                .small()
-                                .tooltip("Toggle theme (⌘⇧L)")
-                                .on_click(cx.listener(|_, _, window, cx| toggle_theme(window, cx))),
-                        )
-                        .child(
-                            Button::new("settings")
-                                .cursor_pointer()
-                                .icon(IconName::Settings)
-                                .ghost()
-                                .small()
-                                .tooltip("Settings (⌘,)")
-                                .on_click(|_, window, cx| SettingsView::open(window, cx)),
-                        ),
-                ),
-            )
+            .child(self.render_title_bar(cx))
             .child(
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .child(rail)
+                    .child(self.render_rail(cx))
                     .child(div().flex_1().min_w_0().h_full().child(content)),
             )
+            .child(self.render_status_bar(cx))
     }
 }
 
@@ -663,6 +883,12 @@ pub fn register_actions(cx: &mut App) {
     cx.on_action(|_: &PrevTab, cx| with_session(cx, |s, w, cx| s.cycle_tab(-1, w, cx)));
     cx.on_action(|_: &Refresh, cx| with_session(cx, |s, w, cx| s.refresh(w, cx)));
     cx.on_action(|_: &SwitchDatabase, cx| with_session(cx, |s, w, cx| s.open_db_picker(w, cx)));
+    cx.on_action(|_: &GoTo, cx| {
+        with_app(cx, |a, w, cx| match a.active_session() {
+            Some(s) => s.update(cx, |s, cx| s.open_goto(w, cx)),
+            None => a.open_connection_picker(w, cx),
+        })
+    });
     cx.on_action(|_: &RunQuery, cx| {
         with_session(cx, |s, w, cx| {
             if let Some(q) = s.active_query() {
@@ -768,6 +994,9 @@ pub fn zoom(delta: f32, cx: &mut App) {
         s.editor_font_size += delta;
     });
 }
+
+#[cfg(test)]
+mod shots;
 
 #[cfg(test)]
 mod tests {

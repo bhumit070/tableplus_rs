@@ -12,6 +12,7 @@ command is also in the menu bar.
 | ⌘1 … ⌘9 | Switch to the 1st … 9th open connection |
 | ⌘0 | Connection list |
 | ⌘K | Switch database |
+| ⌘P | Go to a table, view or collection, or run a command |
 | ⌘⇧P | Process list |
 | ⌘R | Refresh the table (or the sidebar) |
 

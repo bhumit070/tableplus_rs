@@ -1413,3 +1413,36 @@ async fn redis_insert_with_ttl() {
     assert!(format!("{:?}", r[0].rows).contains("-1"), "no TTL added");
     c.execute("FLUSHDB").await.unwrap();
 }
+
+/// The status bar's "PostgreSQL 17.2": a plain version number per server.
+#[tokio::test]
+async fn server_versions() {
+    let drivers: &[Driver] = if it_enabled() {
+        &[
+            Driver::Sqlite,
+            Driver::Postgres,
+            Driver::MySql,
+            Driver::Redis,
+            Driver::Mongo,
+        ]
+    } else {
+        &[Driver::Sqlite]
+    };
+    for &d in drivers {
+        let cfg = cfg(d);
+        let c = Connection::connect(&cfg).await.unwrap();
+        let v = c
+            .server_version(d)
+            .await
+            .map_err(|e| format!("{d:?}: {e}"))
+            .unwrap();
+        assert!(
+            v.chars().next().is_some_and(|c| c.is_ascii_digit()) && !v.contains(' '),
+            "{d:?}: {v:?}"
+        );
+        c.close().await;
+        if d == Driver::Sqlite {
+            let _ = std::fs::remove_file(&cfg.file);
+        }
+    }
+}

@@ -288,6 +288,18 @@ impl TableTab {
         self.object.title()
     }
 
+    /// For the status bar: "orders · 312 rows · 18 ms".
+    pub fn status_line(&self, cx: &App) -> String {
+        let shown = self.table.read(cx).delegate().base_rows;
+        let rows = self.total.unwrap_or(shown as u64);
+        let rows = if rows == 1 {
+            "1 row".to_string()
+        } else {
+            format!("{rows} rows")
+        };
+        format!("{} · {rows} · {} ms", self.title(), self.elapsed)
+    }
+
     pub fn is_dirty(&self, cx: &App) -> bool {
         self.table.read(cx).delegate().is_dirty()
     }

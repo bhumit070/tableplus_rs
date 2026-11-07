@@ -889,6 +889,26 @@ impl QueryTab {
         .detach();
     }
 
+    /// For the status bar: "Result 1 · 6 rows · 42 ms", once something ran.
+    pub fn status_line(&self) -> Option<String> {
+        if self.running {
+            return Some("Running…".into());
+        }
+        let r = self.results.get(self.active)?;
+        let what = if r.columns.is_empty() {
+            format!("{} affected", r.affected.unwrap_or(0))
+        } else if r.rows.len() == 1 {
+            "1 row".to_string()
+        } else {
+            format!("{} rows", r.rows.len())
+        };
+        Some(format!(
+            "Result {} · {what} · {} ms",
+            self.active + 1,
+            r.elapsed_ms
+        ))
+    }
+
     fn render_results(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let current = self.results.get(self.active);

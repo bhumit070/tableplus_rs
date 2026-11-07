@@ -30,7 +30,7 @@ flowchart TB
     App --> Home["Home<br/>saved connections, import"]
     App --> S1["Session (connection 1)"]
     App --> S2["Session (connection 2) …"]
-    S1 --> Side["sidebar: database / schema switcher,<br/>search, object tree"]
+    S1 --> Side["sidebar: filter, object tree"]
     S1 --> T1["TableTab<br/>Data view + Structure view"]
     S1 --> Q1["QueryTab<br/>editor + result tabs"]
     T1 --> G1["Grid (TableState&lt;Grid&gt;)"]
@@ -39,7 +39,7 @@ flowchart TB
 
 | View | File | Role |
 | --- | --- | --- |
-| `AppView` | `ui/app.rs` | Window root: title bar, connection rail, which session is in front. Opens connections, saves and restores the session, routes shortcuts. |
+| `AppView` | `ui/app.rs` | Window root: title bar (environment, connection / database / schema, ⌘P go-to box, safe-mode badge), connection rail, status bar, which session is in front. Opens connections, saves and restores the session, routes shortcuts. |
 | `Home` | `ui/home.rs` | Start screen: saved connections (connect, edit, duplicate, delete) and TablePlus import. |
 | `ConnForm` | `ui/conn_form.rs` | New / edit connection dialog, with Test and SSH settings. |
 | `Session` | `ui/session.rs` | One open connection: sidebar, tab strip, database switching, backup / restore, create / drop database, sidebar menus. |
@@ -48,7 +48,7 @@ flowchart TB
 | `Grid` | `ui/grid.rs` | The `TableDelegate` behind every data grid: fetched rows plus staged edits, deletions and new rows. |
 | `TableEditor` | `ui/table_editor.rs` | New Table / Edit Columns dialog. |
 | `Processes` | `ui/processes.rs` | Process list dialog, polling every few seconds. |
-| `Picker` | `ui/picker.rs` | Searchable pick-one dialog (⌘K, ⌘N). |
+| `Picker` | `ui/picker.rs` | Searchable pick-one dialog (⌘K, ⌘N, ⌘P, schemas). |
 | `RowPanel` | `ui/row_panel.rs` | Row detail side panel (⌘⇧I). |
 | `SettingsView` | `ui/settings_view.rs` | Settings dialog. |
 

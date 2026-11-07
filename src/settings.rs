@@ -6,7 +6,7 @@ use gpui::{App, Global, px};
 use gpui_component::Theme;
 use serde::{Deserialize, Serialize};
 
-pub const UI_RANGE: (f32, f32) = (12., 24.);
+pub const UI_RANGE: (f32, f32) = (11., 22.);
 pub const EDITOR_RANGE: (f32, f32) = (10., 28.);
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -23,7 +23,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            ui_font_size: 16.,
+            // The design's body size (design.md, Typography).
+            ui_font_size: 13.,
             editor_font_size: 13.,
             restore_sessions: true,
         }
@@ -118,7 +119,7 @@ mod tests {
         assert_eq!(
             s.clamped(),
             Settings {
-                ui_font_size: 24.,
+                ui_font_size: UI_RANGE.1,
                 editor_font_size: 13.,
                 restore_sessions: true,
             }

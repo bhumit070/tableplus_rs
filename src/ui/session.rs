@@ -4,29 +4,28 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render,
-    Styled, Subscription, WeakEntity, Window, div, prelude::*, px, rems,
+    AnyElement, App, Context, Entity, FocusHandle, Focusable, FontWeight, IntoElement,
+    ParentElement, Render, Styled, Subscription, WeakEntity, Window, div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::list::ListItem;
 use gpui_component::menu::PopupMenuItem;
 use gpui_component::notification::Notification;
-use gpui_component::select::{Select, SelectEvent, SelectState};
-use gpui_component::tab::{Tab, TabBar};
 use gpui_component::tree::{TreeItem, TreeState, tree};
 use gpui_component::{
-    ActiveTheme as _, Icon, IndexPath, Sizable as _, WindowExt as _, h_flex, h_resizable,
-    resizable_panel, v_flex,
+    ActiveTheme as _, Icon, Sizable as _, WindowExt as _, h_flex, h_resizable, resizable_panel,
+    v_flex,
 };
 use gpui_kit_assets::IconName;
 
+use super::Shared;
 use super::completion::Schema;
 use super::picker::{OnPick, PickItem, Picker};
 use super::query_tab::QueryTab;
 use super::table_tab::{TableTab, TableTabEvent};
-use super::{SearchList, Shared, search_list, tag_color};
-use crate::db::{DbObject, Driver, Filter, ObjectKind};
+use super::theme::{caps, dp, kbd, tokens};
+use crate::db::{ConnectionConfig, DbObject, Driver, Filter, ObjectKind};
 use crate::{history, runtime};
 
 enum TabItem {
@@ -51,12 +50,12 @@ pub struct Session {
     /// As reported by the connection; the dropdown widget isn't a reliable
     /// source for this (see GitHub #11).
     current_db: String,
-    db_select: Entity<SelectState<SearchList>>,
     /// Postgres schemas in this database (empty for other drivers).
     schemas: Vec<String>,
     /// Shown schema; `None` = all.
     schema: Option<String>,
-    schema_select: Entity<SelectState<SearchList>>,
+    /// The server's version, for the status bar, once known.
+    server_version: Option<String>,
     /// (schema, table, column), for autocomplete.
     columns: Vec<(String, String, String)>,
     search: Entity<InputState>,
@@ -75,49 +74,23 @@ pub struct Session {
 
 impl Session {
     pub fn new(shared: Rc<Shared>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search tables…"));
-        let db_select =
-            cx.new(|cx| SelectState::new(search_list(vec![]), None, window, cx).searchable(true));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Filter tables…"));
         let tree = cx.new(|cx| TreeState::new(cx));
-        let schema_select =
-            cx.new(|cx| SelectState::new(search_list(vec![]), None, window, cx).searchable(true));
         let subs = vec![
-            cx.subscribe_in(
-                &schema_select,
-                window,
-                |this, _, ev: &SelectEvent<SearchList>, window, cx| {
-                    let SelectEvent::Confirm(Some(name)) = ev else {
-                        return;
-                    };
-                    let schema = (name != ALL_SCHEMAS).then(|| name.clone());
-                    this.choose_schema(schema, window, cx);
-                },
-            ),
             cx.subscribe_in(&search, window, |this, _, ev: &InputEvent, _, cx| {
                 if let InputEvent::Change = ev {
                     this.rebuild_tree(cx);
                 }
             }),
-            cx.subscribe_in(
-                &db_select,
-                window,
-                |this, _, ev: &SelectEvent<SearchList>, window, cx| {
-                    let SelectEvent::Confirm(Some(name)) = ev else {
-                        return;
-                    };
-                    this.request_switch_database(name.clone(), window, cx);
-                },
-            ),
         ];
         let mut this = Self {
             shared,
             objects: Vec::new(),
             databases: Vec::new(),
             current_db: String::new(),
-            db_select,
             schemas: Vec::new(),
             schema: None,
-            schema_select,
+            server_version: None,
             columns: Vec::new(),
             search,
             tree,
@@ -131,7 +104,24 @@ impl Session {
             _subs: subs,
         };
         this.load_objects(window, cx);
+        this.load_server_version(window, cx);
         this
+    }
+
+    /// For the status bar; failing to get it isn't worth a message.
+    fn load_server_version(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let conn = self.shared.conn.clone();
+        let driver = self.shared.cfg.driver;
+        let task = runtime::spawn(async move { conn.read().await.server_version(driver).await });
+        cx.spawn_in(window, async move |this, cx| {
+            let version = task.await.ok();
+            this.update(cx, |this, cx| {
+                this.server_version = version;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn load_objects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -172,24 +162,8 @@ impl Session {
                         this.objects = objects;
                         this.columns = columns;
                         this.refresh_completion();
-                        let mut choices = vec![ALL_SCHEMAS.to_string()];
-                        choices.extend(this.schemas.iter().cloned());
-                        let picked = this
-                            .schema
-                            .as_ref()
-                            .and_then(|s| choices.iter().position(|c| c == s))
-                            .unwrap_or(0);
-                        this.schema_select.update(cx, |s, cx| {
-                            s.set_items(search_list(choices), window, cx);
-                            s.set_selected_index(Some(IndexPath::new(picked)), window, cx);
-                        });
-                        let sel = dbs.iter().position(|d| *d == current).map(IndexPath::new);
-                        this.databases = dbs.clone();
-                        this.current_db = current.clone();
-                        this.db_select.update(cx, |s, cx| {
-                            s.set_items(search_list(dbs), window, cx);
-                            s.set_selected_index(sel, window, cx);
-                        });
+                        this.databases = dbs;
+                        this.current_db = current;
                         this.rebuild_tree(cx);
                         // Redis has a single "keys" view: open it straight away.
                         if this.tabs.is_empty()
@@ -220,7 +194,7 @@ impl Session {
     }
 
     /// Switching closes table tabs, so confirm first if any has unsaved
-    /// edits. Cancelling puts the dropdown back on the current database.
+    /// edits.
     fn request_switch_database(
         &mut self,
         name: String,
@@ -236,32 +210,16 @@ impl Session {
         }
         let me = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |d, _, _| {
-            let (ok, cancel, name) = (me.clone(), me.clone(), name.clone());
+            let (ok, name) = (me.clone(), name.clone());
             d.title(format!("Switch to {name}?"))
                 .description("Tables with uncommitted changes will be closed and the changes lost.")
+                .show_cancel(true)
                 .on_ok(move |_, window, cx| {
                     ok.update(cx, |s, cx| s.switch_database(name.clone(), window, cx))
                         .ok();
                     true
                 })
-                .on_cancel(move |_, window, cx| {
-                    cancel
-                        .update(cx, |s, cx| s.reset_db_select(window, cx))
-                        .ok();
-                    true
-                })
         });
-    }
-
-    /// Point the sidebar dropdown back at the database actually in use.
-    fn reset_db_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let ix = self
-            .databases
-            .iter()
-            .position(|d| *d == self.current_db)
-            .map(IndexPath::new);
-        self.db_select
-            .update(cx, |s, cx| s.set_selected_index(ix, window, cx));
     }
 
     fn switch_database(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -287,10 +245,7 @@ impl Session {
                     this.load_objects(window, cx);
                     window.push_notification(format!("Switched to {name}"), cx);
                 }
-                Err(e) => {
-                    this.reset_db_select(window, cx);
-                    window.push_notification(Notification::error(format!("{e:#}")), cx)
-                }
+                Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
             })
             .ok();
         })
@@ -352,32 +307,111 @@ impl Session {
                     this.rebuild_tree(cx);
                     this.refresh_completion();
                 }
-                Err(e) => {
-                    this.reset_schema_select(window, cx);
-                    window.push_notification(
-                        Notification::error(format!("{e:#}")).title("Couldn't switch schema"),
-                        cx,
-                    );
-                }
+                Err(e) => window.push_notification(
+                    Notification::error(format!("{e:#}")).title("Couldn't switch schema"),
+                    cx,
+                ),
             })
             .ok();
         })
         .detach();
     }
 
-    /// Point the Schema dropdown back at the schema actually in use.
-    fn reset_schema_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let ix = match &self.schema {
-            None => 0,
-            Some(s) => self
-                .schemas
-                .iter()
-                .position(|x| x == s)
-                .map_or(0, |i| i + 1),
-        };
-        self.schema_select.update(cx, |s, cx| {
-            s.set_selected_index(Some(IndexPath::new(ix)), window, cx)
+    /// The title-bar breadcrumb's schema part: Postgres with more than one
+    /// schema only. `None` inside means all schemas.
+    pub fn schema_choice(&self) -> Option<Option<&str>> {
+        (self.schemas.len() > 1).then_some(self.schema.as_deref())
+    }
+
+    /// The breadcrumb's schema menu: one schema, or all.
+    pub fn open_schema_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut items = vec![PickItem {
+            current: self.schema.is_none(),
+            ..PickItem::new(ALL_SCHEMAS, ALL_SCHEMAS)
+        }];
+        items.extend(self.schemas.iter().map(|s| PickItem {
+            current: self.schema.as_deref() == Some(s),
+            ..PickItem::new(s, s)
+        }));
+        let me = cx.entity().downgrade();
+        let on_pick: OnPick = Rc::new(move |name, window, cx| {
+            let schema = (name != ALL_SCHEMAS).then_some(name);
+            me.update(cx, |s, cx| s.choose_schema(schema, window, cx))
+                .ok();
         });
+        Picker::open(
+            "Switch Schema",
+            "Switch schema…",
+            IconName::FolderTree,
+            items,
+            on_pick,
+            window,
+            cx,
+        );
+    }
+
+    /// ⌘P: go to a table, view or collection here, or run a command.
+    pub fn open_goto(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut items: Vec<PickItem> = self
+            .objects
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| o.kind != ObjectKind::Keys)
+            .map(|(i, o)| {
+                let kind = match o.kind {
+                    ObjectKind::View => "view",
+                    ObjectKind::Collection => "collection",
+                    _ => "table",
+                };
+                let detail = match &o.schema {
+                    Some(s) => format!("{kind} · {s}"),
+                    None => kind.to_string(),
+                };
+                PickItem {
+                    detail: Some(detail),
+                    ..PickItem::new(format!("o:{i}"), o.name.clone())
+                }
+            })
+            .collect();
+        for (i, (label, keys, _)) in goto_commands().iter().enumerate() {
+            items.push(PickItem {
+                detail: Some(format!("command · {keys}")),
+                ..PickItem::new(format!("cmd:{i}"), *label)
+            });
+        }
+        let me = cx.entity().downgrade();
+        let on_pick: OnPick = Rc::new(move |id, window, cx| {
+            if let Some(i) = id.strip_prefix("o:").and_then(|i| i.parse::<usize>().ok()) {
+                me.update(cx, |s, cx| s.open_object(i, window, cx)).ok();
+            } else if let Some(i) = id
+                .strip_prefix("cmd:")
+                .and_then(|i| i.parse::<usize>().ok())
+            {
+                window.dispatch_action((goto_commands()[i].2)(), cx);
+            }
+        });
+        Picker::open(
+            "Go to",
+            "Go to table, view or command…",
+            IconName::Search,
+            items,
+            on_pick,
+            window,
+            cx,
+        );
+    }
+
+    pub fn cfg(&self) -> &ConnectionConfig {
+        &self.shared.cfg
+    }
+
+    /// The database in use, for the title-bar breadcrumb.
+    pub fn current_db(&self) -> &str {
+        &self.current_db
+    }
+
+    pub fn server_version(&self) -> Option<&str> {
+        self.server_version.as_deref()
     }
 
     pub fn open_object(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -890,11 +924,6 @@ impl Session {
     #[cfg(test)]
     pub fn new_query_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.new_query(window, cx);
-    }
-
-    #[cfg(test)]
-    pub fn current_db(&self) -> &str {
-        &self.current_db
     }
 
     #[cfg(test)]
@@ -1561,49 +1590,54 @@ impl Session {
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
+        let t = tokens(cx);
         let session = cx.entity().downgrade();
         let s2 = session.clone();
+        let kinds: Rc<Vec<ObjectKind>> = Rc::new(self.objects.iter().map(|o| o.kind).collect());
         v_flex()
             .size_full()
-            .bg(theme.sidebar)
+            .bg(t.sidebar)
             .child(
-                v_flex()
-                    .gap_1()
-                    .p_2()
+                h_flex()
+                    .gap(dp(4.))
+                    .p(dp(12.))
+                    .pb(dp(8.))
                     .child(
-                        Select::new(&self.db_select)
-                            .cursor_pointer()
-                            .small()
-                            .placeholder("Database"),
-                    )
-                    .when(self.schemas.len() > 1, |d| {
-                        d.child(
-                            Select::new(&self.schema_select)
-                                .cursor_pointer()
+                        div().flex_1().min_w_0().child(
+                            Input::new(&self.search)
                                 .small()
-                                .placeholder("Schema"),
-                        )
-                    })
+                                .cleanable(true)
+                                .prefix(Icon::new(IconName::Search).small()),
+                        ),
+                    )
                     .child(
-                        Input::new(&self.search)
+                        Button::new("reload-objects")
+                            .cursor_pointer()
+                            .icon(IconName::RefreshCw)
+                            .ghost()
                             .small()
-                            .cleanable(true)
-                            .prefix(Icon::new(IconName::Search).small()),
+                            .loading(self.loading)
+                            .tooltip("Reload tables")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.load_objects(window, cx)),
+                            ),
                     ),
             )
             .when_some(self.load_error.clone(), |d, e| {
                 d.child(
                     v_flex()
-                        .gap_1()
-                        .m_2()
-                        .p_2()
-                        .rounded_md()
-                        .bg(theme.danger.opacity(0.12))
-                        .text_xs()
-                        .text_color(theme.danger)
+                        .gap(dp(6.))
+                        .mx(dp(12.))
+                        .mb(dp(8.))
+                        .p(dp(10.))
+                        .rounded(dp(8.))
+                        .bg(t.danger.opacity(0.10))
+                        .border_1()
+                        .border_color(t.danger.opacity(0.3))
+                        .text_size(dp(12.))
+                        .text_color(t.danger)
                         .child("Couldn't load tables")
-                        .child(div().text_color(theme.foreground).child(e))
+                        .child(div().text_color(t.text_secondary).child(e))
                         .child(
                             Button::new("retry-objects")
                                 .cursor_pointer()
@@ -1618,34 +1652,82 @@ impl Session {
                 )
             })
             .child(
-                div().flex_1().min_h_0().child(
+                div().flex_1().min_h_0().px(dp(6.)).child(
                     tree(&self.tree, move |ix, entry, selected, _, cx| {
+                        let t = tokens(cx);
                         let id = entry.item().id.clone();
-                        let label = entry.item().label.clone();
-                        let icon = if entry.is_folder() {
-                            if entry.is_expanded() {
-                                IconName::ChevronDown
-                            } else {
-                                IconName::ChevronRight
-                            }
-                        } else {
-                            IconName::Table
-                        };
+                        let label = entry.item().label.to_string();
                         let s = session.clone();
-                        ListItem::new(ix)
+                        let row = ListItem::new(ix)
                             .cursor_pointer()
-                            .selected(selected)
-                            .py_0p5()
-                            .pl(px(10.) + px(14.) * entry.depth() as f32)
+                            .h(dp(28.))
+                            .py_0()
+                            .rounded(dp(6.))
+                            .pl(dp(8.) + dp(14.) * entry.depth() as f32);
+                        if entry.is_folder() {
+                            // "Tables (14)" → a caps header with the count on the right.
+                            let (name, count) = match label.rsplit_once(" (") {
+                                Some((n, c)) => {
+                                    (n.to_string(), c.trim_end_matches(')').to_string())
+                                }
+                                None => (label.clone(), String::new()),
+                            };
+                            // Schema folders keep their name as typed.
+                            let schema = id.starts_with("s:");
+                            return row.pr(dp(8.)).child(
+                                h_flex()
+                                    .w_full()
+                                    .gap(dp(6.))
+                                    .child(
+                                        Icon::new(if entry.is_expanded() {
+                                            IconName::ChevronDown
+                                        } else {
+                                            IconName::ChevronRight
+                                        })
+                                        .xsmall()
+                                        .text_color(t.text_faint),
+                                    )
+                                    .child(if schema {
+                                        div()
+                                            .text_size(dp(12.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(t.text_secondary)
+                                            .child(name)
+                                    } else {
+                                        caps(&name, cx)
+                                    })
+                                    .child(div().flex_1())
+                                    .child(
+                                        div()
+                                            .font_family(cx.theme().mono_font_family.clone())
+                                            .text_size(dp(11.))
+                                            .text_color(t.text_faint)
+                                            .child(count),
+                                    ),
+                            );
+                        }
+                        let kind = id
+                            .strip_prefix("o:")
+                            .and_then(|n| n.parse::<usize>().ok())
+                            .and_then(|i| kinds.get(i).copied());
+                        let (icon, color) = match kind {
+                            Some(ObjectKind::View) => (IconName::Eye, t.keyword),
+                            Some(ObjectKind::Collection) => (IconName::Layers, t.text_muted),
+                            Some(ObjectKind::Keys) => (IconName::KeyRound, t.text_muted),
+                            _ => (IconName::Table, t.text_muted),
+                        };
+                        row.selected(selected)
+                            .pr(dp(8.))
                             .child(
                                 h_flex()
-                                    .gap_1p5()
-                                    .text_sm()
-                                    .child(
-                                        Icon::new(icon)
-                                            .small()
-                                            .text_color(cx.theme().muted_foreground),
-                                    )
+                                    .gap(dp(8.))
+                                    .text_size(dp(13.))
+                                    .text_color(if selected { t.text } else { t.text_secondary })
+                                    .child(Icon::new(icon).small().text_color(if selected {
+                                        t.accent
+                                    } else {
+                                        color
+                                    }))
                                     .child(div().truncate().child(label)),
                             )
                             .on_click(move |_, window, cx| {
@@ -1678,14 +1760,15 @@ impl Session {
             .when(self.is_sql(), |d| {
                 d.child(
                     h_flex()
-                        .p_1()
+                        .px(dp(8.))
+                        .py(dp(6.))
                         .border_t_1()
-                        .border_color(cx.theme().border)
+                        .border_color(t.border)
                         .child(
                             Button::new("new-table")
                                 .cursor_pointer()
                                 .icon(IconName::Plus)
-                                .label("New Table")
+                                .label("New table")
                                 .ghost()
                                 .xsmall()
                                 .on_click(cx.listener(|s, _, window, cx| s.new_table(window, cx))),
@@ -1694,74 +1777,181 @@ impl Session {
             })
     }
 
+    /// The tab strip: the active tab is "lifted" onto the canvas below it
+    /// (design.md, screen 01).
     fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let tabs: Vec<Tab> = self
+        let t = tokens(cx);
+        let tabs: Vec<AnyElement> = self
             .tabs
             .iter()
             .enumerate()
-            .map(|(i, t)| {
-                let (title, icon, dirty) = match t {
-                    TabItem::Table(e) => {
-                        (e.read(cx).title(), IconName::Table, e.read(cx).is_dirty(cx))
-                    }
+            .map(|(i, tab)| {
+                let (title, icon, icon_color, dirty) = match tab {
+                    TabItem::Table(e) => (
+                        e.read(cx).title(),
+                        IconName::Table,
+                        t.text_muted,
+                        e.read(cx).is_dirty(cx),
+                    ),
                     TabItem::Query(e) => (
                         e.read(cx).title.clone(),
                         IconName::SquareTerminal,
+                        t.number,
                         e.read(cx).is_dirty(cx),
                     ),
                 };
-                Tab::new()
+                let active = i == self.active;
+                h_flex()
+                    .id(("tab", i))
+                    .group("tab")
+                    .flex_none()
+                    .h(dp(32.))
+                    .max_w(dp(220.))
+                    .pl(dp(12.))
+                    .pr(dp(6.))
+                    .gap(dp(8.))
+                    .rounded_t(dp(8.))
+                    .border_1()
                     .cursor_pointer()
-                    .prefix(Icon::new(icon).small().ml_2())
-                    .label(if dirty { format!("{title} •") } else { title })
-                    .suffix(
-                        Button::new(("close-tab", i))
+                    .text_size(dp(12.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .map(|d| {
+                        if active {
+                            // Covers the strip's bottom border, so the tab
+                            // and the toolbar below read as one surface.
+                            d.bg(t.canvas)
+                                .border_color(t.border)
+                                .border_b_0()
+                                .mb(px(-1.))
+                                .pb(px(1.))
+                                .text_color(t.text)
+                        } else {
+                            d.border_color(gpui::transparent_black())
+                                .text_color(t.text_secondary)
+                                .hover(|d| d.bg(t.hover.opacity(0.6)))
+                        }
+                    })
+                    .child(Icon::new(icon).small().text_color(icon_color))
+                    .child(div().min_w_0().truncate().child(title))
+                    .child(
+                        div()
+                            .id(("close-tab", i))
+                            .size(dp(18.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(dp(4.))
                             .cursor_pointer()
-                            .icon(IconName::X)
-                            .ghost()
-                            .xsmall()
+                            .text_color(t.text_muted)
+                            .hover(|d| d.bg(t.hover).text_color(t.text))
+                            .map(|d| {
+                                if dirty {
+                                    // A dot until hovered, then ×.
+                                    d.child(
+                                        div()
+                                            .size(dp(7.))
+                                            .rounded_full()
+                                            .bg(t.text_secondary)
+                                            .group_hover("tab", |d| d.invisible()),
+                                    )
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .invisible()
+                                            .group_hover("tab", |d| d.visible())
+                                            .child(Icon::new(IconName::X).xsmall()),
+                                    )
+                                    .relative()
+                                } else {
+                                    d.child(Icon::new(IconName::X).xsmall()).when(!active, |d| {
+                                        d.invisible().group_hover("tab", |d| d.visible())
+                                    })
+                                }
+                            })
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
                                 this.close_tab_at(i, window, cx);
                             })),
                     )
+                    .on_click(cx.listener(move |this, _, window, cx| this.activate(i, window, cx)))
+                    .into_any_element()
             })
             .collect();
-        TabBar::new("session-tabs")
-            .small()
-            .selected_index(self.active)
-            .children(tabs)
-            .suffix(
-                Button::new("new-query")
-                    .cursor_pointer()
-                    .icon(IconName::Plus)
-                    .ghost()
-                    .small()
-                    .tooltip("New query (⌘T)")
-                    .on_click(cx.listener(|this, _, window, cx| this.new_query(window, cx))),
+        h_flex()
+            .flex_none()
+            .h(dp(40.))
+            .items_end()
+            .bg(t.rail)
+            .border_b_1()
+            .border_color(t.border)
+            .child(
+                h_flex()
+                    .id("session-tabs")
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .items_end()
+                    .pl(dp(8.))
+                    .gap(dp(2.))
+                    .overflow_x_scroll()
+                    .children(tabs),
             )
-            .on_click(cx.listener(|this, ix: &usize, window, cx| this.activate(*ix, window, cx)))
+            .child(
+                div().h_full().flex().items_center().px(dp(6.)).child(
+                    Button::new("new-query")
+                        .cursor_pointer()
+                        .icon(IconName::Plus)
+                        .ghost()
+                        .small()
+                        .tooltip("New query (⌘T)")
+                        .on_click(cx.listener(|this, _, window, cx| this.new_query(window, cx))),
+                ),
+            )
     }
 
     fn render_empty(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
+        let t = tokens(cx);
+        let hint = |keys: &'static str, what: &'static str, cx: &App| {
+            h_flex()
+                .gap(dp(8.))
+                .child(kbd(keys, cx))
+                .child(div().text_color(t.text_muted).child(what))
+        };
         v_flex()
             .size_full()
             .items_center()
             .justify_center()
-            .gap_2()
-            .text_color(theme.muted_foreground)
-            .child(div().text_lg().child(if self.loading {
-                "Loading…"
-            } else {
-                "Open a table from the sidebar"
-            }))
+            .gap(dp(14.))
+            .text_size(dp(12.))
             .child(
                 div()
-                    .text_sm()
-                    .child("⌘T new query · ⌘R refresh · ⌘W close tab · ⌘0 connections"),
+                    .text_size(dp(16.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(t.text)
+                    .child(if self.loading {
+                        "Loading…"
+                    } else {
+                        "Open a table from the sidebar"
+                    }),
+            )
+            .child(
+                h_flex()
+                    .gap(dp(18.))
+                    .child(hint("⌘T", "New query", cx))
+                    .child(hint("⌘P", "Go to…", cx))
+                    .child(hint("⌘K", "Switch database", cx))
+                    .child(hint("⌘0", "Connections", cx)),
             )
             .into_any_element()
+    }
+
+    /// The right side of the status bar: what the active tab shows.
+    pub fn status_context(&self, cx: &App) -> Option<String> {
+        match self.tabs.get(self.active)? {
+            TabItem::Table(t) => Some(t.read(cx).status_line(cx)),
+            TabItem::Query(q) => q.read(cx).status_line(),
+        }
     }
 }
 
@@ -1773,73 +1963,52 @@ impl Focusable for Session {
 
 impl Render for Session {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
         let content = match self.tabs.get(self.active) {
             Some(TabItem::Table(t)) => t.clone().into_any_element(),
             Some(TabItem::Query(q)) => q.clone().into_any_element(),
             None => self.render_empty(cx),
         };
-        let cfg = &self.shared.cfg;
-        let header = h_flex()
-            .h(rems(2.))
-            .px_3()
-            .gap_2()
-            .border_b_1()
-            .border_color(theme.border)
-            .child(div().size(px(8.)).rounded_full().bg(tag_color(cfg, cx)))
-            .child(
-                // Opens the connection picker: switch to another open
-                // connection, open a saved one, or add a new one.
-                Button::new("switch-connection")
-                    .cursor_pointer()
-                    .label(cfg.display_name())
-                    .ghost()
-                    .xsmall()
-                    .dropdown_caret(true)
-                    .tooltip("Switch connection (⌘⇧K)")
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(super::OpenConnection), cx)
-                    }),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(format!("{} · {}", cfg.driver.label(), cfg.tag.label())),
-            )
-            .child(div().flex_1())
-            .child(
-                Button::new("reload-objects")
-                    .cursor_pointer()
-                    .icon(IconName::RefreshCw)
-                    .ghost()
-                    .xsmall()
-                    .tooltip("Reload tables")
-                    .on_click(cx.listener(|this, _, window, cx| this.load_objects(window, cx))),
-            );
+        let t = tokens(cx);
         v_flex()
             .size_full()
             .key_context("Session")
             .track_focus(&self.focus)
-            .child(header)
             .child(
                 h_resizable("session-split")
                     .child(
                         resizable_panel()
-                            .size(px(250.))
-                            .size_range(px(160.)..px(520.))
+                            .size(px(260.))
+                            .size_range(px(200.)..px(400.))
                             .child(self.render_sidebar(cx)),
                     )
                     .child(
                         resizable_panel().child(
                             v_flex()
                                 .size_full()
+                                .bg(t.canvas)
                                 .when(!self.tabs.is_empty(), |d| d.child(self.render_tabs(cx)))
                                 .child(div().flex_1().min_h_0().child(content)),
                         ),
                     ),
             )
     }
+}
+
+/// Commands offered by ⌘P: label, shortcut, action.
+fn goto_commands() -> [(&'static str, &'static str, fn() -> Box<dyn gpui::Action>); 10] {
+    use super::*;
+    [
+        ("New query", "⌘T", || Box::new(NewQuery)),
+        ("Query history", "⌘Y", || Box::new(QueryHistory)),
+        ("Saved queries", "⌘⇧O", || Box::new(SavedQueries)),
+        ("Switch database", "⌘K", || Box::new(SwitchDatabase)),
+        ("Refresh", "⌘R", || Box::new(Refresh)),
+        ("Export…", "⌘⇧E", || Box::new(ExportData)),
+        ("Processes", "⌘⇧P", || Box::new(ShowProcesses)),
+        ("Connections", "⌘0", || Box::new(GoHome)),
+        ("Toggle light / dark", "⌘⇧L", || Box::new(ToggleTheme)),
+        ("Settings", "⌘,", || Box::new(OpenSettings)),
+    ]
 }
 
 const ALL_SCHEMAS: &str = "All schemas";

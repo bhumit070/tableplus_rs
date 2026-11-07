@@ -110,10 +110,12 @@ time: **More info → Run anyway**.
   (`pg_dump` / `psql`, `mysqldump` / `mysql`, SQLite file copy), create /
   drop databases, rename / duplicate / vacuum tables.
 - **Redis:** keys grouped by namespace (`user:*`) in the sidebar.
-- **Database switcher (⌘K):** jump between databases on the same connection.
+- **Database switcher (⌘K):** jump between databases on the same connection,
+  also from the database name in the title bar.
+- **Go to (⌘P):** jump to a table, view or collection, or run a command.
 - **Schemas (PostgreSQL):** the sidebar groups tables by schema, and the
-  Schema dropdown shows one schema and makes it the default for queries
-  (`search_path`), so `SELECT * FROM orders` finds `sales.orders`.
+  schema in the title bar shows one schema and makes it the default for
+  queries (`search_path`), so `SELECT * FROM orders` finds `sales.orders`.
 - **Settings (⌘,):** interface and editor font sizes, light/dark theme.
 
 ## Keyboard shortcuts
@@ -123,6 +125,7 @@ On Windows/Linux, use Ctrl in place of ⌘. Shortcuts work wherever focus is.
 | Shortcut | Action |
 | --- | --- |
 | ⌘K | Switch database |
+| ⌘P | Go to a table, view or command |
 | ⌘T / ⌘W | New query tab / close tab |
 | ⌘⇧] / ⌘⇧[ | Next / previous tab |
 | ⌘↵ | Run selection, or the whole editor |

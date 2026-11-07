@@ -18,7 +18,7 @@ pub mod target;
 
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
 pub use cancel::Cancel;
@@ -451,6 +451,41 @@ impl Connection {
     /// Where the server is reachable from this machine right now.
     pub fn endpoint(&self) -> (String, u16) {
         self.endpoint.clone()
+    }
+
+    /// The server's version for the status bar ("17.2", "8.4.3", …). Only
+    /// reads.
+    pub async fn server_version(&self, driver: Driver) -> Result<String> {
+        let text = match driver {
+            Driver::Postgres => "show server_version",
+            Driver::MySql => "select version()",
+            Driver::Sqlite => "select sqlite_version()",
+            Driver::Redis => "INFO server",
+            Driver::Mongo => "{\"buildInfo\": 1}",
+        };
+        let res = self.execute_cancellable(text, &Cancel::default()).await?;
+        let res = res.first().context("no result")?;
+        let cell = |col: usize| res.rows.first().and_then(|r| r.get(col).cloned().flatten());
+        let version = match driver {
+            Driver::Redis => res
+                .rows
+                .iter()
+                .flatten()
+                .flatten()
+                .flat_map(|cell| cell.lines())
+                .find_map(|l| l.trim().strip_prefix("redis_version:"))
+                .map(str::to_string),
+            Driver::Mongo => res
+                .columns
+                .iter()
+                .position(|c| c == "version")
+                .and_then(cell),
+            // "17.2 (Debian 17.2-1.pgdg120+1)" → "17.2"
+            _ => cell(0).map(|v| v.split_whitespace().next().unwrap_or_default().to_string()),
+        };
+        version
+            .filter(|v| !v.is_empty())
+            .context("the server didn't report a version")
     }
 
     pub async fn list_objects(&self) -> Result<Vec<DbObject>> {

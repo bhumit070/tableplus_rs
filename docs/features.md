@@ -34,8 +34,9 @@
   NULL / default / primary key. The DDL is shown before it runs.
 - **Sidebar actions:** open, copy name, new query, rename, duplicate,
   vacuum / optimize, truncate and drop.
-- **PostgreSQL schemas:** tables are grouped by schema, and the Schema
-  picker sets `search_path` so unqualified names find the chosen schema.
+- **PostgreSQL schemas:** tables are grouped by schema, and the schema in
+  the title bar sets `search_path` so unqualified names find the chosen
+  schema.
 - **Redis:** keys grouped by namespace (`user:*`), with type, TTL and value.
 - **MongoDB:** collections shown as tables, with columns from the union of
   top-level fields.

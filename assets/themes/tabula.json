@@ -390,5 +390,51 @@
         }
       }
     }
-  ]
+  ],
+  "tokens": {
+    "dark": {
+      "bg/canvas": "#0B0C0F",
+      "bg/rail": "#0F1013",
+      "bg/sidebar": "#121317",
+      "bg/surface": "#16171C",
+      "bg/raised": "#1C1E24",
+      "bg/hover": "#22242B",
+      "bg/zebra": "#0D0E12",
+      "border/default": "#24262D",
+      "border/subtle": "#1D1F25",
+      "text/primary": "#E8E9ED",
+      "text/secondary": "#A4A8B3",
+      "text/muted": "#6B707C",
+      "text/faint": "#4A4E58",
+      "accent": "#7C8CFF",
+      "success": "#3FB97A",
+      "warning": "#E5A93B",
+      "danger": "#EF5A5A",
+      "info": "#4FA3F7",
+      "keyword": "#B07CFF",
+      "number": "#3CC7C2"
+    },
+    "light": {
+      "bg/canvas": "#FFFFFF",
+      "bg/rail": "#F4F4F6",
+      "bg/sidebar": "#F8F8FA",
+      "bg/surface": "#FFFFFF",
+      "bg/raised": "#FFFFFF",
+      "bg/hover": "#ECEDF1",
+      "bg/zebra": "#FAFAFB",
+      "border/default": "#E2E3E8",
+      "border/subtle": "#EDEEF1",
+      "text/primary": "#17181C",
+      "text/secondary": "#4B4F58",
+      "text/muted": "#7E838D",
+      "text/faint": "#A7ABB3",
+      "accent": "#4F5FE8",
+      "success": "#1F9D5C",
+      "warning": "#B7791F",
+      "danger": "#D93C3C",
+      "info": "#2B7BD4",
+      "keyword": "#8A4FE0",
+      "number": "#1E9E99"
+    }
+  }
 }
