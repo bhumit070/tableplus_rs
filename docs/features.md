@@ -148,8 +148,12 @@ actually involved.
 
 ## Administration
 
-- **Process list** (⌘⇧P): server sessions, refreshed every few seconds,
-  with Cancel Query and Kill Connection.
+- **Process list** (⌘⇧P): server sessions, live every 2 s (or paused),
+  filtered to Active / Idle in transaction / All. The selected session's
+  full query, client and start time show below the list, with "Blocked by
+  PID n" to jump to the session holding it up (Postgres). Cancel query and
+  Kill session always show the exact statement and ask first; your own
+  session isn't listed.
 - **Backup / Restore** with the database's own tools (`pg_dump` / `psql`,
   `mysqldump` / `mysql`); SQLite is copied with `VACUUM INTO`.
 - **Create / drop databases** (a new database opens right away) and the

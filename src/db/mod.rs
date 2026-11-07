@@ -795,6 +795,18 @@ impl Connection {
     }
 
     /// Cancels a session's statement, or with `whole` ends the session.
+    /// What Cancel / Kill runs for session `id`, as shown before it does.
+    pub fn kill_statement(driver: Driver, id: &str, whole: bool) -> String {
+        match (driver, whole) {
+            (Driver::Postgres, false) => format!("select pg_cancel_backend({id})"),
+            (Driver::Postgres, true) => format!("select pg_terminate_backend({id})"),
+            (Driver::MySql, false) => format!("kill query {id}"),
+            (Driver::MySql, true) => format!("kill {id}"),
+            (Driver::Redis, _) => format!("CLIENT KILL ID {id}"),
+            _ => String::new(),
+        }
+    }
+
     pub async fn kill(&self, id: &str, whole: bool) -> Result<()> {
         match &self.inner {
             Conn::Sql(c) => c.kill(id, whole).await,

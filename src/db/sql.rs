@@ -19,8 +19,9 @@ use sqlx::{
 use super::cancel::{CANCELLED, Cancel};
 use super::split::split_statements;
 use super::{
-    BatchFailed, Change, ColumnInfo, ConnectionConfig, DbObject, Driver, Filter, FilterOp,
-    ForeignKey, ObjectKind, QueryResult, Structure, TableQuery, sql_literal,
+    BatchFailed, Change, ColumnInfo, Connection as DbConnection, ConnectionConfig, DbObject,
+    Driver, Filter, FilterOp, ForeignKey, ObjectKind, QueryResult, Structure, TableQuery,
+    sql_literal,
 };
 use anyhow::{Error, anyhow};
 use redis::RedisError;
@@ -1024,7 +1025,9 @@ impl SqlConn {
                 "select pid, usename as user, datname as database, \
                  coalesce(host(client_addr), 'local') as client, application_name as app, state, \
                  to_char(now() - query_start, 'HH24:MI:SS') as running_for, \
-                 wait_event_type || coalesce(': ' || wait_event, '') as waiting_on, query \
+                 wait_event_type || coalesce(': ' || wait_event, '') as waiting_on, \
+                 to_char(query_start, 'YYYY-MM-DD HH24:MI:SS') as started, \
+                 nullif(array_to_string(pg_blocking_pids(pid), ', '), '') as blocked_by, query \
                  from pg_stat_activity where pid <> pg_backend_pid() and backend_type = 'client backend' \
                  order by query_start nulls last"
             }
@@ -1040,11 +1043,10 @@ impl SqlConn {
     /// Stops a session's running statement, or (`whole`) the session.
     pub async fn kill(&self, id: &str, whole: bool) -> Result<()> {
         let id: u64 = id.parse().context("not a process id")?;
-        let sql = match (self.cfg.driver, whole) {
-            (Driver::Postgres, false) => format!("select pg_cancel_backend({id})"),
-            (Driver::Postgres, true) => format!("select pg_terminate_backend({id})"),
-            (Driver::MySql, false) => format!("kill query {id}"),
-            (Driver::MySql, true) => format!("kill {id}"),
+        let sql = match self.cfg.driver {
+            Driver::Postgres | Driver::MySql => {
+                DbConnection::kill_statement(self.cfg.driver, &id.to_string(), whole)
+            }
             _ => bail!("not supported"),
         };
         let r = self.raw(sql).await?;
