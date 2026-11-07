@@ -109,6 +109,15 @@ static TOKEN_SETS: LazyLock<TokenSets> = LazyLock::new(|| {
     }
 });
 
+/// The tokens of one mode, whatever the current one (theme previews).
+pub fn tokens_for(dark: bool) -> Tokens {
+    if dark {
+        TOKEN_SETS.dark
+    } else {
+        TOKEN_SETS.light
+    }
+}
+
 /// The tokens for the current light / dark mode.
 pub fn tokens(cx: &App) -> Tokens {
     if cx.theme().mode.is_dark() {

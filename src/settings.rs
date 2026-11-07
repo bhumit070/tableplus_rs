@@ -39,6 +39,8 @@ pub struct Settings {
     /// reopen"). Off: launch asks first, so nothing connects (or touches
     /// the keychain) on its own.
     pub always_reopen: bool,
+    /// First-run onboarding (design.md 24) finished or skipped.
+    pub onboarded: bool,
     /// The "Passwords" step (design.md 24.4) was shown, so the keychain may
     /// be used without explaining again.
     pub keychain_explained: bool,
@@ -60,6 +62,7 @@ impl Default for Settings {
             editor_font_size: 13.,
             restore_sessions: true,
             always_reopen: false,
+            onboarded: false,
             keychain_explained: false,
             save_passwords: true,
             appearance: Appearance::System,

@@ -23,6 +23,7 @@ use gpui_kit_assets::IconName;
 use tokio::sync::RwLock;
 
 use super::home::Home;
+use super::onboarding::Onboarding;
 use super::picker::{OnPick, PickItem, Picker};
 use super::session::Session;
 use super::settings_view::SettingsView;
@@ -50,6 +51,9 @@ pub struct AppView {
     /// Saved tabs of connections reopening at launch, by connection id
     /// (and whether that session was in front).
     pending_restore: std::collections::HashMap<String, (crate::restore::SessionState, bool)>,
+    /// First-run onboarding (design.md 24), shown in place of everything
+    /// else until finished or skipped.
+    onboarding: Option<Entity<Onboarding>>,
 }
 
 impl AppView {
@@ -68,7 +72,20 @@ impl AppView {
             async {}
         })
         .detach();
-        if crate::settings::get(cx).restore_sessions && !cfg!(test) {
+        // A fresh install sees onboarding; an existing one (it already has
+        // connections) counts as onboarded and never does.
+        let has_connections = !home.read(cx).connections.is_empty();
+        let mut onboarding = None;
+        if !settings::get(cx).onboarded && !cfg!(test) {
+            if has_connections {
+                settings::update(cx, |s| s.onboarded = true);
+            } else {
+                let me = cx.entity().downgrade();
+                let home = home.clone();
+                onboarding = Some(cx.new(|cx| Onboarding::new(me, home, cx)));
+            }
+        }
+        if settings::get(cx).restore_sessions && onboarding.is_none() && !cfg!(test) {
             cx.defer_in(window, |this, window, cx| this.offer_restore(window, cx));
         }
         Self {
@@ -77,6 +94,7 @@ impl AppView {
             active: None,
             focus,
             pending_restore: Default::default(),
+            onboarding,
         }
     }
 
@@ -742,9 +760,10 @@ impl AppView {
 impl Render for AppView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = tokens(cx);
-        let content = match self.active_session() {
-            Some(s) => s.into_any_element(),
-            None => self.home.clone().into_any_element(),
+        let content = match (&self.onboarding, self.active_session()) {
+            (Some(onboarding), _) => onboarding.clone().into_any_element(),
+            (None, Some(s)) => s.into_any_element(),
+            (None, None) => self.home.clone().into_any_element(),
         };
         v_flex()
             .size_full()
@@ -775,6 +794,23 @@ pub fn shortcut_hint(i: usize) -> Option<String> {
 }
 
 impl AppView {
+    /// Onboarding finished or skipped: on to the app.
+    pub fn end_onboarding(&mut self, cx: &mut Context<Self>) {
+        self.onboarding = None;
+        cx.notify();
+    }
+
+    /// Starts onboarding as on a fresh install (tests, screenshots).
+    #[cfg(test)]
+    pub fn start_onboarding(&mut self, cx: &mut Context<Self>) -> Entity<Onboarding> {
+        let me = cx.entity().downgrade();
+        let home = self.home.clone();
+        let view = cx.new(|cx| Onboarding::new(me, home, cx));
+        self.onboarding = Some(view.clone());
+        cx.notify();
+        view
+    }
+
     /// Ids of the open connections, in rail order.
     pub fn open_ids(&self, cx: &App) -> Vec<String> {
         self.sessions
@@ -1127,7 +1163,8 @@ mod tests {
 
     use super::*;
     use crate::db::{ConnectionConfig, Driver, EnvTag};
-    use crate::settings::Settings;
+    use crate::settings::{Appearance, Settings};
+    use crate::ui::onboarding::Step;
     use chrono::NaiveTime;
     use futures::executor::block_on;
     use gpui::{ClipboardItem, Modifiers};
@@ -1956,6 +1993,55 @@ mod tests {
         for f in files {
             let _ = remove_file(f);
         }
+    }
+
+    /// Onboarding: ↵ moves on, choices apply at once, the sample database
+    /// opens behind the last step, and Open Tabula ends it for good. Skip
+    /// setup ends it too.
+    #[gpui::test]
+    fn onboarding_flow(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let (app, mut cx) = open(cx);
+        let click = |cx: &mut VisualTestContext, what: &'static str| {
+            cx.run_until_parked();
+            let bounds = cx
+                .debug_bounds(what)
+                .unwrap_or_else(|| panic!("{what} drawn"));
+            cx.simulate_click(bounds.center(), Modifiers::none());
+            cx.run_until_parked();
+        };
+        let flow = app.update(&mut cx, |app, cx| app.start_onboarding(cx));
+        let step = |cx: &mut VisualTestContext| flow.read_with(cx, |flow, _| flow.step());
+        cx.run_until_parked();
+        assert_eq!(step(&mut cx), Step::Welcome);
+
+        cx.update(|window, cx| window.blur(cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        assert_eq!(step(&mut cx), Step::Look);
+        click(&mut cx, "theme-card-2");
+        let appearance = cx.update(|_, cx| settings::get(cx).appearance);
+        assert_eq!(appearance, Appearance::Dark);
+        click(&mut cx, "onboarding-next");
+        assert_eq!(step(&mut cx), Step::Connections);
+
+        click(&mut cx, "pick-sample");
+        assert_eq!(step(&mut cx), Step::Done);
+        wait_until(&mut cx, "sample opened behind", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        assert!(
+            app.read_with(&cx, |a, _| a.onboarding.is_some()),
+            "still showing"
+        );
+        click(&mut cx, "onboarding-finish");
+        assert!(app.read_with(&cx, |a, _| a.onboarding.is_none()));
+        assert!(cx.update(|_, cx| settings::get(cx).onboarded));
+
+        // Skip setup from the first step.
+        app.update(&mut cx, |app, cx| app.start_onboarding(cx));
+        click(&mut cx, "onboarding-skip");
+        assert!(app.read_with(&cx, |a, _| a.onboarding.is_none()));
     }
 
     /// "Try the sample database" opens it, saved once as a connection.

@@ -532,6 +532,46 @@ impl Home {
         .detach();
     }
 
+    /// Import from TablePlus: its connections on this Mac when there are
+    /// any, otherwise an export file.
+    pub fn import_any(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if import::tableplus_store().exists() {
+            self.import_tableplus(window, cx);
+        } else {
+            self.import_file(window, cx);
+        }
+    }
+
+    /// "Open a SQLite file": pick one, save it as a connection, open it.
+    pub fn open_sqlite_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Open SQLite database".into()),
+        });
+        cx.spawn_in(window, async move |home, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(file) = paths.into_iter().next() else {
+                return;
+            };
+            home.update_in(cx, |home, window, cx| {
+                let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+                cfg.name = file
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                cfg.file = file.to_string_lossy().into();
+                home.upsert(&cfg, window, cx);
+                home.connect(cfg, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Puts last session on offer ("Pick up where you left off?").
     pub fn offer_reopen(&mut self, state: State, cx: &mut Context<Self>) {
         self.reopen = Some(state);

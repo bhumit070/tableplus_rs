@@ -14,6 +14,7 @@ use gpui_component::{Root, Theme, ThemeMode};
 use super::*;
 use crate::db::{ConnectionConfig, Driver};
 use crate::settings::Settings;
+use crate::ui::onboarding::Step;
 use crate::ui::passwords::gate_always;
 use chrono::Utc;
 use futures::executor::block_on;
@@ -190,6 +191,21 @@ fn screenshots() {
     let mut s = Shots::new();
     s.settle();
     s.snap("03-home-empty");
+
+    // Onboarding, as on a fresh install.
+    let app = s.app.clone();
+    let flow =
+        s.cx.update(|cx| app.update(cx, |app, cx| app.start_onboarding(cx)));
+    for (step, name) in [
+        (Step::Welcome, "24-1-welcome"),
+        (Step::Look, "24-2-look"),
+        (Step::Connections, "24-3-connections"),
+        (Step::Done, "24-5-done"),
+    ] {
+        s.cx.update(|cx| flow.update(cx, |flow, cx| flow.show_step(step, cx)));
+        s.snap(name);
+    }
+    s.cx.update(|cx| app.update(cx, |app, cx| app.end_onboarding(cx)));
 
     // Settings and the new-connection form, over the empty home.
     let settings = s.in_window(|w, cx| crate::ui::settings_view::SettingsView::open(w, cx));

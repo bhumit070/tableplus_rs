@@ -1,5 +1,14 @@
 # Features
 
+## First run
+
+A short onboarding on a fresh install (skippable at every step): Welcome,
+Look & feel (theme with live previews, text size), Connections (import from
+TablePlus, new connection, open a SQLite file, or the sample database) and
+You're set, with the shortcuts worth knowing. Installs that already have
+connections skip it. Nothing touches the keychain until a password is
+actually involved.
+
 ## Connections
 
 - A **connections home** of cards, grouped *Open now* and *Saved*: engine,

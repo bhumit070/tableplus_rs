@@ -379,7 +379,7 @@ impl SettingsView {
 }
 
 /// Switches light / dark / system and remembers it.
-fn set_appearance(i: usize, window: &mut Window, cx: &mut App) {
+pub fn set_appearance(i: usize, window: &mut Window, cx: &mut App) {
     let appearance = [Appearance::System, Appearance::Light, Appearance::Dark][i];
     match appearance {
         Appearance::System => Theme::sync_system_appearance(Some(window), cx),
