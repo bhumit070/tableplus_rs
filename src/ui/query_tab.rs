@@ -3,6 +3,7 @@
 
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use gpui::{
     App, ClipboardItem, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement,
@@ -26,6 +27,7 @@ use super::cell_edit::{self, EditStart};
 use super::copy;
 use super::dialog;
 use super::grid::{Grid, data_table};
+use super::loading;
 use super::row_panel;
 use super::theme::{dp, kbd, tokens};
 use super::{DisabledWhen as _, QueryHistory, RunQuery, Shared, SwitchDatabase};
@@ -47,6 +49,8 @@ pub struct QueryTab {
     active: usize,
     grid: Entity<TableState<Grid>>,
     running: bool,
+    /// When the running batch or EXPLAIN began.
+    run_started: Option<Instant>,
     /// Stops the running batch; `Some` while running.
     cancel: Option<Arc<Cancel>>,
     error: Option<String>,
@@ -213,6 +217,7 @@ impl QueryTab {
             active: 0,
             grid,
             running: false,
+            run_started: None,
             cancel: None,
             show_detail: false,
             saved: None,
@@ -335,7 +340,7 @@ impl QueryTab {
         cx: &mut Context<Self>,
     ) {
         let driver = self.shared.cfg.driver;
-        self.running = true;
+        self.start_running(cx);
         self.error = None;
         cx.notify();
         let conn = self.shared.conn.clone();
@@ -655,7 +660,7 @@ impl QueryTab {
     fn execute(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         self.plan = None;
         self.last_run = text.clone();
-        self.running = true;
+        self.start_running(cx);
         self.error = None;
         self.error_stmt = None;
         self.mark_failed(None, cx);
@@ -678,7 +683,7 @@ impl QueryTab {
             _ => text.clone(),
         };
         let conn = self.shared.conn.clone();
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let cancel = Arc::new(Cancel::default());
         self.cancel = Some(cancel.clone());
         let conn_id = self.shared.cfg.id.clone();
@@ -878,6 +883,13 @@ impl QueryTab {
     }
 
     /// ⌘. / Stop: cancels the running batch.
+    /// Marks the tab busy and keeps the loading chip's clock ticking.
+    fn start_running(&mut self, cx: &mut Context<Self>) {
+        self.running = true;
+        self.run_started = Some(Instant::now());
+        loading::tick(cx, |q: &Self| q.running);
+    }
+
     /// Underlines statement `index` of the last run in the editor (or
     /// clears the mark). Only when that text is still in the editor.
     fn mark_failed(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
@@ -1347,7 +1359,10 @@ impl QueryTab {
                 )
             }
         };
-        let body = if let (Some(p), None) = (&self.plan, &self.error) {
+        let body = if self.running && loading::visible(self.run_started) {
+            let cols = self.grid.read(cx).delegate().columns.len().max(4);
+            loading::skeleton_rows("query-skeleton", cols, 12, cx)
+        } else if let (Some(p), None) = (&self.plan, &self.error) {
             self.render_plan(p, cx)
         } else if showing_error {
             let e = self.error.clone().unwrap_or_default();
@@ -1446,8 +1461,28 @@ impl QueryTab {
             .filter(|_| self.plan.is_none() && current.is_some_and(|r| !r.columns.is_empty()));
         v_flex()
             .size_full()
-            .when(has_tabs, |d| d.child(self.render_result_tabs(cx)))
-            .child(div().flex_1().min_h_0().child(body))
+            .when(has_tabs && !self.running, |d| {
+                d.child(self.render_result_tabs(cx))
+            })
+            .child(
+                div().flex_1().min_h_0().relative().child(body).when_some(
+                    self.run_started
+                        .filter(|s| self.running && loading::visible(Some(*s))),
+                    |d, since| {
+                        d.child(loading::chip(
+                            "Running query",
+                            since,
+                            Some(
+                                Button::new("stop-run")
+                                    .cursor_pointer()
+                                    .label("Stop ⌘.")
+                                    .on_click(cx.listener(|q, _, _, cx| q.cancel(cx))),
+                            ),
+                            cx,
+                        ))
+                    },
+                ),
+            )
             .child(
                 h_flex()
                     .h(dp(30.))

@@ -2,6 +2,7 @@
 //! pager) and Structure view (columns + indexes).
 
 use std::rc::Rc;
+use std::time::Instant;
 
 use anyhow::Context as _;
 
@@ -26,13 +27,16 @@ use gpui_kit_assets::IconName;
 use super::cell_edit::{self, EditStart};
 use super::copy;
 use super::grid::{Grid, data_table};
+use super::loading;
 use super::row_panel;
 use super::theme::{dp, tokens};
 use super::{
     AddRow, Commit, CopyCell, DeleteRows, Discard, ExportData, SearchList, SetNull, Shared,
     ToggleFilter, search_list,
 };
-use crate::db::{DbObject, EnvTag, Filter, FilterOp, QueryResult, Structure, TableQuery};
+use crate::db::{
+    DbObject, EnvTag, Filter, FilterOp, ObjectKind, QueryResult, Structure, TableQuery,
+};
 use crate::runtime;
 use crate::ui::DisabledWhen as _;
 use anyhow::Result;
@@ -94,6 +98,8 @@ pub struct TableTab {
     /// Bumped per reload; only the latest response is applied, so a slow
     /// earlier page can't overwrite a newer one.
     load_seq: u64,
+    /// When the running load began; `None` when idle.
+    load_started: Option<Instant>,
     /// The same for foreign-key lookups while editing.
     fk_seq: u64,
     /// Label columns of referenced tables, looked up once per table.
@@ -123,6 +129,12 @@ impl TableTab {
                 })
                 .ok();
             });
+        }));
+        let w = weak.clone();
+        grid.empty_view = Some(Rc::new(move |_, cx| {
+            w.upgrade()
+                .map(|t| TableTab::render_no_rows(&t, cx))
+                .unwrap_or_else(|| div().into_any_element())
         }));
         let w = weak.clone();
         grid.on_menu = Some(Rc::new(move |row, menu, _, _| {
@@ -229,6 +241,7 @@ impl TableTab {
             focus: cx.focus_handle(),
             edit_sub: None,
             load_seq: 0,
+            load_started: None,
             fk_seq: 0,
             fk_labels: Default::default(),
             _subs: subs,
@@ -440,7 +453,7 @@ impl TableTab {
         let q = self.current_query(cx);
         self.applied = self.filter_rows(cx);
         self.table.update(cx, |t, cx| {
-            t.delegate_mut().loading = true;
+            t.delegate_mut().set_loading(true);
             cx.notify();
         });
         let conn = self.shared.conn.clone();
@@ -448,6 +461,10 @@ impl TableTab {
         let need_structure = self.structure.is_none();
         self.load_seq += 1;
         let seq = self.load_seq;
+        if self.load_started.is_none() {
+            loading::tick(cx, |t: &Self| t.load_started.is_some());
+        }
+        self.load_started = Some(Instant::now());
         let task = runtime::spawn(async move {
             let c = conn.read().await;
             let st = if need_structure {
@@ -475,8 +492,9 @@ impl TableTab {
         res: Result<(Option<Structure>, (QueryResult, Option<u64>))>,
         cx: &mut Context<Self>,
     ) {
+        self.load_started = None;
         self.table.update(cx, |t, cx| {
-            t.delegate_mut().loading = false;
+            t.delegate_mut().set_loading(false);
             cx.notify();
         });
         let (st, (data, total)) = match res {
@@ -588,6 +606,186 @@ impl TableTab {
             t.refresh(cx);
             cx.notify();
         });
+        cx.notify();
+    }
+
+    /// The empty grid (design.md, screen 22): no rows at all, or none that
+    /// match the filters, each with the action that helps.
+    fn render_no_rows(this: &Entity<Self>, cx: &mut App) -> AnyElement {
+        let t = tokens(cx);
+        let tab = this.read(cx);
+        let filters = tab.applied.len() + tab.fixed.len();
+        let name = tab.object.name.clone();
+        let view = tab.object.kind == ObjectKind::View;
+        let (title, detail) = if filters > 0 {
+            (
+                format!(
+                    "No rows match {}",
+                    if filters == 1 {
+                        "the filter".to_string()
+                    } else {
+                        format!("{filters} filters")
+                    }
+                ),
+                tab.applied
+                    .iter()
+                    .map(|(_, f)| f)
+                    .chain(tab.fixed.iter())
+                    .map(|f| {
+                        format!("{} {} {}", f.column, f.op.label(), f.value)
+                            .trim()
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" · "),
+            )
+        } else if view {
+            (format!("{name} returns no rows"), String::new())
+        } else {
+            (format!("{name} has no rows yet"), String::new())
+        };
+        let me = this.downgrade();
+        let actions = if filters > 0 {
+            h_flex().child(
+                Button::new("clear-all-filters")
+                    .cursor_pointer()
+                    .label("Clear filters")
+                    .outline()
+                    .small()
+                    .on_click(move |_, window, cx| {
+                        me.update(cx, |t, cx| t.clear_filters(window, cx)).ok();
+                    }),
+            )
+        } else if !view {
+            let me2 = me.clone();
+            h_flex()
+                .gap(dp(8.))
+                .child(
+                    Button::new("empty-add-row")
+                        .cursor_pointer()
+                        .icon(IconName::Plus)
+                        .label("Add row ⌘I")
+                        .primary()
+                        .small()
+                        .on_click(move |_, window, cx| {
+                            me.update(cx, |t, cx| t.add_row(&AddRow, window, cx)).ok();
+                        }),
+                )
+                .child(
+                    Button::new("empty-import")
+                        .cursor_pointer()
+                        .label("Import CSV…")
+                        .outline()
+                        .small()
+                        .on_click(move |_, window, cx| {
+                            me2.update(cx, |t, cx| t.import_csv(window, cx)).ok();
+                        }),
+                )
+        } else {
+            h_flex()
+        };
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap(dp(8.))
+            .child(
+                Icon::new(if filters > 0 {
+                    IconName::Funnel
+                } else {
+                    IconName::Table
+                })
+                .text_color(t.text_faint),
+            )
+            .child(
+                div()
+                    .text_size(dp(14.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(t.text)
+                    .child(title),
+            )
+            .when(!detail.is_empty(), |d| {
+                d.child(
+                    div()
+                        .max_w(dp(520.))
+                        .text_center()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_size(dp(11.5))
+                        .text_color(t.text_muted)
+                        .child(detail),
+                )
+            })
+            .child(actions.pt(dp(6.)))
+            .into_any_element()
+    }
+
+    #[cfg(test)]
+    pub fn is_loading(&self, cx: &App) -> bool {
+        self.loading(cx)
+    }
+
+    /// For screenshots: a load that has been running for a second.
+    #[cfg(test)]
+    pub fn pretend_loading(&mut self, cx: &mut Context<Self>) {
+        let since = Instant::now() - std::time::Duration::from_secs(1);
+        self.load_started = Some(since);
+        self.table.update(cx, |t, cx| {
+            let g = t.delegate_mut();
+            g.loading = true;
+            g.loading_since = Some(since);
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    /// For screenshots: the tab with filters that match nothing.
+    #[cfg(test)]
+    pub fn show_no_matches(&mut self, cx: &mut Context<Self>) {
+        self.load_started = None;
+        self.fixed = vec![Filter {
+            column: "status".into(),
+            op: FilterOp::Eq,
+            value: "archived".into(),
+        }];
+        self.applied.clear();
+        self.table.update(cx, |t, cx| {
+            let g = t.delegate_mut();
+            g.set_loading(false);
+            let cols = g.columns.clone();
+            g.set_result(&QueryResult {
+                columns: cols,
+                ..Default::default()
+            });
+            t.refresh(cx);
+        });
+        cx.notify();
+    }
+
+    /// Drops every filter (bar and chips, and a followed foreign key's).
+    pub fn clear_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reload_unless_dirty(window, cx, |t| {
+            t.filters.clear();
+            t.fixed.clear();
+            t.show_filters = false;
+            t.page = 0;
+        });
+    }
+
+    /// Stop on the loading chip: drops the running load (its answer is
+    /// ignored when it comes) and says how to load again.
+    fn stop_load(&mut self, cx: &mut Context<Self>) {
+        self.load_seq += 1;
+        self.load_started = None;
+        self.table.update(cx, |t, cx| {
+            let g = t.delegate_mut();
+            g.set_loading(false);
+            g.set_result(&QueryResult::default());
+            t.refresh(cx);
+        });
+        self.error = Some(format!(
+            "Stopped loading {}. Refresh (⌘R) to load it again.",
+            self.object.name
+        ));
         cx.notify();
     }
 
@@ -1764,6 +1962,9 @@ impl Render for TableTab {
                 .map(|s| s.ddl.clone())
                 .unwrap_or_default();
             let content = match section {
+                _ if self.structure.is_none() && self.load_started.is_some() => {
+                    loading::waiting("Reading the table's structure…", self.load_started, cx)
+                }
                 0 => v_flex()
                     .size_full()
                     .when(
@@ -1948,7 +2149,22 @@ impl Render for TableTab {
                         .child(div().flex_1().child(e)),
                 )
             })
-            .child(div().flex_1().min_h_0().child(body))
+            .child(div().flex_1().min_h_0().relative().child(body).when_some(
+                self.load_started.filter(|s| loading::visible(Some(*s))),
+                |d, since| {
+                    d.child(loading::chip(
+                        format!("Loading {}", self.object.name),
+                        since,
+                        Some(
+                            Button::new("stop-load")
+                                .cursor_pointer()
+                                .label("Stop")
+                                .on_click(cx.listener(|t, _, _, cx| t.stop_load(cx))),
+                        ),
+                        cx,
+                    ))
+                },
+            ))
             .children(pending)
     }
 }

@@ -81,12 +81,21 @@ impl Processes {
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
         self.loading = true;
+        // Skeleton rows the first time; later refreshes keep the list.
+        self.grid.update(cx, |t, cx| {
+            if t.delegate().rows.is_empty() {
+                t.delegate_mut().set_loading(true);
+                cx.notify();
+            }
+        });
         let conn = self.shared.conn.clone();
         let task = runtime::spawn(async move { conn.read().await.processes().await });
         cx.spawn(async move |this, cx| {
             let res = task.await;
             this.update(cx, |p, cx| {
                 p.loading = false;
+                p.grid
+                    .update(cx, |t, _| t.delegate_mut().set_loading(false));
                 match res {
                     Ok(r) => {
                         p.error = None;

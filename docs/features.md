@@ -30,6 +30,14 @@
   its × removes it. Columns show their type under the name, primary keys a
   key, foreign keys "→ table"; numbers are right-aligned, enum values are
   coloured pills, and NULL / DEFAULT are pills so they never look empty.
+- **Loading and empty states:** anything that takes longer than a blink
+  shows placeholder rows (never a spinner over a blank panel) and a
+  "Loading orders · 1.2 s · Stop" chip; Stop really stops (for a query, on
+  the server). Switching database shows "Switching to …" in the title bar
+  and placeholder rows in the sidebar; a connection being opened gets a
+  spinner tile in the left rail; backups and restores keep a progress
+  toast until they finish. An empty table offers *Add row* and *Import
+  CSV…*; a filter that matches nothing says so and offers *Clear filters*.
 - **Staged editing:** edits are tinted (amber edited, green new, red
   deleted) and nothing is written until you commit (⌘S). A bar below the
   grid counts them, with *Preview SQL* (exactly what will run), Discard

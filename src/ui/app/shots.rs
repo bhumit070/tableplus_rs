@@ -230,6 +230,12 @@ fn screenshots() {
     let tab = s.cx.update(|cx| session.read(cx).active_table().unwrap());
     s.wait("rows", |cx| tab.read(cx).loaded_rows(cx) > 0);
     s.snap("01-table");
+    s.in_window(|_, cx| tab.update(cx, |t, cx| t.pretend_loading(cx)));
+    s.snap("22-loading");
+    s.in_window(|_, cx| tab.update(cx, |t, cx| t.show_no_matches(cx)));
+    s.snap("22-no-matches");
+    s.in_window(|w, cx| tab.update(cx, |t, cx| t.clear_filters(w, cx)));
+    s.wait("rows again", |cx| tab.read(cx).loaded_rows(cx) > 0);
 
     s.in_window(|w, cx| w.dispatch_action(Box::new(crate::ui::ExportData), cx));
     s.snap("12-export");

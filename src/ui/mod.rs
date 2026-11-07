@@ -9,6 +9,7 @@ pub mod dialog;
 pub mod grid;
 pub mod history_view;
 pub mod home;
+pub mod loading;
 pub mod picker;
 pub mod processes;
 pub mod query_tab;

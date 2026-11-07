@@ -6,6 +6,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
+use std::time::Instant;
 
 use gpui::{
     AnyElement, App, Context, Entity, FontWeight, Hsla, IntoElement, ParentElement, Styled, Window,
@@ -20,6 +21,7 @@ use gpui_kit_assets::IconName;
 
 use super::cell_edit::CellEditor;
 use super::cell_value::{Temporal, check, date_part, now_for, temporal, with_date};
+use super::loading;
 use super::theme::{Tokens, dp, enum_color, tokens};
 use super::{CellDown, CellDownMore, CellUp, CellUpMore};
 use crate::db::{Change, ColumnInfo, QueryResult};
@@ -226,6 +228,7 @@ fn bool_cell(v: bool, raw: &str, t: &Tokens) -> Div {
 }
 
 pub type SortFn = Rc<dyn Fn(usize, ColumnSort, &mut Window, &mut App)>;
+pub type EmptyFn = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 pub type MenuFn = Rc<dyn Fn(usize, PopupMenu, &mut Window, &mut App) -> PopupMenu>;
 /// Called with (row, column) when a foreign-key link is clicked.
 pub type FollowFn = Rc<dyn Fn(usize, usize, &mut Window, &mut App)>;
@@ -247,9 +250,14 @@ pub struct Grid {
     /// Which columns can be edited; empty = read-only grid.
     pub editable: Vec<bool>,
     pub loading: bool,
+    /// When the current load began (set with `loading`), for the delayed
+    /// skeleton and the loading chip.
+    pub loading_since: Option<Instant>,
     pub sort: Option<(usize, bool)>,
     /// Server-side sort; when unset the grid sorts the loaded rows itself.
     pub on_sort: Option<SortFn>,
+    /// What to show instead of "No rows" (design.md, screen 22).
+    pub empty_view: Option<EmptyFn>,
     pub on_menu: Option<MenuFn>,
     /// Per column: the values an enum column allows (`None` = NULL), edited
     /// with a dropdown; empty = free text.
@@ -453,6 +461,12 @@ impl Grid {
             })
             .collect();
         self.update_kinds();
+    }
+
+    /// Starts or ends a load; the grid shows skeleton rows meanwhile.
+    pub fn set_loading(&mut self, on: bool) {
+        self.loading = on;
+        self.loading_since = on.then(Instant::now);
     }
 
     /// Not while a page loads: its arrival would drop the edit unsaved.
@@ -1491,11 +1505,32 @@ impl TableDelegate for Grid {
         self.loading
     }
 
-    fn render_empty(
+    /// Skeleton rows, only after a short delay (design.md, screen 22).
+    fn render_loading(
         &mut self,
+        _size: Size,
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
+        if !loading::visible(self.loading_since) {
+            return div().size_full().into_any_element();
+        }
+        let cols = if self.columns.is_empty() {
+            6
+        } else {
+            self.columns.len()
+        };
+        loading::skeleton_rows("grid-skeleton", cols, 18, cx)
+    }
+
+    fn render_empty(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        if let (Some(f), false) = (self.empty_view.clone(), self.columns.is_empty()) {
+            return f(window, cx);
+        }
         div()
             .size_full()
             .flex()
@@ -1507,6 +1542,7 @@ impl TableDelegate for Grid {
             } else {
                 "No rows"
             })
+            .into_any_element()
     }
 }
 

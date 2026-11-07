@@ -6,12 +6,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyWindowHandle, App, Context, Entity, FocusHandle, FontWeight, Global, InteractiveElement,
-    IntoElement, ParentElement, Render, SharedString, Styled, WeakEntity, Window, div, prelude::*,
-    px,
+    AnyElement, AnyWindowHandle, App, Context, Entity, FocusHandle, FontWeight, Global,
+    InteractiveElement, IntoElement, ParentElement, Render, SharedString, Styled, WeakEntity,
+    Window, div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::notification::Notification;
+use gpui_component::spinner::Spinner;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{
     ActiveTheme as _, Icon, Sizable as _, Theme, ThemeMode, TitleBar, WindowExt as _, h_flex,
@@ -290,6 +291,36 @@ impl AppView {
 
     /// A connection tile on the rail (design.md, Components: Connection
     /// tile), or the home tile with `None`.
+    /// A tile per connection still opening: so opening one from ⌘N (with
+    /// the home screen hidden) shows something is happening.
+    fn connecting_tiles(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let t = tokens(cx);
+        let home = self.home.read(cx);
+        let open = self.open_ids(cx);
+        home.connections
+            .iter()
+            .filter(|c| home.connecting.contains(&c.id) && !open.contains(&c.id))
+            .enumerate()
+            .map(|(i, cfg)| {
+                let tip = format!("Connecting to {}…", cfg.display_name());
+                div()
+                    .id(("rail-connecting", i))
+                    .debug_selector(move || format!("rail-connecting-{i}"))
+                    .size(dp(36.))
+                    .rounded(dp(10.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .border_1()
+                    .border_color(tag_color(cfg, cx).opacity(0.5))
+                    .bg(t.surface)
+                    .child(Spinner::new().small().color(tag_color(cfg, cx)))
+                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                    .into_any_element()
+            })
+            .collect()
+    }
+
     fn rail_button(&self, ix: Option<usize>, cx: &mut Context<Self>) -> impl IntoElement {
         let t = tokens(cx);
         let selected = self.active == ix;
@@ -423,6 +454,7 @@ impl AppView {
             .children(
                 (0..self.sessions.len()).map(|i| self.rail_button(Some(i), cx).into_any_element()),
             )
+            .children(self.connecting_tiles(cx))
             .child(
                 div()
                     .id("rail-new")
@@ -504,17 +536,31 @@ impl AppView {
                             .truncate()
                             .child(cfg.display_name()),
                     )
-                    .when(!sr.current_db().is_empty(), |d| {
+                    .when_some(sr.switching_to(), |d, to| {
                         d.child(slash()).child(
-                            crumb("crumb-db", sr.current_db().to_string())
-                                .tooltip(|window, cx| {
-                                    Tooltip::new("Switch database (⌘K)").build(window, cx)
-                                })
-                                .on_click(move |_, window, cx| {
-                                    s_db.update(cx, |s, cx| s.open_db_picker(window, cx)).ok();
-                                }),
+                            h_flex()
+                                .gap(dp(6.))
+                                .px(dp(6.))
+                                .text_size(dp(13.))
+                                .text_color(t.text_muted)
+                                .child(Spinner::new().xsmall())
+                                .child(format!("Switching to {to}…")),
                         )
                     })
+                    .when(
+                        !sr.current_db().is_empty() && sr.switching_to().is_none(),
+                        |d| {
+                            d.child(slash()).child(
+                                crumb("crumb-db", sr.current_db().to_string())
+                                    .tooltip(|window, cx| {
+                                        Tooltip::new("Switch database (⌘K)").build(window, cx)
+                                    })
+                                    .on_click(move |_, window, cx| {
+                                        s_db.update(cx, |s, cx| s.open_db_picker(window, cx)).ok();
+                                    }),
+                            )
+                        },
+                    )
                     .when_some(sr.schema_choice(), |d, schema| {
                         d.child(slash()).child(
                             crumb("crumb-schema", schema.unwrap_or("all schemas").to_string())
@@ -1701,8 +1747,11 @@ mod tests {
         assert!(!dialog(&mut cx));
 
         // Snoozing: the next commit doesn't ask.
+        // Loaded, not just showing "y": edits made mid-load are refused.
         wait_until(&mut cx, "reload", |cx| {
-            tab.read_with(cx, |t, cx| t.cell(0, 1, cx).as_deref() == Some("y"))
+            tab.read_with(cx, |t, cx| {
+                t.cell(0, 1, cx).as_deref() == Some("y") && !t.is_loading(cx)
+            })
         });
         tab.update_in(&mut cx, |t, _, cx| t.stage_cell(0, 1, "z", cx));
         cx.simulate_keystrokes("cmd-s");
@@ -1713,7 +1762,9 @@ mod tests {
         cx.simulate_keystrokes("cmd-enter");
         wait_until(&mut cx, "commit z", |_| read_a().as_deref() == Some("z"));
         wait_until(&mut cx, "reload z", |cx| {
-            tab.read_with(cx, |t, cx| t.cell(0, 1, cx).as_deref() == Some("z"))
+            tab.read_with(cx, |t, cx| {
+                t.cell(0, 1, cx).as_deref() == Some("z") && !t.is_loading(cx)
+            })
         });
         tab.update_in(&mut cx, |t, _, cx| t.stage_cell(0, 1, "w", cx));
         cx.simulate_keystrokes("cmd-s");
@@ -2166,10 +2217,17 @@ mod tests {
             )
         });
         assert!(q.read_with(&cx, |q, _| q.running()));
+        // Past the skeleton's delay: the chip with the clock and Stop shows.
+        std::thread::sleep(Duration::from_millis(200));
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("loading-chip").is_some(), "running chip");
         cx.simulate_keystrokes("cmd-.");
         wait_until(&mut cx, "cancelled", |cx| {
             q.read_with(cx, |q, _| !q.running())
         });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("loading-chip").is_none(), "chip gone");
 
         let tabs = session.read_with(&cx, |s, _| s.tab_count());
         cx.simulate_keystrokes("cmd-y");

@@ -22,6 +22,7 @@ use gpui_kit_assets::IconName;
 use super::Shared;
 use super::completion::Schema;
 use super::history_view::{HistoryView, Tab as HistoryTab};
+use super::loading;
 use super::picker::{OnPick, PickItem, Picker};
 use super::query_tab::QueryTab;
 use super::table_tab::{TableTab, TableTabEvent};
@@ -70,6 +71,8 @@ pub struct Session {
     active: usize,
     queries_opened: usize,
     loading: bool,
+    /// The database a ⌘K switch is moving to, until it's done.
+    switching_db: Option<String>,
     /// Why the table list couldn't be loaded; shown in the sidebar with Retry.
     load_error: Option<String>,
     /// Why the database list couldn't be loaded.
@@ -104,6 +107,7 @@ impl Session {
             active: 0,
             queries_opened: 0,
             loading: false,
+            switching_db: None,
             load_error: None,
             dbs_error: None,
             focus: cx.focus_handle(),
@@ -229,6 +233,8 @@ impl Session {
     }
 
     fn switch_database(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.switching_db = Some(name.clone());
+        cx.notify();
         let conn = self.shared.conn.clone();
         let n = name.clone();
         let task = runtime::spawn(async move { exclusive(&conn).await?.use_database(&n).await });
@@ -236,6 +242,7 @@ impl Session {
             let res = task.await;
             this.update_in(cx, |this, window, cx| match res {
                 Ok(()) => {
+                    this.switching_db = None;
                     // Right away, not after the sidebar reload, so a quick
                     // ⌘K already knows which database is current.
                     this.current_db = name.clone();
@@ -251,11 +258,20 @@ impl Session {
                     this.load_objects(window, cx);
                     window.push_notification(format!("Switched to {name}"), cx);
                 }
-                Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
+                Err(e) => {
+                    this.switching_db = None;
+                    cx.notify();
+                    window.push_notification(Notification::error(format!("{e:#}")), cx)
+                }
             })
             .ok();
         })
         .detach();
+    }
+
+    /// While ⌘K is switching: the database it's moving to.
+    pub fn switching_to(&self) -> Option<&str> {
+        self.switching_db.as_deref()
     }
 
     fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
@@ -883,28 +899,43 @@ impl Session {
                     let Ok(Ok(Some(path))) = path.await else {
                         return;
                     };
-                    cx.update(|w, cx| w.push_notification("Backing up…", cx))
+                    let key = path.display().to_string();
+                    let what = format!("Backing up {}…", target.database);
+                    cx.update(|w, cx| loading::busy_toast(&key, what, w, cx))
                         .ok();
                     let p2 = path.clone();
                     let res = runtime::spawn(async move {
                         crate::db::backup::dump(&target, scope, &p2).await
                     })
                     .await;
-                    cx.update(|w, cx| match res {
-                        Ok(()) => {
-                            w.push_notification(
-                                Notification::success(format!(
-                                    "Backup saved to {}",
-                                    path.display()
-                                )),
+                    cx.update(|w, cx| {
+                        loading::end_busy(&key, w, cx);
+                        match res {
+                            Ok(()) => {
+                                let shown = path.display().to_string();
+                                w.push_notification(
+                                    Notification::success(format!("Backup saved to {shown}"))
+                                        .action(move |_, _, _| {
+                                            let path = path.clone();
+                                            Button::new("backup-reveal")
+                                                .cursor_pointer()
+                                                .label(if cfg!(target_os = "macos") {
+                                                    "Show in Finder"
+                                                } else {
+                                                    "Show in folder"
+                                                })
+                                                .outline()
+                                                .xsmall()
+                                                .on_click(move |_, _, cx| cx.reveal_path(&path))
+                                        }),
+                                    cx,
+                                );
+                            }
+                            Err(e) => w.push_notification(
+                                Notification::error(format!("{e:#}")).title("Backup failed"),
                                 cx,
-                            );
-                            cx.reveal_path(&path);
+                            ),
                         }
-                        Err(e) => w.push_notification(
-                            Notification::error(format!("{e:#}")).title("Backup failed"),
-                            cx,
-                        ),
                     })
                     .ok();
                 })
@@ -984,7 +1015,13 @@ impl Session {
                         .show_cancel(true)
                         .on_ok(move |_, window, cx| {
                             let (target, path, me) = (target.clone(), path.clone(), me.clone());
-                            window.push_notification("Restoring…", cx);
+                            let key = format!("restore-{}", path.display());
+                            loading::busy_toast(
+                                &key,
+                                format!("Restoring into {}…", target.database),
+                                window,
+                                cx,
+                            );
                             window
                                 .spawn(cx, async move |cx| {
                                     let res = runtime::spawn(async move {
@@ -992,6 +1029,7 @@ impl Session {
                                     })
                                     .await;
                                     cx.update(|w, cx| {
+                                        loading::end_busy(&key, w, cx);
                                         match res {
                                             Ok(()) => w.push_notification(
                                                 Notification::success("Restore finished"),
@@ -1464,111 +1502,131 @@ impl Session {
                         ),
                 )
             })
-            .child(
-                div().flex_1().min_h_0().px(dp(6.)).child(
-                    tree(&self.tree, move |ix, entry, selected, _, cx| {
-                        let t = tokens(cx);
-                        let id = entry.item().id.clone();
-                        let label = entry.item().label.to_string();
-                        let s = session.clone();
-                        let row = ListItem::new(ix)
-                            .cursor_pointer()
-                            .h(dp(28.))
-                            .py_0()
-                            .rounded(dp(6.))
-                            .pl(dp(8.) + dp(14.) * entry.depth() as f32);
-                        if entry.is_folder() {
-                            // "Tables (14)" → a caps header with the count on the right.
-                            let (name, count) = match label.rsplit_once(" (") {
-                                Some((n, c)) => {
-                                    (n.to_string(), c.trim_end_matches(')').to_string())
+            // The first load and a database switch show placeholder rows; a
+            // plain refresh keeps the list and spins the button.
+            .when(
+                self.switching_db.is_some() || (self.loading && self.objects.is_empty()),
+                |d| d.child(loading::skeleton_list("sidebar-skeleton", 9, cx)),
+            )
+            .when(
+                !(self.switching_db.is_some() || (self.loading && self.objects.is_empty())),
+                |d| {
+                    d.child(
+                        div().flex_1().min_h_0().px(dp(6.)).child(
+                            tree(&self.tree, move |ix, entry, selected, _, cx| {
+                                let t = tokens(cx);
+                                let id = entry.item().id.clone();
+                                let label = entry.item().label.to_string();
+                                let s = session.clone();
+                                let row = ListItem::new(ix)
+                                    .cursor_pointer()
+                                    .h(dp(28.))
+                                    .py_0()
+                                    .rounded(dp(6.))
+                                    .pl(dp(8.) + dp(14.) * entry.depth() as f32);
+                                if entry.is_folder() {
+                                    // "Tables (14)" → a caps header with the count on the right.
+                                    let (name, count) = match label.rsplit_once(" (") {
+                                        Some((n, c)) => {
+                                            (n.to_string(), c.trim_end_matches(')').to_string())
+                                        }
+                                        None => (label.clone(), String::new()),
+                                    };
+                                    // Schema folders keep their name as typed.
+                                    let schema = id.starts_with("s:");
+                                    return row.pr(dp(8.)).child(
+                                        h_flex()
+                                            .w_full()
+                                            .gap(dp(6.))
+                                            .child(
+                                                Icon::new(if entry.is_expanded() {
+                                                    IconName::ChevronDown
+                                                } else {
+                                                    IconName::ChevronRight
+                                                })
+                                                .xsmall()
+                                                .text_color(t.text_faint),
+                                            )
+                                            .child(if schema {
+                                                div()
+                                                    .text_size(dp(12.))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(t.text_secondary)
+                                                    .child(name)
+                                            } else {
+                                                caps(&name, cx)
+                                            })
+                                            .child(div().flex_1())
+                                            .child(
+                                                div()
+                                                    .font_family(
+                                                        cx.theme().mono_font_family.clone(),
+                                                    )
+                                                    .text_size(dp(11.))
+                                                    .text_color(t.text_faint)
+                                                    .child(count),
+                                            ),
+                                    );
                                 }
-                                None => (label.clone(), String::new()),
-                            };
-                            // Schema folders keep their name as typed.
-                            let schema = id.starts_with("s:");
-                            return row.pr(dp(8.)).child(
-                                h_flex()
-                                    .w_full()
-                                    .gap(dp(6.))
+                                let kind = id
+                                    .strip_prefix("o:")
+                                    .and_then(|n| n.parse::<usize>().ok())
+                                    .and_then(|i| kinds.get(i).copied());
+                                let (icon, color) = match kind {
+                                    Some(ObjectKind::View) => (IconName::Eye, t.keyword),
+                                    Some(ObjectKind::Collection) => {
+                                        (IconName::Layers, t.text_muted)
+                                    }
+                                    Some(ObjectKind::Keys) => (IconName::KeyRound, t.text_muted),
+                                    _ => (IconName::Table, t.text_muted),
+                                };
+                                row.selected(selected)
+                                    .pr(dp(8.))
                                     .child(
-                                        Icon::new(if entry.is_expanded() {
-                                            IconName::ChevronDown
-                                        } else {
-                                            IconName::ChevronRight
-                                        })
-                                        .xsmall()
-                                        .text_color(t.text_faint),
+                                        h_flex()
+                                            .gap(dp(8.))
+                                            .text_size(dp(13.))
+                                            .text_color(if selected {
+                                                t.text
+                                            } else {
+                                                t.text_secondary
+                                            })
+                                            .child(Icon::new(icon).small().text_color(
+                                                if selected { t.accent } else { color },
+                                            ))
+                                            .child(div().truncate().child(label)),
                                     )
-                                    .child(if schema {
-                                        div()
-                                            .text_size(dp(12.))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(t.text_secondary)
-                                            .child(name)
-                                    } else {
-                                        caps(&name, cx)
+                                    .on_click(move |_, window, cx| {
+                                        if let Some(i) = id
+                                            .strip_prefix("o:")
+                                            .and_then(|n| n.parse::<usize>().ok())
+                                        {
+                                            s.update(cx, |s, cx| s.open_object(i, window, cx)).ok();
+                                        }
                                     })
-                                    .child(div().flex_1())
-                                    .child(
-                                        div()
-                                            .font_family(cx.theme().mono_font_family.clone())
-                                            .text_size(dp(11.))
-                                            .text_color(t.text_faint)
-                                            .child(count),
-                                    ),
-                            );
-                        }
-                        let kind = id
-                            .strip_prefix("o:")
-                            .and_then(|n| n.parse::<usize>().ok())
-                            .and_then(|i| kinds.get(i).copied());
-                        let (icon, color) = match kind {
-                            Some(ObjectKind::View) => (IconName::Eye, t.keyword),
-                            Some(ObjectKind::Collection) => (IconName::Layers, t.text_muted),
-                            Some(ObjectKind::Keys) => (IconName::KeyRound, t.text_muted),
-                            _ => (IconName::Table, t.text_muted),
-                        };
-                        row.selected(selected)
-                            .pr(dp(8.))
-                            .child(
-                                h_flex()
-                                    .gap(dp(8.))
-                                    .text_size(dp(13.))
-                                    .text_color(if selected { t.text } else { t.text_secondary })
-                                    .child(Icon::new(icon).small().text_color(if selected {
-                                        t.accent
-                                    } else {
-                                        color
-                                    }))
-                                    .child(div().truncate().child(label)),
-                            )
-                            .on_click(move |_, window, cx| {
-                                if let Some(i) =
-                                    id.strip_prefix("o:").and_then(|n| n.parse::<usize>().ok())
-                                {
-                                    s.update(cx, |s, cx| s.open_object(i, window, cx)).ok();
-                                }
                             })
-                    })
-                    .context_menu(move |_, entry, menu, _, cx| {
-                        let Some(i) = entry
-                            .item()
-                            .id
-                            .strip_prefix("o:")
-                            .and_then(|n| n.parse::<usize>().ok())
-                        else {
-                            return menu;
-                        };
-                        match s2
-                            .upgrade()
-                            .and_then(|s| s.read(cx).objects.get(i).cloned())
-                        {
-                            Some(obj) => Session::object_menu(s2.clone(), obj, menu),
-                            None => menu,
-                        }
-                    }),
-                ),
+                            .context_menu(
+                                move |_, entry, menu, _, cx| {
+                                    let Some(i) = entry
+                                        .item()
+                                        .id
+                                        .strip_prefix("o:")
+                                        .and_then(|n| n.parse::<usize>().ok())
+                                    else {
+                                        return menu;
+                                    };
+                                    match s2
+                                        .upgrade()
+                                        .and_then(|s| s.read(cx).objects.get(i).cloned())
+                                    {
+                                        Some(obj) => Session::object_menu(s2.clone(), obj, menu),
+                                        None => menu,
+                                    }
+                                },
+                            ),
+                        ),
+                    )
+                },
             )
             .when(self.is_sql(), |d| {
                 d.child(
