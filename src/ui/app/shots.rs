@@ -179,6 +179,15 @@ fn screenshots() {
     s.settle();
     s.snap("03-home-empty");
 
+    // Settings and the new-connection form, over the empty home.
+    s.in_window(|w, cx| crate::ui::settings_view::SettingsView::open(w, cx));
+    s.snap("21-settings");
+    s.in_window(|w, cx| w.close_dialog(cx));
+    let home = s.cx.update(|cx| s.app.read(cx).home.clone());
+    s.in_window(|w, cx| home.update(cx, |h, cx| h.open_form(None, w, cx)));
+    s.snap("04-new-connection");
+    s.in_window(|w, cx| w.close_dialog(cx));
+
     let cfg = demo_db();
     let app = s.app.clone();
     s.in_window(|w, cx| app.update(cx, |a, cx| a.connect(cfg, w, cx, |_, _, _| {})));
@@ -196,6 +205,10 @@ fn screenshots() {
     let tab = s.cx.update(|cx| session.read(cx).active_table().unwrap());
     s.wait("rows", |cx| tab.read(cx).loaded_rows(cx) > 0);
     s.snap("01-table");
+
+    s.in_window(|w, cx| w.dispatch_action(Box::new(crate::ui::ExportData), cx));
+    s.snap("12-export");
+    s.in_window(|w, cx| w.close_dialog(cx));
 
     // Staged changes: an edited cell, a deleted row, a new row.
     s.in_window(|w, cx| {
@@ -264,4 +277,56 @@ fn screenshots() {
 
     s.in_window(|w, cx| session.update(cx, |s, cx| s.new_query(w, cx)));
     s.snap("02-query");
+
+    // Home with saved connections (not written anywhere).
+    s.cx.update(|cx| {
+        home.update(cx, |h, cx| {
+            for (name, driver, tag, host) in [
+                (
+                    "acme-production",
+                    Driver::Postgres,
+                    crate::db::EnvTag::Production,
+                    "db.acme.internal",
+                ),
+                (
+                    "acme-staging",
+                    Driver::Postgres,
+                    crate::db::EnvTag::Staging,
+                    "staging-db.acme.internal",
+                ),
+                (
+                    "local-dev",
+                    Driver::MySql,
+                    crate::db::EnvTag::Local,
+                    "localhost",
+                ),
+                (
+                    "redis-cache",
+                    Driver::Redis,
+                    crate::db::EnvTag::Development,
+                    "cache.dev.acme.internal",
+                ),
+                (
+                    "events",
+                    Driver::Mongo,
+                    crate::db::EnvTag::Local,
+                    "localhost",
+                ),
+            ] {
+                let mut c = ConnectionConfig::new(driver);
+                c.name = name.into();
+                c.tag = tag;
+                c.host = host.into();
+                h.connections.push(c);
+            }
+            cx.notify();
+        })
+    });
+    s.cx.update(|cx| {
+        s.app.update(cx, |a, cx| {
+            a.active = None;
+            cx.notify();
+        })
+    });
+    s.snap("03-home");
 }
