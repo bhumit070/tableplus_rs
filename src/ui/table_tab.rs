@@ -144,44 +144,94 @@ impl TableTab {
                 .unwrap_or_else(|| div().into_any_element())
         }));
         let w = weak.clone();
-        grid.on_menu = Some(Rc::new(move |row, menu, _, _| {
+        grid.on_menu = Some(Rc::new(move |row, menu, window, cx| {
             let item =
                 |label: &'static str,
-                 f: fn(&mut TableTab, usize, &mut Window, &mut Context<TableTab>)| {
+                 action: fn(&mut TableTab, usize, &mut Window, &mut Context<TableTab>)| {
                     let w = w.clone();
                     PopupMenuItem::new(label).on_click(move |_, window, cx| {
-                        w.update(cx, |t, cx| f(t, row, window, cx)).ok();
+                        w.update(cx, |t, cx| action(t, row, window, cx)).ok();
                     })
                 };
-            menu.item(item("Edit Cell", |t, row, window, cx| {
-                let col = t
-                    .table
-                    .read(cx)
-                    .selected_cell()
-                    .map(|(_, c)| c)
-                    .unwrap_or(0);
-                cell_edit::start_edit(t, row, col, EditStart::Keep, window, cx);
-            }))
-            .item(item("Copy Cell", |t, _, window, cx| {
-                t.copy_cell(window, cx)
-            }))
-            .separator()
-            .map(|menu| copy::copy_items(menu, w.clone(), row))
-            .item(item("Import CSV…", |t, _, window, cx| {
-                t.import_csv(window, cx)
-            }))
-            .separator()
-            .item(item("Set NULL", |t, _, window, cx| t.set_null(window, cx)))
-            .item(item("Duplicate Row", |t, row, _, cx| {
-                t.duplicate_row(row, cx)
-            }))
-            .item(item("Delete Row", |t, row, _, cx| {
-                t.table.update(cx, |tb, cx| {
-                    tb.delegate_mut().toggle_delete(row);
+            // What's under the pointer: "orders #10356", and whether the
+            // cell is a foreign key that can be followed.
+            let (header, on_reference) = w
+                .upgrade()
+                .map(|tab| {
+                    let tab = tab.read(cx);
+                    let table = tab.table.read(cx);
+                    let grid = table.delegate();
+                    let key = grid
+                        .pk
+                        .iter()
+                        .position(|is_key| *is_key)
+                        .and_then(|column| grid.cell_string(row, column));
+                    let column = table.selected_cell().map(|(_, c)| c);
+                    let reference = column.and_then(|c| grid.refs.get(c).cloned().flatten());
+                    let header = match key {
+                        Some(key) => format!("{} #{key}", tab.object.name),
+                        None => format!("{} · row {}", tab.object.name, row + 1),
+                    };
+                    (header, reference)
+                })
+                .unwrap_or_default();
+            menu.label(header)
+                .item(item("Copy Cell", |t, _, window, cx| {
+                    t.copy_cell(window, cx)
+                }))
+                .map(|menu| copy::copy_items(menu, w.clone(), row, window, cx))
+                .separator()
+                .item(item("Row Details", |t, _, _, cx| {
+                    t.show_detail = true;
                     cx.notify();
-                });
-                cx.notify();
-            }))
+                }))
+                .item(item("Edit Cell", |t, row, window, cx| {
+                    let column = t
+                        .table
+                        .read(cx)
+                        .selected_cell()
+                        .map(|(_, c)| c)
+                        .unwrap_or(0);
+                    cell_edit::start_edit(t, row, column, EditStart::Keep, window, cx);
+                }))
+                .item(item("Set NULL", |t, _, window, cx| t.set_null(window, cx)))
+                .item(item("Duplicate Row", |t, row, _, cx| {
+                    t.duplicate_row(row, cx)
+                }))
+                .separator()
+                .item(item("Filter by This Value", |t, row, window, cx| {
+                    t.filter_by_cell(row, window, cx)
+                }))
+                .when_some(on_reference, |menu, table| {
+                    let w = w.clone();
+                    menu.item(
+                        PopupMenuItem::new(format!("Open Referenced Row in {table}")).on_click(
+                            move |_, _, cx| {
+                                w.update(cx, |t, cx| {
+                                    let column = t
+                                        .table
+                                        .read(cx)
+                                        .selected_cell()
+                                        .map(|(_, c)| c)
+                                        .unwrap_or(0);
+                                    t.follow(row, column, cx)
+                                })
+                                .ok();
+                            },
+                        ),
+                    )
+                })
+                .item(item("Import CSV…", |t, _, window, cx| {
+                    t.import_csv(window, cx)
+                }))
+                .separator()
+                .item(item("Delete Row", |t, row, _, cx| {
+                    t.table.update(cx, |table, cx| {
+                        table.delegate_mut().toggle_delete(row);
+                        cx.notify();
+                    });
+                    cx.notify();
+                }))
         }));
 
         let w = weak.clone();
@@ -340,6 +390,24 @@ impl TableTab {
         self.reload_unless_dirty(window, cx, |t| t.page = 0);
     }
 
+    #[cfg(test)]
+    pub fn filter_by_cell_for_test(
+        &mut self,
+        row: usize,
+        column: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.table
+            .update(cx, |table, cx| table.set_selected_cell(row, column, cx));
+        self.filter_by_cell(row, window, cx);
+    }
+
+    #[cfg(test)]
+    pub fn grid_for_test(&self) -> Entity<TableState<Grid>> {
+        self.table.clone()
+    }
+
     /// For screenshots: two conditions, "any", the editor open.
     #[cfg(test)]
     pub fn show_filter_example(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -347,42 +415,8 @@ impl TableTab {
         self.filters.clear();
         self.add_filter(window, cx);
         self.add_filter(window, cx);
-        let set = |row: &FilterRow,
-                   column: &str,
-                   op: FilterOp,
-                   value: &str,
-                   window: &mut Window,
-                   cx: &mut Context<Self>| {
-            let columns = self.table.read(cx).delegate().columns.clone();
-            let index = columns.iter().position(|c| c == column).unwrap_or(0);
-            row.column.update(cx, |state, cx| {
-                state.set_selected_index(Some(IndexPath::new(index)), window, cx)
-            });
-            let ops = self.ops_for(column);
-            let op_index = ops.iter().position(|o| *o == op.label()).unwrap_or(0);
-            row.op.update(cx, |state, cx| {
-                state.set_items(ops, window, cx);
-                state.set_selected_index(Some(IndexPath::new(op_index)), window, cx)
-            });
-            row.value
-                .update(cx, |input, cx| input.set_value(value, window, cx));
-        };
-        set(
-            &self.filters[0],
-            "status",
-            FilterOp::In,
-            "paid, shipped",
-            window,
-            cx,
-        );
-        set(
-            &self.filters[1],
-            "total",
-            FilterOp::Between,
-            "500",
-            window,
-            cx,
-        );
+        self.set_filter_row(0, "status", FilterOp::In, "paid, shipped", window, cx);
+        self.set_filter_row(1, "total", FilterOp::Between, "500", window, cx);
         self.filters[1]
             .value2
             .update(cx, |input, cx| input.set_value("1500", window, cx));
@@ -1152,6 +1186,61 @@ impl TableTab {
             }
         }
         cx.notify();
+    }
+
+    /// Points editor row `index` at `column` `op` `value`.
+    fn set_filter_row(
+        &self,
+        index: usize,
+        column: &str,
+        op: FilterOp,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(row) = self.filters.get(index) else {
+            return;
+        };
+        let columns = self.table.read(cx).delegate().columns.clone();
+        let column_index = columns.iter().position(|c| c == column).unwrap_or(0);
+        row.column.update(cx, |state, cx| {
+            state.set_selected_index(Some(IndexPath::new(column_index)), window, cx)
+        });
+        let ops = self.ops_for(column);
+        let op_index = ops.iter().position(|o| *o == op.label()).unwrap_or(0);
+        row.op.update(cx, |state, cx| {
+            state.set_items(ops, window, cx);
+            state.set_selected_index(Some(IndexPath::new(op_index)), window, cx)
+        });
+        row.value.update(cx, |input, cx| {
+            input.set_value(value.to_string(), window, cx)
+        });
+    }
+
+    /// Row menu "Filter by this value": a condition on the cell's column
+    /// (`is null` for NULL), applied right away.
+    fn filter_by_cell(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let table = self.table.read(cx);
+        let column = table.selected_cell().map(|(_, c)| c).unwrap_or(0);
+        let grid = table.delegate();
+        let Some(name) = grid.columns.get(column).cloned() else {
+            return;
+        };
+        let value = grid.cell_string(row, column);
+        if self.is_dirty(cx) {
+            window.push_notification(
+                Notification::warning("Commit (⌘S) or discard (⌘⇧⌫) your changes first"),
+                cx,
+            );
+            return;
+        }
+        self.add_filter(window, cx);
+        let index = self.filters.len() - 1;
+        match value {
+            Some(value) => self.set_filter_row(index, &name, FilterOp::Eq, &value, window, cx),
+            None => self.set_filter_row(index, &name, FilterOp::IsNull, "", window, cx),
+        }
+        self.reload_unless_dirty(window, cx, |t| t.page = 0);
     }
 
     /// The operators offered for `column` (design.md, answer #18).

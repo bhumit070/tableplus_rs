@@ -134,8 +134,12 @@ actually involved.
 
 ## Copy, export and import
 
-- **Copy as** JSON, INSERT, UPDATE, CSV, Markdown, or a column as an
-  `IN (…)` list.
+- **Row menu** (right-click): what's selected ("orders #10356"), Copy
+  Cell, **Copy as ›** JSON / INSERT / UPDATE / CSV / TSV / Markdown, the
+  column's values as `IN (…)` or the column names, **Copy all rows as ›**,
+  Export…, Row Details, Edit Cell, Set NULL, Duplicate Row, **Filter by
+  This Value** (or `is null`), Open Referenced Row on a foreign key, Import
+  CSV…, and Delete Row (staged).
 - **Export** (⌘⇧E) to CSV, TSV, JSON, JSON Lines, Markdown, HTML or SQL.
   One dialog picks the format, the rows (current filter, whole table, this
   page or the selected row, with counts), format options (header row,

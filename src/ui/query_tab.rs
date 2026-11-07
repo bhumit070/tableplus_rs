@@ -173,7 +173,7 @@ impl QueryTab {
         });
         let weak = cx.entity().downgrade();
         let mut grid = Grid::default();
-        grid.on_menu = Some(Rc::new(move |row, menu, _, _| {
+        grid.on_menu = Some(Rc::new(move |row, menu, window, cx| {
             let w = weak.clone();
             menu.item(
                 PopupMenuItem::new("Copy Cell").on_click(move |_, window, cx| {
@@ -188,7 +188,7 @@ impl QueryTab {
                 }),
             )
             .separator()
-            .map(|menu| copy::copy_items(menu, weak.clone(), row))
+            .map(|menu| copy::copy_items(menu, weak.clone(), row, window, cx))
         }));
         let grid = cx.new(|cx| {
             TableState::new(grid, window, cx)

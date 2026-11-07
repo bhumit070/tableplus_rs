@@ -1160,6 +1160,7 @@ mod tests {
 
     use gpui::{TestAppContext, VisualTestContext};
     use gpui_component::Root;
+    use gpui_component::menu::PopupMenu;
 
     use super::*;
     use crate::db::{ConnectionConfig, Driver, EnvTag};
@@ -2410,6 +2411,56 @@ mod tests {
         for f in [file, csv, tsv] {
             let _ = std::fs::remove_file(f);
         }
+    }
+
+    /// The row menu builds (with its Copy as submenus), and "Filter by this
+    /// value" narrows to the cell's value, or to NULL.
+    #[gpui::test]
+    fn row_menu_and_filter_by_value(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = temp_dir().join(format!("tabula-ui-rowmenu-{}.db", cfg.id));
+        write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute("create table t (id integer primary key, a text); insert into t (a) values ('x'), ('y'), ('x'), (null)")
+                .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("t").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let i = s.object_index("t").unwrap();
+            s.open_object(i, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        let rows = |cx: &mut VisualTestContext| tab.read_with(cx, |t, cx| t.loaded_rows(cx));
+        wait_until(&mut cx, "rows", |cx| rows(cx) == 4);
+
+        let grid = tab.read_with(&cx, |t, _| t.grid_for_test());
+        let on_menu = grid.read_with(&cx, |g, _| g.delegate().on_menu.clone().unwrap());
+        cx.update(|window, cx| {
+            PopupMenu::build(window, cx, |menu, window, cx| on_menu(0, menu, window, cx));
+        });
+
+        tab.update_in(&mut cx, |t, w, cx| t.filter_by_cell_for_test(0, 1, w, cx));
+        wait_until(&mut cx, "x rows", |cx| rows(cx) == 2);
+        tab.update_in(&mut cx, |t, w, cx| t.clear_filters(w, cx));
+        wait_until(&mut cx, "all rows", |cx| rows(cx) == 4);
+        tab.update_in(&mut cx, |t, w, cx| t.filter_by_cell_for_test(3, 1, w, cx));
+        wait_until(&mut cx, "null row", |cx| rows(cx) == 1);
+        let _ = remove_file(file);
     }
 
     /// Enum columns edit with a dropdown of their values: typing jumps to a

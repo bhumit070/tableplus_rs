@@ -71,74 +71,146 @@ fn copy(text: String, what: &str, window: &mut Window, cx: &mut App) {
 type Action<H> = Rc<dyn Fn(&H, &mut Window, &mut App)>;
 
 /// Copy items for the right-clicked `row` (and the selected column).
-pub fn copy_items<H: ExportHost>(menu: PopupMenu, host: WeakEntity<H>, row: usize) -> PopupMenu {
-    let item = |label: String, f: Action<H>| {
+/// Row `row` as one-line `format` text (no header line).
+fn row_as<H: ExportHost>(host: &H, format: Format, row: usize, cx: &App) -> String {
+    let grid = host.export_grid().read(cx).delegate();
+    let target = host.sql_target(cx);
+    let options = export::Options {
+        header: false,
+        pretty: true,
+    };
+    let mut encoder = export::Encoder::new(format, &grid.columns, &target).options(options);
+    let mut text = encoder.header();
+    text.push_str(&encoder.rows(&[grid.row_values(row)]));
+    text.push_str(&encoder.footer());
+    text.trim_end().to_string()
+}
+
+/// "Copy as ›" (row `row`) and "Copy all as ›" submenus, then Export…
+/// (design.md screen 09); shared by table tabs and query results.
+pub fn copy_items<H: ExportHost>(
+    menu: PopupMenu,
+    host: WeakEntity<H>,
+    row: usize,
+    window: &mut Window,
+    cx: &mut App,
+) -> PopupMenu {
+    let item = |label: &str, action: Action<H>| {
         let host = host.clone();
-        PopupMenuItem::new(label).on_click(move |_, window, cx| {
-            if let Some(h) = host.upgrade() {
-                h.update(cx, |h, cx| f(h, window, cx));
+        PopupMenuItem::new(label.to_string()).on_click(move |_, window, cx| {
+            if let Some(host) = host.upgrade() {
+                host.update(cx, |host, cx| action(host, window, cx));
             }
         })
     };
-    let label = |s: &str| s.to_string();
-    menu.item(item(
-        label("Copy Row as JSON"),
-        Rc::new(move |h: &H, w, cx| {
-            let g = h.export_grid().read(cx).delegate();
-            let text = export::render(
-                Format::Json,
-                &g.columns,
-                &[g.row_values(row)],
-                &h.sql_target(cx),
-            );
-            // A single object, not a one-element array.
-            let v: Value = from_str(&text).unwrap_or_default();
-            let text = to_string_pretty(&v[0]).unwrap_or_default();
-            copy(text, "row as JSON", w, cx)
-        }),
-    ))
-    .item(item(
-        label("Copy Row as INSERT"),
-        Rc::new(move |h: &H, w, cx| {
-            let g = h.export_grid().read(cx).delegate();
-            let text = export::inserts(&h.sql_target(cx), &g.columns, &[g.row_values(row)]);
-            copy(text, "row as INSERT", w, cx)
-        }),
-    ))
-    .item(item(
-        label("Copy Row as UPDATE"),
-        Rc::new(move |h: &H, w, cx| {
-            let g = h.export_grid().read(cx).delegate();
-            let text = export::updates(&h.sql_target(cx), &g.columns, &g.pk, &[g.row_values(row)]);
-            copy(text, "row as UPDATE", w, cx)
-        }),
-    ))
-    .item(item(
-        label("Copy Column as IN (…)"),
-        Rc::new(move |h: &H, w, cx| {
-            let t = h.export_grid().read(cx);
-            let col = t.selected_cell().map(|(_, c)| c).unwrap_or(0);
-            let text = export::in_list(h.sql_target(cx).driver, &t.delegate().column_values(col));
-            copy(text, "column values", w, cx)
-        }),
-    ))
-    .separator()
-    .item(item(
-        label("Copy All as CSV"),
-        Rc::new(|h: &H, w, cx| copy_all(h, Format::Csv, w, cx)),
-    ))
-    .item(item(
-        label("Copy All as Markdown"),
-        Rc::new(|h: &H, w, cx| copy_all(h, Format::Markdown, w, cx)),
-    ))
-    .item(item(
-        label("Copy All as INSERT"),
-        Rc::new(|h: &H, w, cx| copy_all(h, Format::SqlInsert, w, cx)),
-    ))
-    .item(item(
-        label("Export…"),
-        Rc::new(|h: &H, w, cx| open_export(h, w, cx)),
-    ))
+    let row_menu = PopupMenu::build(window, cx, |menu, _, _| {
+        menu.item(item(
+            "JSON",
+            Rc::new(move |host: &H, window, cx| {
+                let text = export::render(
+                    Format::Json,
+                    &host.export_grid().read(cx).delegate().columns,
+                    &[host.export_grid().read(cx).delegate().row_values(row)],
+                    &host.sql_target(cx),
+                );
+                // A single object, not a one-element array.
+                let value: Value = from_str(&text).unwrap_or_default();
+                copy(
+                    to_string_pretty(&value[0]).unwrap_or_default(),
+                    "row as JSON",
+                    window,
+                    cx,
+                )
+            }),
+        ))
+        .item(item(
+            "INSERT",
+            Rc::new(move |host: &H, window, cx| {
+                let grid = host.export_grid().read(cx).delegate();
+                let text =
+                    export::inserts(&host.sql_target(cx), &grid.columns, &[grid.row_values(row)]);
+                copy(text, "row as INSERT", window, cx)
+            }),
+        ))
+        .item(item(
+            "UPDATE",
+            Rc::new(move |host: &H, window, cx| {
+                let grid = host.export_grid().read(cx).delegate();
+                let text = export::updates(
+                    &host.sql_target(cx),
+                    &grid.columns,
+                    &grid.pk,
+                    &[grid.row_values(row)],
+                );
+                copy(text, "row as UPDATE", window, cx)
+            }),
+        ))
+        .item(item(
+            "CSV",
+            Rc::new(move |host: &H, window, cx| {
+                copy(row_as(host, Format::Csv, row, cx), "row as CSV", window, cx)
+            }),
+        ))
+        .item(item(
+            "TSV",
+            Rc::new(move |host: &H, window, cx| {
+                copy(row_as(host, Format::Tsv, row, cx), "row as TSV", window, cx)
+            }),
+        ))
+        .item(item(
+            "Markdown",
+            Rc::new(move |host: &H, window, cx| {
+                copy(
+                    row_as(host, Format::Markdown, row, cx),
+                    "row as Markdown",
+                    window,
+                    cx,
+                )
+            }),
+        ))
+        .separator()
+        .item(item(
+            "Column values as IN (…)",
+            Rc::new(move |host: &H, window, cx| {
+                let table = host.export_grid().read(cx);
+                let column = table.selected_cell().map(|(_, c)| c).unwrap_or(0);
+                let text = export::in_list(
+                    host.sql_target(cx).driver,
+                    &table.delegate().column_values(column),
+                );
+                copy(text, "column values", window, cx)
+            }),
+        ))
+        .item(item(
+            "Column names",
+            Rc::new(move |host: &H, window, cx| {
+                let names = host.export_grid().read(cx).delegate().columns.join(", ");
+                copy(names, "column names", window, cx)
+            }),
+        ))
+    });
+    let all_menu = PopupMenu::build(window, cx, |menu, _, _| {
+        [
+            ("CSV", Format::Csv),
+            ("TSV", Format::Tsv),
+            ("JSON", Format::Json),
+            ("Markdown", Format::Markdown),
+            ("INSERT", Format::SqlInsert),
+        ]
+        .into_iter()
+        .fold(menu, |menu, (label, format)| {
+            menu.item(item(
+                label,
+                Rc::new(move |host: &H, window, cx| copy_all(host, format, window, cx)),
+            ))
+        })
+    });
+    menu.item(PopupMenuItem::submenu("Copy as", row_menu))
+        .item(PopupMenuItem::submenu("Copy all rows as", all_menu))
+        .item(item(
+            "Export…",
+            Rc::new(|host: &H, window, cx| open_export(host, window, cx)),
+        ))
 }
 
 fn copy_all<H: ExportHost>(h: &H, f: Format, window: &mut Window, cx: &mut App) {
