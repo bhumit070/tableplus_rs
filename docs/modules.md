@@ -35,6 +35,7 @@ also starts with a `//!` comment saying the same in more detail.
 | `explain.rs` | ~320 | EXPLAIN output → `PlanNode` tree for each database. |
 | `ddl.rs` | ~260 | CREATE / ALTER TABLE for the table editor. |
 | `target.rs` | ~250 | Finds the table a SELECT reads from (editable results). |
+| `url.rs` | ~280 | Reads a pasted connection URL into form fields; the password comes back separately, so it only reaches the keychain. |
 | `backup.rs` | ~310 | Backup / restore with `pg_dump`, `psql`, `mysqldump`, `mysql`; SQLite `VACUUM INTO`. |
 | `it.rs` | ~1,220 | Tests only: end-to-end checks against real servers (`TABULA_IT=1`). |
 
@@ -45,7 +46,7 @@ also starts with a `//!` comment saying the same in more detail.
 | `mod.rs` | ~430 | Actions, key bindings, `Shared` (one open connection), `guarded` (safe-mode prompts), `prompt_text`, colors. |
 | `app.rs` | ~1,800 | `AppView`: window root, connection rail, connecting (incl. SSH host-key prompts), session save / restore, global shortcut routing, theme and zoom. Also the UI tests. |
 | `home.rs` | ~660 | Start screen: saved connections and TablePlus import. |
-| `conn_form.rs` | ~510 | New / edit connection form. |
+| `conn_form.rs` | ~960 | New / edit connection form: engine tiles, connection URL, environment, safe mode, SSH section, inline Test connection. |
 | `session.rs` | ~1,890 | One open connection: sidebar tree, database / schema switching, tabs, history / saved-query pickers, backup / restore, create / drop database, sidebar menus. |
 | `table_tab.rs` | ~1,500 | Table tab: filters, grid, pager, Structure view, commit, CSV import, foreign-key navigation. |
 | `query_tab.rs` | ~1,170 | Query tab: editor, run / stop, result tabs, editable results, EXPLAIN view. |

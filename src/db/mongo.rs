@@ -170,7 +170,8 @@ fn take_call(s: &str, open: usize) -> Result<(&str, &str)> {
 impl MongoConn {
     pub async fn connect(cfg: &ConnectionConfig) -> Result<Self> {
         let uri = if cfg.host.starts_with("mongodb") {
-            cfg.host.clone()
+            // A pasted URI is saved without its password (db/url.rs).
+            super::url::with_password(&cfg.host, &cfg.password)
         } else {
             let auth = if cfg.user.is_empty() {
                 String::new()

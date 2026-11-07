@@ -1754,6 +1754,54 @@ mod tests {
         let _ = std::fs::remove_file(file);
     }
 
+    /// Pasting a connection URL fills the form; Save keeps the password
+    /// out of the saved connection list.
+    #[gpui::test]
+    fn connection_url_fills_the_form(cx: &mut TestAppContext) {
+        let (app, mut cx) = open(cx);
+        let home = app.read_with(&cx, |a, _| a.home.clone());
+        let save = |cx: &mut VisualTestContext| {
+            cx.run_until_parked();
+            let b = cx.debug_bounds("conn-save").expect("save drawn");
+            cx.simulate_click(b.center(), gpui::Modifiers::none());
+            // Let the dialog finish closing.
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(1));
+            cx.run_until_parked();
+        };
+
+        home.update_in(&mut cx, |h, w, cx| h.open_form(None, w, cx));
+        cx.run_until_parked();
+        // The URL field has focus on a new connection; a paste fills the form.
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+            "mysql://ada:s%40cret@db.internal:3307/shop?ssl-mode=REQUIRED".into(),
+        ));
+        cx.simulate_keystrokes("cmd-v");
+        save(&mut cx);
+        let c = home.read_with(&cx, |h, _| h.connections.last().cloned().unwrap());
+        assert_eq!(c.driver, Driver::MySql);
+        assert_eq!((c.host.as_str(), c.port), ("db.internal", 3307));
+        assert_eq!((c.user.as_str(), c.database.as_str()), ("ada", "shop"));
+        assert_eq!(c.name, "shop");
+        assert!(c.ssl);
+        assert_eq!(c.password, "s@cret");
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("s@cret"), "{json}");
+
+        home.update_in(&mut cx, |h, w, cx| h.open_form(None, w, cx));
+        cx.run_until_parked();
+        // Typed: nothing happens until Enter.
+        cx.simulate_input("sqlite:///tmp/tabula-url-test.db");
+        cx.run_until_parked();
+        assert_eq!(home.read_with(&cx, |h, _| h.connections.len()), 1);
+        cx.simulate_keystrokes("enter");
+        save(&mut cx);
+        let c = home.read_with(&cx, |h, _| h.connections.last().cloned().unwrap());
+        assert_eq!(c.driver, Driver::Sqlite);
+        assert_eq!(c.file, "/tmp/tabula-url-test.db");
+        assert_eq!(c.name, "tabula-url-test");
+    }
+
     /// The export dialog writes the filtered rows by default, the whole
     /// table when asked, in the chosen format and to the typed path.
     #[gpui::test]

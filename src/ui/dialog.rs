@@ -3,9 +3,11 @@
 //! the actions on the right. Plus the controls dialogs share: section
 //! labels, segmented controls and selectable tiles.
 
+use std::rc::Rc;
+
 use gpui::{
     AnyElement, App, Div, ElementId, FontWeight, IntoElement, ParentElement as _, Pixels,
-    SharedString, Stateful, Styled as _, div, prelude::*, px,
+    SharedString, Stateful, Styled as _, Window, div, prelude::*, px,
 };
 use gpui_component::dialog::Dialog;
 use gpui_component::{Icon, Sizable as _, h_flex, v_flex};
@@ -25,6 +27,9 @@ pub fn shell(dialog: Dialog, w: Pixels, cx: &App) -> Dialog {
     dialog
         .w(w)
         .close_button(false)
+        // Enter belongs to the fields (a URL field applies on Enter); a
+        // stray Enter must never close a form and lose what was typed.
+        .on_ok(|_, _, _| false)
         .bg(t.sidebar)
         .border_color(t.border)
         .rounded(dp(14.))
@@ -76,6 +81,55 @@ pub fn footer(hint: impl Into<SharedString>, actions: Vec<AnyElement>, cx: &App)
 /// A labelled block: caps label, then the content.
 pub fn section(label: &str, content: impl IntoElement, cx: &App) -> Div {
     v_flex().gap(dp(8.)).child(caps(label, cx)).child(content)
+}
+
+pub type OnSelect = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+
+/// A segmented control (design.md, Components): `bg/surface`, 1px border,
+/// 3px inset; the active segment is `bg/hover` with primary text.
+pub fn segmented(
+    id: &'static str,
+    labels: &[&str],
+    selected: usize,
+    on_select: OnSelect,
+    cx: &App,
+) -> Stateful<Div> {
+    let t = tokens(cx);
+    h_flex()
+        .id(id)
+        .p(dp(3.))
+        .gap(dp(2.))
+        .rounded(dp(7.))
+        .bg(t.surface)
+        .border_1()
+        .border_color(t.border)
+        .children(labels.iter().enumerate().map(|(i, label)| {
+            let on_select = on_select.clone();
+            let active = i == selected;
+            div()
+                .id(ElementId::NamedInteger(id.into(), i as u64))
+                .debug_selector(move || format!("{id}-{i}"))
+                .flex_1()
+                .flex()
+                .justify_center()
+                .items_center()
+                .h(dp(24.))
+                .px(dp(10.))
+                .rounded(dp(5.))
+                .cursor_pointer()
+                .text_size(dp(12.))
+                .when(active, |d| {
+                    d.bg(t.hover)
+                        .text_color(t.text)
+                        .font_weight(FontWeight::MEDIUM)
+                })
+                .when(!active, |d| {
+                    d.text_color(t.text_secondary)
+                        .hover(|s| s.text_color(t.text))
+                })
+                .on_click(move |_, window, cx| on_select(i, window, cx))
+                .child(label.to_string())
+        }))
 }
 
 /// A selectable tile: icon, label and a muted line (format and engine

@@ -15,6 +15,7 @@ pub mod split;
 mod sql;
 pub mod ssh;
 pub mod target;
+pub mod url;
 
 use std::time::Instant;
 
@@ -206,7 +207,7 @@ impl SafeMode {
 
     pub fn label(self) -> &'static str {
         match self {
-            SafeMode::Auto => "Automatic (confirm writes on Production)",
+            SafeMode::Auto => "Automatic",
             SafeMode::Off => "Off",
             SafeMode::ConfirmWrites => "Confirm writes",
             SafeMode::ConfirmAll => "Confirm every query",

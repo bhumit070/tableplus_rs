@@ -187,6 +187,23 @@ fn screenshots() {
     s.in_window(|w, cx| home.update(cx, |h, cx| h.open_form(None, w, cx)));
     s.snap("04-new-connection");
     s.in_window(|w, cx| w.close_dialog(cx));
+    // Editing: production, with an SSH tunnel.
+    let mut edit = crate::db::ConnectionConfig::new(crate::db::Driver::Postgres);
+    edit.name = "acme-production".into();
+    edit.host = "10.0.4.12".into();
+    edit.user = "app".into();
+    edit.database = "shop".into();
+    edit.tag = crate::db::EnvTag::Production;
+    edit.ssl = true;
+    edit.ssh = Some(crate::db::ssh::SshConfig {
+        host: "bastion.acme.dev".into(),
+        port: 22,
+        user: "deploy".into(),
+        ..Default::default()
+    });
+    s.in_window(|w, cx| home.update(cx, |h, cx| h.open_form(Some(edit), w, cx)));
+    s.snap("04-edit-connection");
+    s.in_window(|w, cx| w.close_dialog(cx));
 
     let cfg = demo_db();
     let app = s.app.clone();

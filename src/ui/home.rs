@@ -91,57 +91,18 @@ impl Home {
             );
             return;
         }
-        let form = cx.new(|cx| ConnForm::new(cfg, window, cx));
         let home = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, _| {
-            let (f1, f2) = (form.clone(), form.clone());
-            let (h1, h2) = (home.clone(), home.clone());
-            dialog
-                .title(if is_new {
-                    "New Connection"
-                } else {
-                    "Edit Connection"
+        let on_done: super::conn_form::OnDone =
+            std::rc::Rc::new(move |cfg, connect, window, cx| {
+                home.update(cx, |h, cx| {
+                    h.upsert(&cfg, window, cx);
+                    if connect {
+                        h.connect(cfg.clone(), window, cx);
+                    }
                 })
-                .w(px(560.))
-                .child(form.clone())
-                .footer(
-                    DialogFooter::new()
-                        .child(
-                            Button::new("cancel")
-                                .cursor_pointer()
-                                .label("Cancel")
-                                .small()
-                                .on_click(|_, w, cx| w.close_dialog(cx)),
-                        )
-                        .child(
-                            Button::new("save")
-                                .cursor_pointer()
-                                .label("Save")
-                                .small()
-                                .on_click(move |_, window, cx| {
-                                    let cfg = f1.read(cx).config(cx);
-                                    h1.update(cx, |h, cx| h.upsert(&cfg, window, cx)).ok();
-                                    window.close_dialog(cx);
-                                }),
-                        )
-                        .child(
-                            Button::new("connect")
-                                .cursor_pointer()
-                                .label("Connect")
-                                .primary()
-                                .small()
-                                .on_click(move |_, window, cx| {
-                                    let cfg = f2.read(cx).config(cx);
-                                    h2.update(cx, |h, cx| {
-                                        h.upsert(&cfg, window, cx);
-                                        h.connect(cfg.clone(), window, cx);
-                                    })
-                                    .ok();
-                                    window.close_dialog(cx);
-                                }),
-                        ),
-                )
-        });
+                .ok();
+            });
+        ConnForm::open(cfg, is_new, on_done, window, cx);
     }
 
     pub fn connect(

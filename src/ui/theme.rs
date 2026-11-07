@@ -13,7 +13,7 @@ use gpui::{
 use gpui_component::{ActiveTheme as _, Theme, ThemeRegistry};
 use gpui_kit_assets::IconName;
 
-use crate::db::{ConnectionConfig, EnvTag, SafeMode};
+use crate::db::{ConnectionConfig, Driver, EnvTag, SafeMode};
 
 const THEMES: &str = include_str!("../../assets/themes/tabula.json");
 const DARK: &str = "Tabula Dark";
@@ -254,6 +254,48 @@ pub fn enum_color(value: &str, cx: &App) -> Hsla {
         (h ^ b as u32).wrapping_mul(0x01000193)
     });
     palette[hash as usize % palette.len()]
+}
+
+/// An engine's badge colour (design.md, screen 03): Postgres blue, MySQL
+/// orange, SQLite teal, Redis red, MongoDB green.
+pub fn engine_color(driver: Driver, cx: &App) -> Hsla {
+    let t = tokens(cx);
+    match driver {
+        Driver::Postgres => t.info,
+        Driver::MySql if cx.theme().mode.is_dark() => gpui::rgb(0xF29D4B).into(),
+        Driver::MySql => gpui::rgb(0xC2762B).into(),
+        Driver::Sqlite => t.number,
+        Driver::Redis => t.danger,
+        Driver::Mongo => t.success,
+    }
+}
+
+/// The two letters on an engine badge.
+pub fn engine_initials(driver: Driver) -> &'static str {
+    match driver {
+        Driver::Postgres => "PG",
+        Driver::MySql => "MY",
+        Driver::Sqlite => "SQ",
+        Driver::Redis => "RD",
+        Driver::Mongo => "MG",
+    }
+}
+
+/// A square engine badge: initials on a tint of the engine colour.
+pub fn engine_badge(driver: Driver, size: f32, cx: &App) -> Div {
+    let color = engine_color(driver, cx);
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(dp(size))
+        .rounded(dp(size * 0.28))
+        .bg(color.opacity(0.16))
+        .text_color(color)
+        .text_size(dp(size * 0.36))
+        .font_weight(FontWeight::BOLD)
+        .child(engine_initials(driver))
 }
 
 /// Where saved passwords live on this platform.

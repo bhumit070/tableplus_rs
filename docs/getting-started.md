@@ -62,17 +62,23 @@ Download the file for your platform from the
 ## Add a connection
 
 1. On the start screen, click **New Connection**.
-2. Pick the database type and fill in host, port, user, password and
-   database (or the file, for SQLite).
+2. Pick the engine, then fill in host, port, user, password and database
+   (or the file, for SQLite). Or paste a connection URL
+   (`postgres://user:pass@host:5432/db`, `mysql://…`, `redis://…`,
+   `mongodb://…`, `sqlite:///path/to.db`) into the URL field and the form
+   fills itself in; type one and press ↵ to do the same. A password in the
+   URL goes to the password field only.
 3. Optional:
-    - **Tag** the environment (local → production). *Production* makes
-      Tabula ask before anything that writes (see
+    - **Environment** (Local, Dev, Staging, Prod). *Prod* makes Tabula ask
+      before anything that writes (see
       [safe mode](architecture/safety.md#safe-mode)).
-    - **Require encrypted connection** turns on TLS, and **Verify server
+    - **Require SSL / TLS** turns on TLS, and **Verify server
       certificate** also checks the server's certificate and host name.
-    - **Connect through an SSH tunnel**: password, private key, or
-      ssh-agent (see [SSH tunnels](architecture/ssh.md)).
-4. **Test** checks the settings; **Save** or **Connect** keeps them.
+    - **SSH tunnel**: password, key file, or agent (see
+      [SSH tunnels](architecture/ssh.md)).
+4. **Test connection** shows the server version and how long connecting
+   took, or the error (with **Details**). **Save** keeps the connection;
+   **Save & connect** (⌘↵) also opens it.
 
 The password goes to the operating system's credential store (Keychain on
 macOS, Credential Manager on Windows, Secret Service on Linux), never into

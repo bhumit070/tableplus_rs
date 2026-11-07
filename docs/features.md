@@ -11,6 +11,11 @@
   query text, reopen at launch (can be turned off in Settings).
 - **SSH tunnels** with password, private key (with passphrase) or
   ssh-agent. Host keys are checked; a dead tunnel is reopened automatically.
+- **Paste a connection URL** (`postgres://`, `mysql://`, `redis://`,
+  `mongodb://`, `sqlite:`) to fill in the connection form; a password in
+  the URL is stored only in the system keychain.
+- **Test connection** in the form reports the server version and latency,
+  or the error with details.
 - **Import from TablePlus**, including passwords from export files.
 
 ## Browsing and editing data
