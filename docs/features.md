@@ -28,8 +28,17 @@
   supports it.
 - **Inline cell editing:** Enter or typing starts editing, Tab / ⇧Tab move
   between cells, Esc cancels. Multi-line values open a larger editor.
-  Enum columns (PostgreSQL and MySQL) open a dropdown of their values,
-  plus NULL when the column allows it.
+  Enum columns (PostgreSQL and MySQL), and columns limited by a
+  `CHECK (col IN (…))` on any SQL database, open a dropdown of their values
+  (1–9 pick, a letter jumps), plus NULL when the column allows it. Booleans
+  get true / false (/ NULL), and Space flips one without opening it.
+- **Checked as you type:** whole numbers and their range, decimals (with the
+  stored form, e.g. "saved as 118.40"), `varchar(n)` length with a live
+  counter, JSON and UUIDs. ↵ / Tab won't save an invalid value; ↑ / ↓ step a
+  number (⇧ by 10); UUID cells have *Generate*.
+- **⌥⌫** sets the selected cell to NULL; **⌥↵** opens the bigger editor,
+  which JSON cells use by default: highlighted, *Format*, live validity,
+  *Set NULL*.
 - **Row detail panel** (⌘⇧I): every field of the selected row, with JSON
   pretty-printed.
 - **Foreign keys:** a → in a foreign-key cell opens the referenced row.

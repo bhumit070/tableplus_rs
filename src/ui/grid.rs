@@ -19,6 +19,7 @@ use gpui_component::{ActiveTheme as _, Icon, Sizable as _, Size, WindowExt as _,
 use gpui_kit_assets::IconName;
 
 use super::cell_edit::CellEditor;
+use super::cell_value::check;
 use super::theme::{Tokens, dp, enum_color, tokens};
 use crate::db::{Change, ColumnInfo, QueryResult};
 
@@ -125,9 +126,9 @@ fn marker(text: &'static str, fg: Hsla, bg: Hsla) -> gpui::Div {
 /// The pill an enum value is shown as: a coloured dot and the value.
 pub fn enum_pill(value: &str, cx: &App) -> gpui::Div {
     let color = enum_color(value, cx);
+    // Natural width: enum columns are sized to their longest value.
     h_flex()
         .flex_none()
-        .min_w_0()
         .h(dp(19.))
         .px(dp(7.))
         .gap(dp(5.))
@@ -136,7 +137,7 @@ pub fn enum_pill(value: &str, cx: &App) -> gpui::Div {
         .text_color(color)
         .text_size(dp(11.5))
         .child(div().flex_none().size(dp(6.)).rounded_full().bg(color))
-        .child(div().truncate().child(value.to_string()))
+        .child(div().whitespace_nowrap().child(value.to_string()))
 }
 
 /// A checkbox with the literal next to it, so true / false / NULL are never
@@ -274,6 +275,38 @@ impl Grid {
             .iter()
             .map(|name| refs.iter().find(|(c, _)| c == name).map(|(_, t)| t.clone()))
             .collect();
+        // Booleans edit with a true / false (/ NULL) dropdown, in the
+        // spelling the column already uses.
+        for c in 0..self.columns.len() {
+            if kind_of_type(&self.types[c]) != Some(Kind::Bool)
+                || self.choices.get(c).is_some_and(|o| !o.is_empty())
+            {
+                continue;
+            }
+            let numeric = self
+                .rows
+                .iter()
+                .take(200)
+                .filter_map(|r| r[c].as_deref())
+                .any(|v| v == "1" || v == "0")
+                || self.types[c].to_ascii_lowercase().starts_with("tinyint")
+                || self.types[c].to_ascii_lowercase().starts_with("bit");
+            let (yes, no) = if numeric {
+                ("1", "0")
+            } else {
+                ("true", "false")
+            };
+            let nullable = table
+                .iter()
+                .find(|t| t.name == self.columns[c])
+                .is_none_or(|t| t.nullable);
+            if let Some(slot) = self.choices.get_mut(c) {
+                *slot = vec![Some(yes.into()), Some(no.into())];
+                if nullable {
+                    slot.push(None);
+                }
+            }
+        }
         // The second header line and "→ table" need room too.
         for c in 0..self.columns.len() {
             let sub = self.types[c].chars().count()
@@ -290,10 +323,14 @@ impl Grid {
     fn update_kinds(&mut self) {
         self.kinds = (0..self.columns.len())
             .map(|c| {
+                let typed = self.types.get(c).and_then(|t| kind_of_type(t));
+                if typed == Some(Kind::Bool) {
+                    return Kind::Bool;
+                }
                 if self.choices.get(c).is_some_and(|ch| !ch.is_empty()) {
                     return Kind::Enum;
                 }
-                if let Some(k) = self.types.get(c).and_then(|t| kind_of_type(t)) {
+                if let Some(k) = typed {
                     return k;
                 }
                 let mut values = self.rows.iter().take(200).filter_map(|r| r[c].as_deref());
@@ -305,6 +342,24 @@ impl Grid {
                 }
             })
             .collect();
+        // Pills need room for their dot and padding.
+        for c in 0..self.columns.len() {
+            if self.kinds[c] != Kind::Enum {
+                continue;
+            }
+            let longest = self
+                .rows
+                .iter()
+                .take(100)
+                .filter_map(|r| r[c].as_deref())
+                .chain(self.choices[c].iter().flatten().map(String::as_str))
+                .map(|v| v.chars().take(40).count())
+                .max()
+                .unwrap_or(0);
+            if let Some(w) = self.widths.get_mut(c) {
+                *w = w.max((longest as f32 * 7.4 + 56.).min(380.));
+            }
+        }
     }
 
     pub fn kind(&self, c: usize) -> Kind {
@@ -482,6 +537,146 @@ impl Grid {
     }
 }
 
+impl Grid {
+    /// The cell being edited: a 2px accent border (red while the value is
+    /// invalid), the editor, and under the cell what's wrong or a hint
+    /// (design.md, Cell editors #1–4, #10).
+    fn render_editor(
+        &self,
+        col_ix: usize,
+        editor: &CellEditor,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        let t = tokens(cx);
+        let cell = h_flex()
+            .size_full()
+            .relative()
+            .key_context("CellEditor")
+            .bg(t.canvas)
+            .border_2();
+        let input = match editor {
+            CellEditor::Choice(choices) => {
+                return cell
+                    .border_color(t.accent)
+                    .child(choices.clone())
+                    .into_any_element();
+            }
+            CellEditor::Text(input) => input.clone(),
+        };
+        let ty = self.types.get(col_ix).cloned().unwrap_or_default();
+        let checked = check(&ty, &input.read(cx).value());
+        let number = self.kind(col_ix) == Kind::Number;
+        let uuid = ty.eq_ignore_ascii_case("uuid");
+        let note = checked
+            .error
+            .clone()
+            .map(|e| (e, true))
+            .or(checked.hint.clone().map(|h| (h, false)));
+        let stepper = input.clone();
+        cell.border_color(if checked.error.is_some() {
+            t.danger
+        } else {
+            t.accent
+        })
+        .font_family(cx.theme().mono_font_family.clone())
+        // ↑ / ↓ step a number by 1, with ⇧ by 10.
+        .when(number, |d| {
+            d.capture_key_down(move |ev, window, cx| {
+                let k = &ev.keystroke;
+                let dir = match k.key.as_str() {
+                    "up" => 1.,
+                    "down" => -1.,
+                    _ => return,
+                };
+                if k.modifiers.platform || k.modifiers.alt || k.modifiers.control {
+                    return;
+                }
+                let step = if k.modifiers.shift { 10. } else { 1. };
+                let now = stepper.read(cx).value().trim().to_string();
+                let Ok(n) = now.parse::<f64>() else { return };
+                let decimals = now.split_once('.').map_or(0, |(_, f)| f.len());
+                let next = format!("{:.*}", decimals, n + dir * step);
+                window.prevent_default();
+                cx.stop_propagation();
+                stepper.update(cx, |i, cx| i.set_value(next, window, cx));
+            })
+        })
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .child(Input::new(&input).appearance(false).h_full()),
+        )
+        .when(uuid, |d| {
+            let target = input.clone();
+            d.child(
+                div()
+                    .id("uuid-generate")
+                    .flex_none()
+                    .mr(dp(4.))
+                    .px(dp(6.))
+                    .h(dp(20.))
+                    .flex()
+                    .items_center()
+                    .gap(dp(4.))
+                    .rounded(dp(5.))
+                    .bg(t.surface)
+                    .border_1()
+                    .border_color(t.border)
+                    .cursor_pointer()
+                    .font_family(cx.theme().font_family.clone())
+                    .text_size(dp(11.))
+                    .text_color(t.text_secondary)
+                    .hover(|d| d.text_color(t.text))
+                    .child(Icon::new(IconName::Sparkles).size(dp(11.)))
+                    .child("Generate")
+                    // Mouse-down, so the editor keeps focus (and isn't saved first).
+                    .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                        cx.stop_propagation();
+                        window.prevent_default();
+                        let v = uuid::Uuid::new_v4().to_string();
+                        target.update(cx, |i, cx| i.set_value(v, window, cx));
+                    }),
+            )
+        })
+        .when_some(note, |d, (text, error)| {
+            d.child(
+                div().absolute().left(px(-2.)).top_full().child(
+                    gpui::deferred(
+                        gpui::anchored().snap_to_window_with_margin(px(8.)).child(
+                            h_flex()
+                                .mt(dp(6.))
+                                .max_w(dp(360.))
+                                .px(dp(8.))
+                                .py(dp(5.))
+                                .gap(dp(6.))
+                                .rounded(dp(6.))
+                                .bg(if error {
+                                    t.danger.opacity(0.14).blend(t.raised)
+                                } else {
+                                    t.raised
+                                })
+                                .border_1()
+                                .border_color(if error { t.danger } else { t.border })
+                                .shadow_md()
+                                .font_family(cx.theme().font_family.clone())
+                                .text_size(dp(11.5))
+                                .text_color(if error { t.danger } else { t.text_secondary })
+                                .when(error, |d| {
+                                    d.child(Icon::new(IconName::CircleAlert).size(dp(12.)))
+                                })
+                                .child(text),
+                        ),
+                    )
+                    .with_priority(1),
+                ),
+            )
+        })
+        .into_any_element()
+    }
+}
+
 impl TableDelegate for Grid {
     fn columns_count(&self, _cx: &App) -> usize {
         self.columns.len()
@@ -598,7 +793,8 @@ impl TableDelegate for Grid {
         let t = tokens(cx);
         let state = if self.deleted.contains(&row_ix) {
             Some(t.danger)
-        } else if row_ix >= self.base_rows {
+        } else if row_ix >= self.base_rows && row_ix < self.rows.len() {
+            // (The table also asks for its empty filler rows past the end.)
             Some(t.success)
         } else {
             None
@@ -664,18 +860,11 @@ impl TableDelegate for Grid {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        if let Some((r, c, editor)) = &self.editing {
-            if *r == row_ix && *c == col_ix {
-                // Borderless and cell-sized, so editing happens in place.
-                let cell = div().size_full().key_context("CellEditor");
-                return match editor {
-                    CellEditor::Text(input) => {
-                        cell.child(Input::new(input).appearance(false).h_full())
-                    }
-                    CellEditor::Choice(choices) => cell.child(choices.clone()),
-                }
-                .into_any_element();
-            }
+        if let Some((r, c, editor)) = &self.editing
+            && *r == row_ix
+            && *c == col_ix
+        {
+            return self.render_editor(col_ix, editor, cx);
         }
         let t = tokens(cx);
         let mono = cx.theme().mono_font_family.clone();

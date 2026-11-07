@@ -120,8 +120,8 @@ fn demo_db() -> ConnectionConfig {
     futures::executor::block_on(crate::runtime::spawn(async move {
         let c = crate::db::Connection::connect(&setup).await?;
         let mut sql = String::from(
-            "create table customers (id integer primary key, name text not null, \
-               email text, country text); \
+            "create table customers (id integer primary key, name varchar(40) not null, \
+               email text, country char(2), vip boolean, external_id uuid); \
              create table orders (id integer primary key, \
                customer_id integer references customers(id), \
                status text check (status in ('pending','paid','shipped','refunded')), \
@@ -134,9 +134,11 @@ fn demo_db() -> ConnectionConfig {
         for (i, n) in names.iter().enumerate() {
             let email = n.to_lowercase().replace(' ', ".") + "@example.com";
             sql += &format!(
-                "insert into customers values ({}, '{n}', '{email}', '{}');",
+                "insert into customers values ({}, '{n}', '{email}', '{}', {}, '{}');",
                 i + 1,
-                ["IN", "US", "BR", "JP", "NG"][i]
+                ["IN", "US", "BR", "JP", "NG"][i],
+                if i % 2 == 0 { "true" } else { "false" },
+                uuid::Uuid::new_v4()
             );
         }
         let status = ["pending", "paid", "shipped", "refunded", "pending", "paid"];
@@ -203,6 +205,40 @@ fn screenshots() {
         })
     });
     s.snap("01-table-staged");
+
+    // Cell editors on customers: a too-long value, then the boolean dropdown.
+    s.in_window(|w, cx| {
+        session.update(cx, |s, cx| {
+            let i = s.object_index("customers").unwrap();
+            s.open_object(i, w, cx)
+        })
+    });
+    let customers = s.cx.update(|cx| session.read(cx).active_table().unwrap());
+    s.wait("customers", |cx| customers.read(cx).loaded_rows(cx) > 0);
+    s.in_window(|w, cx| {
+        customers.update(cx, |t, cx| {
+            t.select_cell(1, 1, w, cx);
+            let long = "Marcus Alexander Lee-Whitfield the Third".to_string() + " Jr.";
+            crate::ui::cell_edit::start_edit(
+                t,
+                1,
+                1,
+                crate::ui::cell_edit::EditStart::Typed(long),
+                w,
+                cx,
+            );
+        })
+    });
+    s.snap("07-editor-error");
+    s.in_window(|w, cx| {
+        customers.update(cx, |t, cx| {
+            crate::ui::cell_edit::cancel_edit(t, w, cx);
+            t.select_cell(0, 4, w, cx);
+            crate::ui::cell_edit::start_edit(t, 0, 4, crate::ui::cell_edit::EditStart::Keep, w, cx);
+        })
+    });
+    s.snap("07-editor-bool");
+    s.in_window(|w, cx| customers.update(cx, |t, cx| crate::ui::cell_edit::cancel_edit(t, w, cx)));
 
     s.in_window(|w, cx| session.update(cx, |s, cx| s.new_query(w, cx)));
     s.snap("02-query");

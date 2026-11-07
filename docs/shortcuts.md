@@ -57,9 +57,15 @@ command is also in the menu bar.
 | Enter | Save the edit |
 | Tab / ⇧Tab | Save and edit the next / previous cell |
 | Esc | Cancel the edit |
+| ↑ / ↓ (⇧ for 10) | While editing a number: step it |
+| ⌥⌫ | Set the selected cell to NULL |
+| ⌥↵ | Open the bigger editor (long text, JSON) |
+| Space | Flip a boolean cell |
+| ⌘↵ | In the bigger editor: stage the change |
 
-In an enum column's dropdown: ↑ / ↓ move, Enter or a click picks, and
-typing a letter jumps to the next value starting with it.
+In an enum or boolean dropdown: ↑ / ↓ move, Enter or a click picks, 1–9
+pick by position, and typing a letter jumps to the next value starting with
+it.
 
 ## App
 

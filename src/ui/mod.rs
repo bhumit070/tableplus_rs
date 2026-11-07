@@ -1,5 +1,6 @@
 pub mod app;
 pub mod cell_edit;
+pub mod cell_value;
 pub mod completion;
 pub mod conn_form;
 pub mod copy;
@@ -79,6 +80,7 @@ gpui::actions!(
         AddRow,
         CopyCell,
         SetNull,
+        OpenCellEditor,
         GoHome,
         OpenConnection,
         Connection1,
@@ -300,6 +302,15 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // selected cell (the grid itself doesn't use Enter); inside the cell
         // editor these outrank the text input's own Esc / Tab bindings.
         KeyBinding::new("enter", EditCell, Some("EditableGrid > DataTable")),
+        // In the grid, not inside a text field (where ⌥⌫ deletes a word).
+        KeyBinding::new("alt-backspace", SetNull, Some("EditableGrid > DataTable")),
+        // The bigger editor, from the grid or the inline editor.
+        KeyBinding::new(
+            "alt-enter",
+            OpenCellEditor,
+            Some("EditableGrid > DataTable"),
+        ),
+        KeyBinding::new("alt-enter", OpenCellEditor, Some("CellEditor > Input")),
         KeyBinding::new("escape", CancelCellEdit, Some("CellEditor > Input")),
         KeyBinding::new("tab", NextCell, Some("CellEditor > Input")),
         KeyBinding::new("shift-tab", PrevCell, Some("CellEditor > Input")),

@@ -812,6 +812,51 @@ async fn mysql_enum_values() {
     }
 }
 
+/// `CHECK (col IN (…))` columns list their values like enums, as each
+/// server spells the constraint back.
+async fn check_in_scenario(driver: Driver) {
+    let cfg = cfg(driver);
+    let c = Connection::connect(&cfg).await.expect("connect");
+    let ty = if driver == Driver::MySql {
+        "varchar(20)"
+    } else {
+        "text"
+    };
+    c.execute(&format!(
+        "drop table if exists it_check; \
+         create table it_check (id int primary key, \
+           state {ty} check (state in ('new', 'it''s done')), n int check (n > 0))"
+    ))
+    .await
+    .unwrap();
+    let objects = c.list_objects().await.unwrap();
+    let st = c.structure(&obj(&objects, "it_check")).await.unwrap();
+    let values = |name: &str| {
+        st.columns
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap()
+            .enum_values
+            .clone()
+    };
+    assert_eq!(values("state"), ["new", "it's done"], "{driver:?}");
+    assert!(values("n").is_empty(), "{driver:?}");
+    c.execute("drop table it_check").await.unwrap();
+    c.close().await;
+    if driver == Driver::Sqlite {
+        let _ = std::fs::remove_file(&cfg.file);
+    }
+}
+
+#[tokio::test]
+async fn check_in_values() {
+    check_in_scenario(Driver::Sqlite).await;
+    if it_enabled() {
+        check_in_scenario(Driver::Postgres).await;
+        check_in_scenario(Driver::MySql).await;
+    }
+}
+
 /// Postgres through an SSH tunnel (in-process SSH server → the test container).
 #[tokio::test]
 async fn postgres_over_ssh() {

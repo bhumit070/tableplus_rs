@@ -1340,9 +1340,87 @@ mod tests {
         let _ = std::fs::remove_file(file);
     }
 
-    /// Enum columns edit with a dropdown of their values: typing jumps to a
-    /// value, arrows move (NULL is last), Enter picks, Esc cancels.
-    /// Needs the Postgres container (TABULA_IT=1).
+    /// Values are checked against the column type while editing: ↵ won't
+    /// save an invalid one. Space flips a boolean, ⌥⌫ sets NULL, ⌥↵ opens the
+    /// bigger editor.
+    #[gpui::test]
+    fn typed_cell_editing(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-typed-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        futures::executor::block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute(
+                "create table t (id integer primary key, n integer, b boolean, s varchar(3)); \
+                 insert into t (n, b, s) values (1, 1, 'abc')",
+            )
+            .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("t").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let i = s.object_index("t").unwrap();
+            s.open_object(i, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "rows", |cx| {
+            tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 1)
+        });
+        let editing = |cx: &mut VisualTestContext| tab.read_with(cx, |t, cx| t.editing_cell(cx));
+        let staged =
+            |cx: &mut VisualTestContext, r, c| tab.read_with(cx, |t, cx| t.staged(r, c, cx));
+
+        // An integer column refuses text: ↵ keeps the editor open.
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(0, 1, w, cx));
+        cx.simulate_keystrokes("x");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(editing(&mut cx), Some((0, 1)), "invalid value not saved");
+        assert_eq!(staged(&mut cx, 0, 1), None);
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert_eq!(editing(&mut cx), None);
+
+        // A valid number saves.
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(0, 1, w, cx));
+        cx.simulate_keystrokes("4 2 enter");
+        cx.run_until_parked();
+        assert_eq!(staged(&mut cx, 0, 1), Some(Some("42".into())));
+
+        // Space flips a boolean in the column's own spelling.
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(0, 2, w, cx));
+        cx.simulate_keystrokes("space");
+        cx.run_until_parked();
+        assert_eq!(editing(&mut cx), None);
+        assert_eq!(staged(&mut cx, 0, 2), Some(Some("0".into())));
+
+        // ⌥⌫ sets NULL.
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(0, 3, w, cx));
+        cx.simulate_keystrokes("alt-backspace");
+        cx.run_until_parked();
+        assert_eq!(staged(&mut cx, 0, 3), Some(None));
+
+        // ⌥↵ opens the bigger editor.
+        cx.simulate_keystrokes("alt-enter");
+        cx.run_until_parked();
+        assert!(cx.update(|w, cx| w.has_active_dialog(cx)));
+        let _ = std::fs::remove_file(file);
+    }
+
     #[gpui::test]
     fn filters_stay_as_chips_until_removed(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -1398,6 +1476,9 @@ mod tests {
         let _ = std::fs::remove_file(file);
     }
 
+    /// Enum columns edit with a dropdown of their values: typing jumps to a
+    /// value, arrows move (NULL is last), Enter picks, Esc cancels.
+    /// Needs the Postgres container (TABULA_IT=1).
     #[gpui::test]
     fn enum_cells_edit_with_a_dropdown(cx: &mut TestAppContext) {
         if std::env::var("TABULA_IT").is_err() {

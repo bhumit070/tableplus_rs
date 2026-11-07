@@ -137,6 +137,176 @@ fn mysql_enum(ty: &str) -> Vec<String> {
     out
 }
 
+/// Columns limited to a list by a `CHECK`, from a table's DDL: `CHECK
+/// (status IN ('a', 'b'))` (SQLite, MySQL) or `CHECK ((status = ANY
+/// (ARRAY['a'::text, 'b'::text])))` (Postgres). They edit like enums.
+/// Constraints that do anything more are ignored.
+pub(crate) fn check_in_lists(ddl: &str) -> Vec<(String, Vec<String>)> {
+    let lower = ddl.to_ascii_lowercase();
+    let mut out = vec![];
+    let mut from = 0;
+    while let Some(at) = lower[from..].find("check") {
+        let start = from + at + "check".len();
+        from = start;
+        // A word, not part of one ("checked").
+        let before = lower[..start - 5].chars().next_back();
+        if before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        let rest = ddl[start..].trim_start();
+        if !rest.starts_with('(') {
+            continue;
+        }
+        let Some(expr) = balanced(rest) else { continue };
+        if let Some(found) = in_list(expr) {
+            out.push(found);
+        }
+    }
+    out
+}
+
+/// The text inside the parentheses `s` starts with (quotes respected).
+fn balanced(s: &str) -> Option<&str> {
+    if !s.starts_with('(') {
+        return None;
+    }
+    let (mut depth, mut quote, mut escaped) = (0usize, None::<char>, false);
+    for (i, ch) in s.char_indices() {
+        match (quote, ch) {
+            // MySQL escapes quotes with a backslash: 'it\'s'.
+            (Some(_), _) if escaped => escaped = false,
+            (Some(_), '\\') => escaped = true,
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"' | '`') => quote = Some(ch),
+            (None, '(') => depth += 1,
+            (None, ')') => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[1..i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Strips whole-expression parentheses: "((a))" → "a".
+fn unwrap_parens(mut s: &str) -> &str {
+    loop {
+        let t = s.trim();
+        match balanced(t) {
+            Some(inner) if t.len() == inner.len() + 2 => s = inner,
+            _ => return t,
+        }
+    }
+}
+
+/// Splits at the first `sep` (lower-case) outside quotes and parentheses.
+fn split_top<'a>(s: &'a str, sep: &str) -> Option<(&'a str, &'a str)> {
+    let lower = s.to_ascii_lowercase();
+    let (mut depth, mut quote, mut escaped) = (0i32, None::<char>, false);
+    for (i, ch) in s.char_indices() {
+        match (quote, ch) {
+            (Some(_), _) if escaped => {
+                escaped = false;
+                continue;
+            }
+            (Some(_), '\\') => {
+                escaped = true;
+                continue;
+            }
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => continue,
+            (None, '\'' | '"' | '`') => quote = Some(ch),
+            (None, '(' | '[') => depth += 1,
+            (None, ')' | ']') => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 && quote.is_none() && lower[i..].starts_with(sep) {
+            return Some((&s[..i], &s[i + sep.len()..]));
+        }
+    }
+    None
+}
+
+/// A bare column name: `status`, "status", `(status)::text`.
+fn column_name(s: &str) -> Option<String> {
+    let s = unwrap_parens(s);
+    let s = unwrap_parens(s.split("::").next()?);
+    let name = s.trim_matches(|c| matches!(c, '"' | '`' | '[' | ']'));
+    (!name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '$'))
+    .then(|| name.to_string())
+}
+
+/// `'a', 'it''s', _utf8mb4'b', 'c'::text` → the strings; `None` if any item
+/// isn't a string literal.
+fn literals(s: &str) -> Option<Vec<String>> {
+    let mut out = vec![];
+    let mut rest = s.trim();
+    while !rest.is_empty() {
+        // Charset introducers (MySQL) and national strings.
+        let lit_start = rest.find('\'')?;
+        let prefix = &rest[..lit_start];
+        if !prefix.is_empty() && !prefix.starts_with('_') && !prefix.eq_ignore_ascii_case("n") {
+            return None;
+        }
+        let mut value = String::new();
+        let mut chars = rest[lit_start + 1..].char_indices().peekable();
+        let mut end = None;
+        while let Some((i, ch)) = chars.next() {
+            match ch {
+                '\'' if chars.peek().is_some_and(|(_, c)| *c == '\'') => {
+                    chars.next();
+                    value.push('\'');
+                }
+                '\'' => {
+                    end = Some(lit_start + 1 + i + 1);
+                    break;
+                }
+                '\\' => {
+                    if let Some((_, c)) = chars.next() {
+                        value.push(c);
+                    }
+                }
+                c => value.push(c),
+            }
+        }
+        out.push(value);
+        rest = rest[end?..].trim_start();
+        // A cast after the literal: 'a'::character varying.
+        if let Some(r) = rest.strip_prefix("::") {
+            rest = r.trim_start_matches(|c: char| c != ',').trim_start();
+        }
+        match rest.strip_prefix(',') {
+            Some(r) => rest = r.trim_start(),
+            None if rest.is_empty() => {}
+            None => return None,
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// One `col IN (…)` or `col = ANY (ARRAY[…])` and nothing else.
+fn in_list(expr: &str) -> Option<(String, Vec<String>)> {
+    let expr = unwrap_parens(expr);
+    if let Some((lhs, rhs)) = split_top(expr, " in ") {
+        let rhs = rhs.trim();
+        let inner = balanced(rhs).filter(|i| i.len() + 2 == rhs.len())?;
+        return Some((column_name(lhs)?, literals(inner)?));
+    }
+    let (lhs, rhs) = split_top(expr, "= any")?;
+    let rhs = rhs.trim();
+    let lower = rhs.to_ascii_lowercase();
+    let open = lower.find("array[")? + "array[".len();
+    let close = rhs.rfind(']')?;
+    Some((column_name(lhs)?, literals(&rhs[open..close])?))
+}
+
 fn pg_row(row: &PgRow) -> Vec<Option<String>> {
     (0..row.len())
         .map(|i| {
@@ -736,6 +906,16 @@ impl SqlConn {
             part("SQL", e);
             Default::default()
         });
+        // CHECK (col IN (…)) columns edit like enums too.
+        let mut columns = columns;
+        for (name, values) in check_in_lists(&ddl) {
+            if let Some(c) = columns
+                .iter_mut()
+                .find(|c| c.name == name && c.enum_values.is_empty())
+            {
+                c.enum_values = values;
+            }
+        }
         Ok(Structure {
             columns,
             indexes,
@@ -1289,6 +1469,45 @@ mod tests {
         cfg.ssl_verify = true;
         assert!(matches!(pg_ssl_mode(&cfg), PgSslMode::VerifyFull));
         assert!(matches!(my_ssl_mode(&cfg), MySqlSslMode::VerifyIdentity));
+    }
+
+    #[test]
+    fn check_in_lists_in_each_dialect() {
+        let sqlite = "CREATE TABLE orders (id integer primary key, \
+            status text check (status in ('pending','paid', 'it''s')), n int CHECK (n > 0))";
+        assert_eq!(
+            check_in_lists(sqlite),
+            [(
+                "status".to_string(),
+                vec!["pending".into(), "paid".into(), "it's".into()]
+            )]
+        );
+        let mysql = "CONSTRAINT `orders_chk_1` CHECK ((`status` in \
+            (_utf8mb4'pending',_latin1'it\\'s paid')))";
+        assert_eq!(
+            check_in_lists(mysql),
+            [(
+                "status".to_string(),
+                vec!["pending".into(), "it's paid".into()]
+            )]
+        );
+        let pg = "CONSTRAINT orders_status_check CHECK ((status = ANY \
+            (ARRAY['pending'::text, 'paid'::text])))";
+        assert_eq!(
+            check_in_lists(pg),
+            [("status".to_string(), vec!["pending".into(), "paid".into()])]
+        );
+        let pg_varchar = "CHECK (((state)::text = ANY ((ARRAY['a'::character varying, \
+            'b'::character varying])::text[])))";
+        assert_eq!(
+            check_in_lists(pg_varchar),
+            [("state".to_string(), vec!["a".into(), "b".into()])]
+        );
+        // Anything more than a plain list isn't an enum.
+        assert!(check_in_lists("CHECK (status in ('a') or x > 1)").is_empty());
+        assert!(check_in_lists("CHECK (lower(status) in ('a'))").is_empty());
+        assert!(check_in_lists("CHECK (n in (1, 2))").is_empty());
+        assert!(check_in_lists("checked boolean").is_empty());
     }
 
     #[test]

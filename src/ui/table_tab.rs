@@ -654,10 +654,6 @@ impl TableTab {
         });
     }
 
-    fn selected_cell(&self, cx: &App) -> Option<(usize, usize)> {
-        self.table.read(cx).selected_cell()
-    }
-
     fn selected_row(&self, cx: &App) -> Option<usize> {
         let t = self.table.read(cx);
         t.selected_row().or(t.selected_cell().map(|(r, _)| r))
@@ -680,12 +676,7 @@ impl TableTab {
     }
 
     fn set_null(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some((r, c)) = self.selected_cell(cx) {
-            self.table.update(cx, |t, cx| {
-                t.delegate_mut().set_cell(r, c, None);
-                cx.notify();
-            });
-        }
+        cell_edit::set_null(self, cx);
     }
 
     /// A page is loading; staged edits would be dropped when it arrives.
