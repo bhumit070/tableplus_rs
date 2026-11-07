@@ -90,6 +90,102 @@ pub fn normalize_uuid(text: &str) -> Option<String> {
     ))
 }
 
+/// What a date / time column holds, if `ty` is one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Temporal {
+    Date,
+    Time,
+    /// Date and time of day (timestamp, datetime, with or without a zone).
+    DateTime,
+}
+
+pub fn temporal(ty: &str) -> Option<Temporal> {
+    let b = base(ty);
+    match b.as_str() {
+        "date" => Some(Temporal::Date),
+        "time" | "timetz" | "time with time zone" | "time without time zone" => {
+            Some(Temporal::Time)
+        }
+        "timestamp"
+        | "timestamptz"
+        | "datetime"
+        | "datetime2"
+        | "smalldatetime"
+        | "timestamp with time zone"
+        | "timestamp without time zone" => Some(Temporal::DateTime),
+        _ => None,
+    }
+}
+
+/// "2026-11-06" at the start of `text`, if it's a real date.
+pub fn date_part(text: &str) -> Option<chrono::NaiveDate> {
+    chrono::NaiveDate::parse_from_str(text.trim().get(..10)?, "%Y-%m-%d").ok()
+}
+
+/// "09:41", "09:41:00", "09:41:00.123", optionally followed by a zone
+/// ("+00", "+05:30", "Z").
+fn time_ok(t: &str) -> bool {
+    let t = t.trim();
+    let end = t
+        .find(|c: char| c == '+' || c == 'Z' || c == ' ' || (c == '-' && t.len() > 5))
+        .unwrap_or(t.len());
+    let (clock, zone) = t.split_at(end);
+    let zone = zone.trim();
+    let zone_ok = zone.is_empty()
+        || zone == "Z"
+        || zone.eq_ignore_ascii_case("utc")
+        || ((zone.starts_with('+') || zone.starts_with('-'))
+            && zone[1..].chars().all(|c| c.is_ascii_digit() || c == ':')
+            && zone.len() <= 6);
+    let clock_ok = ["%H:%M:%S%.f", "%H:%M:%S", "%H:%M"]
+        .iter()
+        .any(|f| chrono::NaiveTime::parse_from_str(clock, f).is_ok());
+    clock_ok && zone_ok
+}
+
+fn temporal_ok(kind: Temporal, text: &str) -> bool {
+    let t = text.trim();
+    match kind {
+        Temporal::Date => t.len() == 10 && date_part(t).is_some(),
+        Temporal::Time => time_ok(t),
+        Temporal::DateTime => {
+            date_part(t).is_some()
+                && match t.get(10..) {
+                    Some("") => true,
+                    Some(rest) => {
+                        let rest = rest.strip_prefix(['T', ' ']).unwrap_or("x");
+                        time_ok(rest)
+                    }
+                    None => false,
+                }
+        }
+    }
+}
+
+/// `text` with its date replaced by `date`, keeping the time of day (or
+/// midnight when there was none, for date-and-time columns).
+pub fn with_date(text: &str, date: chrono::NaiveDate, kind: Temporal) -> String {
+    let d = date.format("%Y-%m-%d").to_string();
+    match kind {
+        Temporal::Date => d,
+        Temporal::Time => text.to_string(),
+        Temporal::DateTime => match (date_part(text), text.trim().get(10..)) {
+            (Some(_), Some(rest)) if !rest.is_empty() => format!("{d}{rest}"),
+            _ => format!("{d} 00:00:00"),
+        },
+    }
+}
+
+/// The current local date / time in a column's format.
+pub fn now_for(kind: Temporal) -> String {
+    let now = chrono::Local::now().naive_local();
+    match kind {
+        Temporal::Date => now.format("%Y-%m-%d").to_string(),
+        Temporal::Time => now.format("%H:%M:%S").to_string(),
+        Temporal::DateTime => now.format("%Y-%m-%d %H:%M:%S").to_string(),
+    }
+}
+
 /// Checks `text` (what's in the editor) for a column of type `ty`. An empty
 /// type (query results without a known table) checks nothing.
 pub fn check(ty: &str, text: &str) -> Check {
@@ -152,6 +248,26 @@ pub fn check(ty: &str, text: &str) -> Check {
             };
         }
         return Check::default();
+    }
+    if let Some(kind) = temporal(ty) {
+        if trimmed.is_empty() {
+            return needs_value();
+        }
+        return if temporal_ok(kind, trimmed) {
+            Check::default()
+        } else {
+            Check {
+                error: Some(
+                    match kind {
+                        Temporal::Date => "Use YYYY-MM-DD",
+                        Temporal::Time => "Use HH:MM[:SS]",
+                        Temporal::DateTime => "Use YYYY-MM-DD HH:MM[:SS]",
+                    }
+                    .into(),
+                ),
+                hint: None,
+            }
+        };
     }
     match b.as_str() {
         "json" | "jsonb" => {
@@ -263,6 +379,49 @@ mod tests {
         assert_eq!(err("varchar(2)", "éé"), None);
         assert_eq!(check("text", "anything"), Check::default());
         assert_eq!(check("", "anything"), Check::default());
+    }
+
+    #[test]
+    fn dates_and_times() {
+        assert_eq!(err("date", "2026-11-06"), None);
+        assert!(err("date", "2026-02-30").is_some());
+        assert!(err("date", "06/11/2026").is_some());
+        assert_eq!(err("timestamp", "2026-11-06 09:41:00"), None);
+        assert_eq!(err("timestamp without time zone", "2026-11-06T09:41"), None);
+        assert_eq!(err("timestamptz", "2026-11-06 09:41:00.123+00"), None);
+        assert_eq!(
+            err("timestamp with time zone", "2026-11-06 09:41:00+05:30"),
+            None
+        );
+        assert_eq!(err("datetime", "2026-11-06"), None);
+        assert!(err("datetime", "2026-11-06 25:00").is_some());
+        assert_eq!(err("time", "23:59:59"), None);
+        assert!(err("time", "noon").is_some());
+        assert_eq!(
+            temporal("timestamp(3) with time zone"),
+            Some(Temporal::DateTime)
+        );
+    }
+
+    #[test]
+    fn picking_a_date_keeps_the_time() {
+        let d = chrono::NaiveDate::from_ymd_opt(2026, 11, 15).unwrap();
+        assert_eq!(
+            with_date("2026-11-06 09:41:00+00", d, Temporal::DateTime),
+            "2026-11-15 09:41:00+00"
+        );
+        assert_eq!(with_date("", d, Temporal::DateTime), "2026-11-15 00:00:00");
+        assert_eq!(
+            with_date("2026-11-06", d, Temporal::DateTime),
+            "2026-11-15 00:00:00"
+        );
+        assert_eq!(with_date("garbage", d, Temporal::Date), "2026-11-15");
+        assert!(
+            check("timestamp", &now_for(Temporal::DateTime))
+                .error
+                .is_none()
+        );
+        assert!(check("time", &now_for(Temporal::Time)).error.is_none());
     }
 
     #[test]

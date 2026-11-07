@@ -568,6 +568,28 @@ impl Connection {
     }
 
     /// Returns the page of rows plus the total row count (for the pager).
+    /// Rows of `obj` for the foreign-key picker (SQL databases only; empty
+    /// elsewhere). See `SqlConn::fk_matches`.
+    pub async fn fk_matches(
+        &self,
+        obj: &DbObject,
+        key: &str,
+        labels: &[String],
+        text: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, String)>> {
+        match &self.inner {
+            Conn::Sql(c) => {
+                self.bounded(
+                    "Looking up rows",
+                    c.fk_matches(obj, key, labels, text, limit),
+                )
+                .await
+            }
+            _ => Ok(vec![]),
+        }
+    }
+
     pub async fn fetch_table(&self, q: &TableQuery) -> Result<(QueryResult, Option<u64>)> {
         let start = Instant::now();
         let (mut res, total) = self

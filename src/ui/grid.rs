@@ -19,8 +19,9 @@ use gpui_component::{ActiveTheme as _, Icon, Sizable as _, Size, WindowExt as _,
 use gpui_kit_assets::IconName;
 
 use super::cell_edit::CellEditor;
-use super::cell_value::check;
+use super::cell_value::{Temporal, check, date_part, now_for, temporal, with_date};
 use super::theme::{Tokens, dp, enum_color, tokens};
+use super::{CellDown, CellDownMore, CellUp, CellUpMore};
 use crate::db::{Change, ColumnInfo, QueryResult};
 
 /// A data table with the design's 32px rows and 40px two-line header,
@@ -46,6 +47,10 @@ pub enum Kind {
     Bool,
     Json,
     Enum,
+    /// Postgres arrays and MySQL SET: shown as chips.
+    Array,
+    /// Bytes: shown as their type and size, not as hex.
+    Binary,
 }
 
 /// The kind of a column from its database type; `None` when the type isn't
@@ -55,8 +60,15 @@ fn kind_of_type(ty: &str) -> Option<Kind> {
     if t.is_empty() {
         return None;
     }
+    if t.ends_with("[]") {
+        return Some(Kind::Array);
+    }
     let base = t.split(['(', ' ']).next().unwrap_or_default();
     Some(match base {
+        "set" => Kind::Array,
+        "bytea" | "blob" | "tinyblob" | "mediumblob" | "longblob" | "binary" | "varbinary" => {
+            Kind::Binary
+        }
         "bool" | "boolean" => Kind::Bool,
         "tinyint" | "bit" if t.ends_with("(1)") => Kind::Bool,
         "json" | "jsonb" => Kind::Json,
@@ -96,6 +108,49 @@ fn group_thousands(v: &str) -> String {
     match frac {
         Some(f) => format!("{sign}{out}.{f}"),
         None => format!("{sign}{out}"),
+    }
+}
+
+/// The items of a Postgres array literal (`{a,"b c",NULL}`) or a MySQL SET
+/// value (`a,b`).
+pub fn array_items(v: &str) -> Vec<String> {
+    let inner = v
+        .trim()
+        .strip_prefix('{')
+        .and_then(|r| r.strip_suffix('}'))
+        .unwrap_or(v.trim());
+    if inner.is_empty() {
+        return vec![];
+    }
+    let (mut out, mut cur, mut quoted, mut escaped) = (vec![], String::new(), false, false);
+    for ch in inner.chars() {
+        match ch {
+            _ if escaped => {
+                cur.push(ch);
+                escaped = false;
+            }
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            ',' if !quoted => out.push(std::mem::take(&mut cur)),
+            _ => cur.push(ch),
+        }
+    }
+    out.push(cur);
+    out
+}
+
+/// "\\x0a1b…" (Postgres) or "0x0a1b…" (SQLite) → the number of bytes.
+fn hex_len(v: &str) -> Option<usize> {
+    let hex = v.strip_prefix("\\x").or_else(|| v.strip_prefix("0x"))?;
+    (hex.len() % 2 == 0 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hex.len() / 2)
+}
+
+/// 24100 → "23.5 KB".
+fn human_size(n: usize) -> String {
+    match n {
+        0..1024 => format!("{n} B"),
+        1024..1_048_576 => format!("{:.1} KB", n as f64 / 1024.),
+        _ => format!("{:.1} MB", n as f64 / 1_048_576.),
     }
 }
 
@@ -170,6 +225,9 @@ pub type SortFn = Rc<dyn Fn(usize, ColumnSort, &mut Window, &mut App)>;
 pub type MenuFn = Rc<dyn Fn(usize, PopupMenu, &mut Window, &mut App) -> PopupMenu>;
 /// Called with (row, column) when a foreign-key link is clicked.
 pub type FollowFn = Rc<dyn Fn(usize, usize, &mut Window, &mut App)>;
+/// Called with (column, typed text) while a foreign-key cell is edited; the
+/// host looks up matching rows and puts them in `fk_matches`.
+pub type FkSearchFn = Rc<dyn Fn(usize, String, &mut Window, &mut App)>;
 
 #[derive(Default)]
 pub struct Grid {
@@ -201,6 +259,13 @@ pub struct Grid {
     /// Per column: the table a foreign key points to, shown as "→ table".
     pub refs: Vec<Option<String>>,
     kinds: Vec<Kind>,
+    /// The month the date editor's calendar shows; `None` follows the value.
+    pub cal_month: Option<chrono::NaiveDate>,
+    pub on_fk_search: Option<FkSearchFn>,
+    /// Rows of the referenced table matching the foreign-key editor's text:
+    /// (key, label), and which one ↑ / ↓ highlight. `None` while looking.
+    pub fk_matches: Option<Vec<(String, String)>>,
+    pub fk_highlight: Option<usize>,
 }
 
 fn display(v: &str) -> String {
@@ -565,7 +630,6 @@ impl Grid {
         };
         let ty = self.types.get(col_ix).cloned().unwrap_or_default();
         let checked = check(&ty, &input.read(cx).value());
-        let number = self.kind(col_ix) == Kind::Number;
         let uuid = ty.eq_ignore_ascii_case("uuid");
         let note = checked
             .error
@@ -573,34 +637,54 @@ impl Grid {
             .map(|e| (e, true))
             .or(checked.hint.clone().map(|h| (h, false)));
         let stepper = input.clone();
+        let fk = self.links.get(col_ix).copied().unwrap_or(false) && self.on_fk_search.is_some();
+        let fk_list = fk.then(|| self.render_fk_matches(col_ix, &input, cx));
+        let calendar = temporal(&ty)
+            .filter(|k| *k != Temporal::Time)
+            .map(|k| self.render_calendar(k, &input, &checked, cx));
         cell.border_color(if checked.error.is_some() {
             t.danger
         } else {
             t.accent
         })
         .font_family(cx.theme().mono_font_family.clone())
-        // ↑ / ↓ step a number by 1, with ⇧ by 10.
-        .when(number, |d| {
-            d.capture_key_down(move |ev, window, cx| {
-                let k = &ev.keystroke;
-                let dir = match k.key.as_str() {
-                    "up" => 1.,
-                    "down" => -1.,
-                    _ => return,
-                };
-                if k.modifiers.platform || k.modifiers.alt || k.modifiers.control {
-                    return;
-                }
-                let step = if k.modifiers.shift { 10. } else { 1. };
-                let now = stepper.read(cx).value().trim().to_string();
-                let Ok(n) = now.parse::<f64>() else { return };
-                let decimals = now.split_once('.').map_or(0, |(_, f)| f.len());
-                let next = format!("{:.*}", decimals, n + dir * step);
-                window.prevent_default();
-                cx.stop_propagation();
-                stepper.update(cx, |i, cx| i.set_value(next, window, cx));
-            })
+        .when_some(fk_list, |d, list| {
+            d.child(
+                div().absolute().left(px(-2.)).top_full().child(
+                    gpui::deferred(
+                        gpui::anchored()
+                            .snap_to_window_with_margin(px(8.))
+                            .child(list),
+                    )
+                    .with_priority(1),
+                ),
+            )
         })
+        // ↑ / ↓: through foreign-key matches, or step a number (⇧ by 10).
+        .on_action(cx.listener({
+            let input = stepper.clone();
+            move |table, _: &CellUp, window, cx| {
+                table.delegate_mut().arrow(-1, false, &input, window, cx)
+            }
+        }))
+        .on_action(cx.listener({
+            let input = stepper.clone();
+            move |table, _: &CellDown, window, cx| {
+                table.delegate_mut().arrow(1, false, &input, window, cx)
+            }
+        }))
+        .on_action(cx.listener({
+            let input = stepper.clone();
+            move |table, _: &CellUpMore, window, cx| {
+                table.delegate_mut().arrow(-1, true, &input, window, cx)
+            }
+        }))
+        .on_action(cx.listener({
+            let input = stepper.clone();
+            move |table, _: &CellDownMore, window, cx| {
+                table.delegate_mut().arrow(1, true, &input, window, cx)
+            }
+        }))
         .child(
             div()
                 .flex_1()
@@ -613,6 +697,7 @@ impl Grid {
             d.child(
                 div()
                     .id("uuid-generate")
+                    .debug_selector(|| "uuid-generate".into())
                     .flex_none()
                     .mr(dp(4.))
                     .px(dp(6.))
@@ -640,40 +725,434 @@ impl Grid {
                     }),
             )
         })
-        .when_some(note, |d, (text, error)| {
+        .when_some(calendar, |d, cal| {
             d.child(
                 div().absolute().left(px(-2.)).top_full().child(
                     gpui::deferred(
-                        gpui::anchored().snap_to_window_with_margin(px(8.)).child(
-                            h_flex()
-                                .mt(dp(6.))
-                                .max_w(dp(360.))
-                                .px(dp(8.))
-                                .py(dp(5.))
-                                .gap(dp(6.))
-                                .rounded(dp(6.))
-                                .bg(if error {
-                                    t.danger.opacity(0.14).blend(t.raised)
-                                } else {
-                                    t.raised
-                                })
-                                .border_1()
-                                .border_color(if error { t.danger } else { t.border })
-                                .shadow_md()
-                                .font_family(cx.theme().font_family.clone())
-                                .text_size(dp(11.5))
-                                .text_color(if error { t.danger } else { t.text_secondary })
-                                .when(error, |d| {
-                                    d.child(Icon::new(IconName::CircleAlert).size(dp(12.)))
-                                })
-                                .child(text),
-                        ),
+                        gpui::anchored()
+                            .snap_to_window_with_margin(px(8.))
+                            .child(cal),
                     )
                     .with_priority(1),
                 ),
             )
         })
+        .when(temporal(&ty) == Some(Temporal::Time), |d| {
+            let target = input.clone();
+            d.child(
+                div()
+                    .id("time-now")
+                    .debug_selector(|| "time-now".into())
+                    .flex_none()
+                    .mr(dp(4.))
+                    .px(dp(6.))
+                    .h(dp(20.))
+                    .flex()
+                    .items_center()
+                    .rounded(dp(5.))
+                    .bg(t.surface)
+                    .border_1()
+                    .border_color(t.border)
+                    .cursor_pointer()
+                    .font_family(cx.theme().font_family.clone())
+                    .text_size(dp(11.))
+                    .text_color(t.text_secondary)
+                    .child("Now")
+                    .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                        cx.stop_propagation();
+                        window.prevent_default();
+                        let v = now_for(Temporal::Time);
+                        target.update(cx, |i, cx| i.set_value(v, window, cx));
+                    }),
+            )
+        })
+        .when_some(
+            note.filter(|_| !fk && temporal(&ty).is_none_or(|k| k == Temporal::Time)),
+            |d, (text, error)| {
+                d.child(
+                    div().absolute().left(px(-2.)).top_full().child(
+                        gpui::deferred(
+                            gpui::anchored().snap_to_window_with_margin(px(8.)).child(
+                                h_flex()
+                                    .mt(dp(6.))
+                                    .max_w(dp(360.))
+                                    .px(dp(8.))
+                                    .py(dp(5.))
+                                    .gap(dp(6.))
+                                    .rounded(dp(6.))
+                                    .bg(if error {
+                                        t.danger.opacity(0.14).blend(t.raised)
+                                    } else {
+                                        t.raised
+                                    })
+                                    .border_1()
+                                    .border_color(if error { t.danger } else { t.border })
+                                    .shadow_md()
+                                    .font_family(cx.theme().font_family.clone())
+                                    .text_size(dp(11.5))
+                                    .text_color(if error { t.danger } else { t.text_secondary })
+                                    .when(error, |d| {
+                                        d.child(Icon::new(IconName::CircleAlert).size(dp(12.)))
+                                    })
+                                    .child(text),
+                            ),
+                        )
+                        .with_priority(1),
+                    ),
+                )
+            },
+        )
         .into_any_element()
+    }
+}
+
+impl Grid {
+    /// ↑ (`dir` -1) / ↓ (+1) in the text editor: move the foreign-key match
+    /// highlight when there are matches, else step a number column's value
+    /// (by 10 with ⇧). Anything else is left to the text field.
+    fn arrow(
+        &mut self,
+        dir: i32,
+        more: bool,
+        input: &Entity<gpui_component::input::InputState>,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        let Some(c) = self.editing.as_ref().map(|(_, c, _)| *c) else {
+            return;
+        };
+        let n = self.fk_matches.as_ref().map_or(0, Vec::len);
+        if self.links.get(c).copied().unwrap_or(false) && n > 0 && !more {
+            self.fk_highlight = match (dir, self.fk_highlight) {
+                (1, None) => Some(0),
+                (1, Some(i)) => Some((i + 1).min(n - 1)),
+                (_, Some(0)) | (_, None) => None,
+                (_, Some(i)) => Some(i - 1),
+            };
+            cx.notify();
+            return;
+        }
+        if self.kind(c) == Kind::Number {
+            let now = input.read(cx).value().trim().to_string();
+            if let Ok(v) = now.parse::<f64>() {
+                let decimals = now.split_once('.').map_or(0, |(_, f)| f.len());
+                // ↑ adds, ↓ subtracts.
+                let step = if more { 10. } else { 1. } * -(dir as f64);
+                let next = format!("{:.*}", decimals, v + step);
+                input.update(cx, |i, cx| i.set_value(next, window, cx));
+                return;
+            }
+        }
+        cx.propagate();
+    }
+
+    /// Matching rows of the referenced table under a foreign-key cell: key
+    /// and label; a click (or ↑ / ↓ and ↵) picks one. Says so when the typed
+    /// key matches no row (it can still be saved).
+    fn render_fk_matches(
+        &self,
+        col_ix: usize,
+        input: &Entity<gpui_component::input::InputState>,
+        cx: &mut Context<TableState<Self>>,
+    ) -> gpui::AnyElement {
+        let t = tokens(cx);
+        let mono = cx.theme().mono_font_family.clone();
+        let text = input.read(cx).value().trim().to_string();
+        let target = self.refs.get(col_ix).cloned().flatten().unwrap_or_default();
+        let checked = check(&self.types.get(col_ix).cloned().unwrap_or_default(), &text);
+        let body = match &self.fk_matches {
+            None => vec![
+                div()
+                    .px(dp(8.))
+                    .py(dp(6.))
+                    .text_color(t.text_muted)
+                    .child("Looking…")
+                    .into_any_element(),
+            ],
+            Some(m) if m.is_empty() => vec![
+                div()
+                    .px(dp(8.))
+                    .py(dp(6.))
+                    .text_color(t.text_muted)
+                    .child("No matching rows")
+                    .into_any_element(),
+            ],
+            Some(m) => m
+                .iter()
+                .enumerate()
+                .map(|(i, (key, label))| {
+                    let (input, key2) = (input.clone(), key.clone());
+                    h_flex()
+                        .id(("fk-match", i))
+                        .debug_selector(move || format!("fk-match-{i}"))
+                        .h(dp(30.))
+                        .px(dp(8.))
+                        .gap(dp(10.))
+                        .rounded(dp(6.))
+                        .cursor_pointer()
+                        .when(self.fk_highlight == Some(i), |d| {
+                            d.bg(t.accent.opacity(0.16))
+                        })
+                        .hover(|d| d.bg(t.hover))
+                        .child(
+                            div()
+                                .flex_none()
+                                .font_family(mono.clone())
+                                .text_color(t.info)
+                                .child(key.clone()),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(t.text_secondary)
+                                .child(label.clone()),
+                        )
+                        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                            cx.stop_propagation();
+                            window.prevent_default();
+                            input.update(cx, |i, cx| i.set_value(key2.clone(), window, cx));
+                        })
+                        .into_any_element()
+                })
+                .collect(),
+        };
+        let unknown = !text.is_empty()
+            && checked.error.is_none()
+            && self
+                .fk_matches
+                .as_ref()
+                .is_some_and(|m| !m.iter().any(|(k, _)| *k == text));
+        v_flex()
+            .occlude()
+            .mt(dp(8.))
+            .p(dp(5.))
+            .w(dp(340.))
+            .rounded(dp(10.))
+            .bg(t.raised)
+            .border_1()
+            .border_color(t.border)
+            .shadow_lg()
+            .font_family(cx.theme().font_family.clone())
+            .text_size(dp(12.))
+            .child(
+                h_flex()
+                    .px(dp(8.))
+                    .pb(dp(4.))
+                    .gap(dp(6.))
+                    .text_size(dp(11.))
+                    .text_color(t.text_muted)
+                    .child(div().text_color(t.info).child(format!("→ {target}")))
+                    .child("matching key or name"),
+            )
+            .when_some(checked.error.clone(), |d, e| {
+                d.child(
+                    h_flex()
+                        .px(dp(8.))
+                        .py(dp(4.))
+                        .gap(dp(6.))
+                        .text_color(t.danger)
+                        .child(Icon::new(IconName::CircleAlert).size(dp(12.)))
+                        .child(e),
+                )
+            })
+            .children(body)
+            .child(
+                div()
+                    .mt(dp(4.))
+                    .pt(dp(6.))
+                    .px(dp(8.))
+                    .border_t_1()
+                    .border_color(t.border)
+                    .text_size(dp(11.))
+                    .text_color(if unknown { t.warning } else { t.text_faint })
+                    .child(if unknown {
+                        format!("No {target} row with this key; it can still be saved")
+                    } else {
+                        "↑↓ choose · ↵ saves · click picks".to_string()
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// The date editor's month: pick a day (the time of day is kept), page
+    /// months, Today / Now. Any error shows on top. The text stays editable.
+    fn render_calendar(
+        &self,
+        kind: Temporal,
+        input: &Entity<gpui_component::input::InputState>,
+        checked: &crate::ui::cell_value::Check,
+        cx: &mut Context<TableState<Self>>,
+    ) -> gpui::AnyElement {
+        use chrono::Datelike as _;
+        let t = tokens(cx);
+        let text = input.read(cx).value().to_string();
+        let today = chrono::Local::now().date_naive();
+        let picked = date_part(&text);
+        let month = self
+            .cal_month
+            .or(picked)
+            .unwrap_or(today)
+            .with_day(1)
+            .unwrap_or(today);
+        let shift = |m: chrono::NaiveDate, by: i32| {
+            let n = m.year() * 12 + m.month0() as i32 + by;
+            chrono::NaiveDate::from_ymd_opt(n.div_euclid(12), n.rem_euclid(12) as u32 + 1, 1)
+                .unwrap_or(m)
+        };
+        // Mondays first; blanks before the 1st.
+        let lead = month.weekday().num_days_from_monday() as usize;
+        let days = (shift(month, 1) - month).num_days() as usize;
+        let nav =
+            |id: &'static str, icon: IconName, by: i32, cx: &mut Context<TableState<Self>>| {
+                div()
+                    .id(id)
+                    .size(dp(22.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(dp(5.))
+                    .cursor_pointer()
+                    .hover(|d| d.bg(t.hover))
+                    .child(Icon::new(icon).size(dp(13.)))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |table, _, window, cx| {
+                            cx.stop_propagation();
+                            window.prevent_default();
+                            table.delegate_mut().cal_month = Some(shift(month, by));
+                            cx.notify();
+                        }),
+                    )
+            };
+        let set = |v: String, input: Entity<gpui_component::input::InputState>| {
+            move |_: &gpui::MouseDownEvent, window: &mut Window, cx: &mut App| {
+                cx.stop_propagation();
+                window.prevent_default();
+                input.update(cx, |i, cx| i.set_value(v.clone(), window, cx));
+            }
+        };
+        let mut grid = vec![];
+        for _ in 0..lead {
+            grid.push(div().size(dp(28.)).into_any_element());
+        }
+        for day in 1..=days {
+            let date = month.with_day(day as u32).unwrap_or(month);
+            let selected = picked == Some(date);
+            grid.push(
+                div()
+                    .id(("cal-day", day))
+                    .debug_selector(move || format!("cal-day-{day}"))
+                    .size(dp(28.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(dp(6.))
+                    .cursor_pointer()
+                    .map(|d| {
+                        if selected {
+                            d.bg(t.accent).text_color(t.canvas)
+                        } else if date == today {
+                            d.border_1().border_color(t.accent).text_color(t.text)
+                        } else {
+                            d.text_color(t.text).hover(|d| d.bg(t.hover))
+                        }
+                    })
+                    .child(day.to_string())
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        set(with_date(&text, date, kind), input.clone()),
+                    )
+                    .into_any_element(),
+            );
+        }
+        let button = |id: &'static str, label: &'static str| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .h(dp(24.))
+                .px(dp(8.))
+                .flex()
+                .items_center()
+                .rounded(dp(6.))
+                .bg(t.surface)
+                .border_1()
+                .border_color(t.border)
+                .cursor_pointer()
+                .text_color(t.text_secondary)
+                .hover(|d| d.text_color(t.text))
+                .child(label)
+        };
+        v_flex()
+            .occlude()
+            .mt(dp(8.))
+            .p(dp(10.))
+            .gap(dp(8.))
+            .w(dp(240.))
+            .rounded(dp(10.))
+            .bg(t.raised)
+            .border_1()
+            .border_color(t.border)
+            .shadow_lg()
+            .font_family(cx.theme().font_family.clone())
+            .text_size(dp(12.))
+            .when_some(checked.error.clone(), |d, e| {
+                d.child(
+                    h_flex()
+                        .gap(dp(6.))
+                        .text_color(t.danger)
+                        .child(Icon::new(IconName::CircleAlert).size(dp(12.)))
+                        .child(e),
+                )
+            })
+            .child(
+                h_flex()
+                    .justify_between()
+                    .child(nav("cal-prev", IconName::ChevronLeft, -1, cx))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(month.format("%B %Y").to_string()),
+                    )
+                    .child(nav("cal-next", IconName::ChevronRight, 1, cx)),
+            )
+            .child(
+                h_flex().children(["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map(|d| {
+                    div()
+                        .w(dp(28.))
+                        .flex()
+                        .justify_center()
+                        .text_size(dp(10.5))
+                        .text_color(t.text_muted)
+                        .child(d)
+                })),
+            )
+            .child(h_flex().flex_wrap().w(dp(196.)).children(grid))
+            .child(
+                h_flex()
+                    .gap(dp(6.))
+                    .pt(dp(8.))
+                    .border_t_1()
+                    .border_color(t.border)
+                    .child(button("cal-today", "Today").on_mouse_down(
+                        gpui::MouseButton::Left,
+                        set(with_date(&text, today, kind), input.clone()),
+                    ))
+                    .when(kind == Temporal::DateTime, |d| {
+                        d.child(button("cal-now", "Now").on_mouse_down(
+                            gpui::MouseButton::Left,
+                            set(now_for(kind), input.clone()),
+                        ))
+                    })
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_size(dp(11.))
+                            .text_color(t.text_faint)
+                            .child("↵ saves"),
+                    ),
+            )
+            .into_any_element()
     }
 }
 
@@ -903,6 +1382,40 @@ impl TableDelegate for Grid {
                 .into_any_element(),
             Some(v) => match kind {
                 Kind::Enum => enum_pill(v, cx).into_any_element(),
+                Kind::Array => {
+                    let items = array_items(v);
+                    let more = items.len().saturating_sub(3);
+                    h_flex()
+                        .gap(dp(4.))
+                        .min_w_0()
+                        .children(items.into_iter().take(3).map(|item| {
+                            div()
+                                .flex_none()
+                                .px(dp(5.))
+                                .h(dp(18.))
+                                .flex()
+                                .items_center()
+                                .rounded(dp(4.))
+                                .bg(t.hover)
+                                .text_size(dp(11.))
+                                .text_color(t.text_secondary)
+                                .child(item)
+                        }))
+                        .when(more > 0, |d| {
+                            d.child(div().text_color(t.text_faint).child(format!("+{more}")))
+                        })
+                        .into_any_element()
+                }
+                Kind::Binary => {
+                    let ty = self.types.get(col_ix).cloned().unwrap_or_default();
+                    let size = hex_len(v).unwrap_or(v.len());
+                    h_flex()
+                        .gap(dp(6.))
+                        .text_color(t.text_muted)
+                        .child(Icon::new(IconName::File).size(dp(12.)))
+                        .child(format!("{} · {}", ty.to_lowercase(), human_size(size)))
+                        .into_any_element()
+                }
                 Kind::Bool => match truthy(v) {
                     Some(b) => bool_cell(b, v, &t).into_any_element(),
                     None => div().truncate().child(display(v)).into_any_element(),
@@ -1045,6 +1558,21 @@ mod tests {
         g.toggle_delete(a);
         assert_eq!(g.rows.len(), 3);
         assert_eq!(g.cell_string(2, 1).as_deref(), Some("keep"));
+    }
+
+    #[test]
+    fn arrays_and_binary() {
+        assert_eq!(array_items(r#"{a,"b c",NULL}"#), ["a", "b c", "NULL"]);
+        assert_eq!(array_items(r#"{"x\"y"}"#), [r#"x"y"#]);
+        assert_eq!(array_items("{}"), Vec::<String>::new());
+        assert_eq!(array_items("red,blue"), ["red", "blue"]);
+        assert_eq!(kind_of_type("text[]"), Some(Kind::Array));
+        assert_eq!(kind_of_type("set('a','b')"), Some(Kind::Array));
+        assert_eq!(kind_of_type("bytea"), Some(Kind::Binary));
+        assert_eq!(hex_len("\\x0a1b"), Some(2));
+        assert_eq!(hex_len("0x0a1b2c"), Some(3));
+        assert_eq!(hex_len("hello"), None);
+        assert_eq!(human_size(24_100), "23.5 KB");
     }
 
     #[test]

@@ -696,6 +696,84 @@ impl SqlConn {
         })
     }
 
+    /// Up to `limit` rows of `obj` whose `key` starts with `text` or whose
+    /// `labels` columns contain it (case-insensitive): (key, labels joined
+    /// with " · "). For the foreign-key picker; only reads.
+    pub async fn fk_matches(
+        &self,
+        obj: &DbObject,
+        key: &str,
+        labels: &[String],
+        text: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, String)>> {
+        let as_text = |col: &str| match self.cfg.driver {
+            Driver::MySql => format!("cast({} as char)", self.q(col)),
+            Driver::Postgres => format!("{}::text", self.q(col)),
+            _ => format!("cast({} as text)", self.q(col)),
+        };
+        // LIKE wildcards in the typed text are literal.
+        let esc = text
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let like = match self.cfg.driver {
+            Driver::Postgres => "ilike",
+            _ => "like",
+        };
+        // A backslash is an escape inside MySQL strings too.
+        let escape = match self.cfg.driver {
+            Driver::MySql => r"'\\'",
+            _ => r"'\'",
+        };
+        let label = if labels.is_empty() {
+            "''".to_string()
+        } else {
+            let parts: Vec<String> = labels.iter().map(|l| as_text(l)).collect();
+            format!("concat_ws(' · ', {})", parts.join(", "))
+        };
+        let label = if self.cfg.driver == Driver::Sqlite && labels.len() > 1 {
+            // SQLite has no concat_ws before 3.44.
+            labels
+                .iter()
+                .map(|l| format!("coalesce({}, '')", as_text(l)))
+                .collect::<Vec<_>>()
+                .join(" || ' · ' || ")
+        } else {
+            label
+        };
+        // Aliased, so ORDER BY below sorts by the column, not its text.
+        let mut sql = format!(
+            "select {} as tabula_key, {label} as tabula_label from {}",
+            as_text(key),
+            self.full_name(obj)
+        );
+        if !text.is_empty() {
+            let mut conds = vec![format!(
+                "{} {like} {} escape {escape}",
+                as_text(key),
+                self.lit(&format!("{esc}%"))
+            )];
+            for l in labels {
+                conds.push(format!(
+                    "{} {like} {} escape {escape}",
+                    as_text(l),
+                    self.lit(&format!("%{esc}%"))
+                ));
+            }
+            sql += &format!(" where {}", conds.join(" or "));
+        }
+        sql += &format!(" order by {} limit {limit}", self.q(key));
+        let r = self.raw(sql).await?;
+        Ok(r.rows
+            .into_iter()
+            .filter_map(|row| {
+                let k = row.first().cloned().flatten()?;
+                Some((k, row.get(1).cloned().flatten().unwrap_or_default()))
+            })
+            .collect())
+    }
+
     fn q(&self, ident: &str) -> String {
         match self.cfg.driver {
             Driver::MySql => format!("`{}`", ident.replace('`', "``")),

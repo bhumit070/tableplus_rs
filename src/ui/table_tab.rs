@@ -91,6 +91,10 @@ pub struct TableTab {
     /// Bumped per reload; only the latest response is applied, so a slow
     /// earlier page can't overwrite a newer one.
     load_seq: u64,
+    /// The same for foreign-key lookups while editing.
+    fk_seq: u64,
+    /// Label columns of referenced tables, looked up once per table.
+    fk_labels: std::collections::HashMap<String, Vec<String>>,
     _subs: Vec<Subscription>,
 }
 
@@ -162,6 +166,10 @@ impl TableTab {
         grid.on_follow = Some(Rc::new(move |row, col, _, cx| {
             w.update(cx, |t, cx| t.follow(row, col, cx)).ok();
         }));
+        let w = weak.clone();
+        grid.on_fk_search = Some(Rc::new(move |col, text, _, cx| {
+            w.update(cx, |t, cx| t.fk_search(col, text, cx)).ok();
+        }));
 
         let table = cx.new(|cx| {
             TableState::new(grid, window, cx)
@@ -218,6 +226,8 @@ impl TableTab {
             focus: cx.focus_handle(),
             edit_sub: None,
             load_seq: 0,
+            fk_seq: 0,
+            fk_labels: Default::default(),
             _subs: subs,
         };
         this.reload(cx);
@@ -304,6 +314,14 @@ impl TableTab {
             .value
             .update(cx, |input, cx| input.set_value(value, window, cx));
         self.reload_unless_dirty(window, cx, |t| t.page = 0);
+    }
+
+    #[cfg(test)]
+    pub fn fk_matches_for_test(&self, cx: &App) -> Option<Vec<String>> {
+        let g = self.table.read(cx).delegate();
+        g.fk_matches
+            .as_ref()
+            .map(|m| m.iter().map(|(k, _)| k.clone()).collect())
     }
 
     #[cfg(test)]
@@ -613,6 +631,91 @@ impl TableTab {
             window,
             cx,
         ))
+    }
+
+    /// While a foreign-key cell is edited: up to 5 rows of the referenced
+    /// table whose key starts with `text` or whose first text columns
+    /// contain it, into the grid's match list. Only the latest reply counts.
+    fn fk_search(&mut self, col: usize, text: String, cx: &mut Context<Self>) {
+        let g = self.table.read(cx).delegate();
+        let Some(column) = g.columns.get(col).cloned() else {
+            return;
+        };
+        let Some(fk) = self.structure.as_ref().and_then(|st| {
+            st.foreign_keys
+                .iter()
+                .filter(|f| f.columns.contains(&column))
+                .min_by_key(|f| f.columns.len())
+                .cloned()
+        }) else {
+            return;
+        };
+        let Some(key) = fk
+            .columns
+            .iter()
+            .position(|c| *c == column)
+            .and_then(|i| fk.ref_columns.get(i).cloned())
+        else {
+            return;
+        };
+        let target = DbObject {
+            schema: fk.ref_schema.clone().filter(|s| !s.is_empty()),
+            name: fk.ref_table.clone(),
+            kind: crate::db::ObjectKind::Table,
+        };
+        self.fk_seq += 1;
+        let seq = self.fk_seq;
+        let conn = self.shared.conn.clone();
+        let cache_key = target.title();
+        let cached = self.fk_labels.get(&cache_key).cloned();
+        let task = runtime::spawn(async move {
+            let c = conn.read().await;
+            // Labels: the first two text columns other than the key.
+            let labels = match cached {
+                Some(l) => l,
+                None => c
+                    .structure(&target)
+                    .await?
+                    .columns
+                    .iter()
+                    .filter(|c| c.name != key)
+                    .filter(|c| {
+                        let t = c.data_type.to_ascii_lowercase();
+                        t.contains("char") || t.contains("text")
+                    })
+                    .take(2)
+                    .map(|c| c.name.clone())
+                    .collect(),
+            };
+            let matches = c.fk_matches(&target, &key, &labels, &text, 5).await?;
+            anyhow::Ok((labels, matches))
+        });
+        cx.spawn(async move |this, cx| {
+            let res = task.await;
+            this.update(cx, |this, cx| {
+                if seq != this.fk_seq {
+                    return;
+                }
+                let matches = match res {
+                    Ok((labels, matches)) => {
+                        this.fk_labels.insert(cache_key, labels);
+                        matches
+                    }
+                    // A failed lookup just shows no matches.
+                    Err(_) => vec![],
+                };
+                this.table.update(cx, |t, cx| {
+                    let g = t.delegate_mut();
+                    // Only while that cell is still being edited.
+                    if g.editing.as_ref().is_some_and(|(_, c, _)| *c == col) {
+                        g.fk_matches = Some(matches);
+                        cx.notify();
+                    }
+                });
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// → on a foreign-key cell: open the referenced table filtered to the

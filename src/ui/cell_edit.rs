@@ -346,11 +346,16 @@ pub fn start_edit<H: CellEditHost>(
         window,
         |host: &mut H, _, ev: &InputEvent, window, cx| match ev {
             InputEvent::PressEnter { .. } => {
+                pick_fk_match(host, window, cx);
                 try_finish_edit(host, window, cx);
             }
             InputEvent::Blur => leave_edit(host, window, cx),
-            // The check under the cell follows the text.
-            InputEvent::Change => host.grid().update(cx, |_, cx| cx.notify()),
+            // The check under the cell (and foreign-key matches) follow the
+            // text.
+            InputEvent::Change => {
+                fk_search(host, window, cx);
+                host.grid().update(cx, |_, cx| cx.notify())
+            }
             _ => {}
         },
     ));
@@ -367,9 +372,55 @@ pub fn start_edit<H: CellEditHost>(
         }
     });
     host.grid().update(cx, |t, cx| {
-        t.delegate_mut().editing = Some((r, c, CellEditor::Text(input)));
+        let g = t.delegate_mut();
+        g.cal_month = None;
+        g.fk_matches = None;
+        g.fk_highlight = None;
+        g.editing = Some((r, c, CellEditor::Text(input)));
         cx.notify();
     });
+    fk_search(host, window, cx);
+}
+
+/// A foreign-key cell is being edited: ask the host for rows matching its
+/// text.
+fn fk_search<H: CellEditHost>(host: &mut H, window: &mut Window, cx: &mut Context<H>) {
+    let g = host.grid().read(cx).delegate();
+    let Some((_, c, CellEditor::Text(input))) = &g.editing else {
+        return;
+    };
+    if !g.links.get(*c).copied().unwrap_or(false) {
+        return;
+    }
+    let Some(search) = g.on_fk_search.clone() else {
+        return;
+    };
+    let (c, text) = (*c, input.read(cx).value().trim().to_string());
+    host.grid().update(cx, |t, _| {
+        let g = t.delegate_mut();
+        g.fk_matches = None;
+        g.fk_highlight = None;
+    });
+    // Later: the host is in the middle of an update right now.
+    window.defer(cx, move |window, cx| search(c, text, window, cx));
+}
+
+/// ↵ with a foreign-key match highlighted: that key becomes the value.
+fn pick_fk_match<H: CellEditHost>(host: &mut H, window: &mut Window, cx: &mut Context<H>) {
+    let g = host.grid().read(cx).delegate();
+    let Some((_, _, CellEditor::Text(input))) = &g.editing else {
+        return;
+    };
+    let Some(key) = g
+        .fk_highlight
+        .and_then(|i| g.fk_matches.as_ref()?.get(i))
+        .map(|(k, _)| k.clone())
+    else {
+        return;
+    };
+    input
+        .clone()
+        .update(cx, |i, cx| i.set_value(key, window, cx));
 }
 
 /// Why the open text editor can't be saved, if it can't.

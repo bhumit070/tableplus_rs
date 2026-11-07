@@ -857,6 +857,62 @@ async fn check_in_values() {
     }
 }
 
+/// The foreign-key picker's lookup: key prefix or label text, case-
+/// insensitive, with LIKE wildcards taken literally.
+async fn fk_matches_scenario(driver: Driver) {
+    let cfg = cfg(driver);
+    let c = Connection::connect(&cfg).await.expect("connect");
+    c.execute(
+        "drop table if exists it_fk_parent; \
+         create table it_fk_parent (id int primary key, name varchar(40), email varchar(80)); \
+         insert into it_fk_parent values (1, 'Priya Raman', 'priya@example.com'), \
+           (2, 'Marcus Lee', 'marcus@example.com'), (12, 'Ana 100%_x', null)",
+    )
+    .await
+    .unwrap();
+    let objects = c.list_objects().await.unwrap();
+    let t = obj(&objects, "it_fk_parent");
+    let labels = ["name".to_string(), "email".to_string()];
+    let keys = |m: Vec<(String, String)>| m.into_iter().map(|(k, _)| k).collect::<Vec<_>>();
+    let all = c.fk_matches(&t, "id", &labels, "", 5).await.unwrap();
+    assert_eq!(keys(all.clone()), ["1", "2", "12"], "{driver:?}");
+    assert_eq!(all[0].1, "Priya Raman · priya@example.com", "{driver:?}");
+    assert_eq!(
+        keys(c.fk_matches(&t, "id", &labels, "1", 5).await.unwrap()),
+        ["1", "12"],
+        "{driver:?}"
+    );
+    assert_eq!(
+        keys(c.fk_matches(&t, "id", &labels, "LEE", 5).await.unwrap()),
+        ["2"],
+        "{driver:?}"
+    );
+    // % and _ are just characters here.
+    assert_eq!(
+        keys(c.fk_matches(&t, "id", &labels, "%_", 5).await.unwrap()),
+        ["12"],
+        "{driver:?}"
+    );
+    assert_eq!(
+        keys(c.fk_matches(&t, "id", &labels, "", 1).await.unwrap()),
+        ["1"]
+    );
+    c.execute("drop table it_fk_parent").await.unwrap();
+    c.close().await;
+    if driver == Driver::Sqlite {
+        let _ = std::fs::remove_file(&cfg.file);
+    }
+}
+
+#[tokio::test]
+async fn fk_matches() {
+    fk_matches_scenario(Driver::Sqlite).await;
+    if it_enabled() {
+        fk_matches_scenario(Driver::Postgres).await;
+        fk_matches_scenario(Driver::MySql).await;
+    }
+}
+
 /// Postgres through an SSH tunnel (in-process SSH server → the test container).
 #[tokio::test]
 async fn postgres_over_ssh() {

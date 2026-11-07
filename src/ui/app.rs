@@ -1395,11 +1395,11 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(editing(&mut cx), None);
 
-        // A valid number saves.
+        // A valid number saves; ↑ / ↓ step it (⇧ by 10).
         tab.update_in(&mut cx, |t, w, cx| t.select_cell(0, 1, w, cx));
-        cx.simulate_keystrokes("4 2 enter");
+        cx.simulate_keystrokes("4 2 up up shift-down enter");
         cx.run_until_parked();
-        assert_eq!(staged(&mut cx, 0, 1), Some(Some("42".into())));
+        assert_eq!(staged(&mut cx, 0, 1), Some(Some("34".into())));
 
         // Space flips a boolean in the column's own spelling.
         tab.update_in(&mut cx, |t, w, cx| t.select_cell(0, 2, w, cx));
@@ -1418,6 +1418,191 @@ mod tests {
         cx.simulate_keystrokes("alt-enter");
         cx.run_until_parked();
         assert!(cx.update(|w, cx| w.has_active_dialog(cx)));
+        let _ = std::fs::remove_file(file);
+    }
+
+    /// The date editor's calendar, Generate (UUID) and Now (time) set the
+    /// value with a click, and editing carries on until ↵.
+    #[gpui::test]
+    fn picker_buttons_in_cell_editors(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-pickers-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        futures::executor::block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute(
+                "create table t (id integer primary key, d date, ts timestamp, u uuid, tm time); \
+                 insert into t (d, ts, u, tm) values ('2026-11-06', '2026-11-06 09:41:00', \
+                   '5f0c2a1e-8b7d-4c3e-9a51-0d8f3b2e7c41', '10:00:00')",
+            )
+            .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("t").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let i = s.object_index("t").unwrap();
+            s.open_object(i, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "rows", |cx| {
+            tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 1)
+        });
+        let editing = |cx: &mut VisualTestContext| tab.read_with(cx, |t, cx| t.editing_cell(cx));
+        let staged =
+            |cx: &mut VisualTestContext, r, c| tab.read_with(cx, |t, cx| t.staged(r, c, cx));
+        let click = |cx: &mut VisualTestContext, what: &'static str| {
+            let b = cx
+                .debug_bounds(what)
+                .unwrap_or_else(|| panic!("{what} not drawn"));
+            cx.simulate_click(b.center(), gpui::Modifiers::none());
+            cx.run_until_parked();
+        };
+
+        // A date: click the 15th, then ↵.
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(0, 1, w, cx));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        click(&mut cx, "cal-day-15");
+        assert_eq!(
+            editing(&mut cx),
+            Some((0, 1)),
+            "still editing after a click"
+        );
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(staged(&mut cx, 0, 1), Some(Some("2026-11-15".into())));
+
+        // A timestamp keeps its time of day.
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(0, 2, w, cx));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        click(&mut cx, "cal-day-1");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(
+            staged(&mut cx, 0, 2),
+            Some(Some("2026-11-01 09:41:00".into()))
+        );
+
+        // A UUID: Generate makes a new one.
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(0, 3, w, cx));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        click(&mut cx, "uuid-generate");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        let u = staged(&mut cx, 0, 3).flatten().expect("a new uuid staged");
+        assert_ne!(u, "5f0c2a1e-8b7d-4c3e-9a51-0d8f3b2e7c41");
+        assert_eq!(
+            crate::ui::cell_value::normalize_uuid(&u).as_deref(),
+            Some(u.as_str())
+        );
+
+        // A time: Now.
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(0, 4, w, cx));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        click(&mut cx, "time-now");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        let tm = staged(&mut cx, 0, 4).flatten().expect("a time staged");
+        assert!(
+            chrono::NaiveTime::parse_from_str(&tm, "%H:%M:%S").is_ok(),
+            "{tm}"
+        );
+        let _ = std::fs::remove_file(file);
+    }
+
+    /// Editing a foreign-key cell lists matching rows of the referenced
+    /// table (by key or name); ↓ ↵ or a click picks one.
+    #[gpui::test]
+    fn foreign_key_picker(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-fkpick-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        futures::executor::block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute(
+                "create table customers (id integer primary key, name text, email text); \
+                 insert into customers values (1, 'Priya Raman', 'p@example.com'), \
+                   (2, 'Marcus Lee', 'm@example.com'), (3, 'Ana Souza', 'a@example.com'); \
+                 create table orders (id integer primary key, \
+                   customer_id integer references customers(id)); \
+                 insert into orders values (10, 1)",
+            )
+            .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("orders").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let i = s.object_index("orders").unwrap();
+            s.open_object(i, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "rows", |cx| {
+            tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 1)
+        });
+        let matches =
+            |cx: &mut VisualTestContext| tab.read_with(cx, |t, cx| t.fk_matches_for_test(cx));
+        let staged =
+            |cx: &mut VisualTestContext, r, c| tab.read_with(cx, |t, cx| t.staged(r, c, cx));
+
+        // Typing a name finds the row; ↓ ↵ picks its key.
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(0, 1, w, cx));
+        cx.simulate_keystrokes("enter");
+        cx.simulate_input("lee");
+        wait_until(&mut cx, "matches", |cx| {
+            matches(cx) == Some(vec!["2".into()])
+        });
+        cx.simulate_keystrokes("down enter");
+        cx.run_until_parked();
+        assert_eq!(staged(&mut cx, 0, 1), Some(Some("2".into())));
+
+        // The editor opens searching for the current key; with the text
+        // cleared it lists the first rows. A click picks one; ↵ saves.
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(0, 1, w, cx));
+        cx.simulate_keystrokes("enter");
+        wait_until(&mut cx, "current key", |cx| {
+            matches(cx) == Some(vec!["2".into()])
+        });
+        cx.simulate_keystrokes("backspace");
+        wait_until(&mut cx, "all rows", |cx| {
+            matches(cx).is_some_and(|m| m.len() == 3)
+        });
+        let b = cx.debug_bounds("fk-match-2").expect("third match drawn");
+        cx.simulate_click(b.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(staged(&mut cx, 0, 1), Some(Some("3".into())));
         let _ = std::fs::remove_file(file);
     }
 

@@ -81,6 +81,10 @@ gpui::actions!(
         CopyCell,
         SetNull,
         OpenCellEditor,
+        CellUp,
+        CellDown,
+        CellUpMore,
+        CellDownMore,
         GoHome,
         OpenConnection,
         Connection1,
@@ -311,6 +315,12 @@ pub fn key_bindings() -> Vec<KeyBinding> {
             Some("EditableGrid > DataTable"),
         ),
         KeyBinding::new("alt-enter", OpenCellEditor, Some("CellEditor > Input")),
+        // In the cell editor: move through foreign-key matches, or step a
+        // number (⇧: by 10). They outrank the text input's own ↑ / ↓.
+        KeyBinding::new("up", CellUp, Some("CellEditor > Input")),
+        KeyBinding::new("down", CellDown, Some("CellEditor > Input")),
+        KeyBinding::new("shift-up", CellUpMore, Some("CellEditor > Input")),
+        KeyBinding::new("shift-down", CellDownMore, Some("CellEditor > Input")),
         KeyBinding::new("escape", CancelCellEdit, Some("CellEditor > Input")),
         KeyBinding::new("tab", NextCell, Some("CellEditor > Input")),
         KeyBinding::new("shift-tab", PrevCell, Some("CellEditor > Input")),

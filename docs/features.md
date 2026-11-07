@@ -34,8 +34,16 @@
   get true / false (/ NULL), and Space flips one without opening it.
 - **Checked as you type:** whole numbers and their range, decimals (with the
   stored form, e.g. "saved as 118.40"), `varchar(n)` length with a live
-  counter, JSON and UUIDs. ↵ / Tab won't save an invalid value; ↑ / ↓ step a
-  number (⇧ by 10); UUID cells have *Generate*.
+  counter, dates and times, JSON and UUIDs. ↵ / Tab won't save an invalid
+  value; ↑ / ↓ step a number (⇧ by 10); UUID cells have *Generate*.
+- **Date cells** show a month calendar under the cell (the time of day is
+  kept), with *Today* and *Now*; time cells have *Now*. The text stays
+  editable.
+- **Foreign-key cells** list up to 5 rows of the referenced table matching
+  the typed key or name (its first text columns); ↑ / ↓ and ↵ or a click
+  pick one.
+- **Arrays** (PostgreSQL) and MySQL `SET` values show as chips; binary
+  columns show their type and size instead of hex.
 - **⌥⌫** sets the selected cell to NULL; **⌥↵** opens the bigger editor,
   which JSON cells use by default: highlighted, *Format*, live validity,
   *Set NULL*.
