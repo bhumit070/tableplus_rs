@@ -17,6 +17,7 @@ pub mod ssh;
 pub mod target;
 pub mod url;
 
+use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::time::Instant;
 
 use anyhow::{Context as _, Result};
@@ -331,6 +332,22 @@ pub struct QueryResult {
     pub elapsed_ms: u128,
     /// The statement this result belongs to, for multi-statement runs.
     pub statement: String,
+}
+
+/// Context on the error of a batch that stopped partway: which statement
+/// failed and the results of those before it, so the UI can show them next
+/// to the error. Reads as the old message ("statement 2 of 3 failed. …").
+#[derive(Clone, Debug)]
+pub struct BatchFailed {
+    pub index: usize,
+    pub done: Vec<QueryResult>,
+    pub message: String,
+}
+
+impl Display for BatchFailed {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        f.write_str(&self.message)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

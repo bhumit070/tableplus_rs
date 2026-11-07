@@ -104,8 +104,12 @@ time: **More info → Run anyway**.
   functions, **Stop** (⌘.) that cancels on the server, a **SQL formatter**
   (⌘⇧F), **query history** (⌘Y) and **saved queries** (⌘⇧S / ⌘⇧O).
   Single-table results are editable like a table.
-- **EXPLAIN** (⌘E) as a plan tree with cost, rows and a bar per step;
+- **EXPLAIN** (⌘E) as a plan tree with each step's own share of the cost,
+  estimate vs. actual rows, and one tip for the most expensive step;
   *Analyze* shows actual times (run inside a rolled-back transaction).
+  Result tabs show a status dot per statement; a failing statement keeps
+  the earlier results and is underlined in the editor. Optional row
+  **Limit** for SELECTs.
 - **Admin:** process list with cancel / kill (⌘⇧P), backup / restore
   (`pg_dump` / `psql`, `mysqldump` / `mysql`, SQLite file copy), create /
   drop databases, rename / duplicate / vacuum tables.

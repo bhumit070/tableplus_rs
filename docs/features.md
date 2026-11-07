@@ -78,15 +78,25 @@
   aliases), keywords and functions. Redis and MongoDB get command and
   method names.
 - ⌘↵ runs the selection, or the whole editor. **One result tab per
-  statement.**
+  statement**, each with a status dot (green rows, amber rows affected, red
+  error) and rows · time. When a statement fails, the ones before it keep
+  their results, the error gets its own tab, and the statement is
+  underlined in the editor.
+- **Run on** shows (and switches, ⌘K) the database; **Limit** adds
+  `LIMIT n` to SELECTs that have none (history keeps what you typed).
+- A **read-only** badge says why a result can't be edited. The status bar
+  shows the cursor's line and column.
 - **Stop** (⌘.) cancels the running statement on the server
   (`pg_cancel_backend` / `KILL QUERY`), not just in the app.
 - **Editable results:** a single-table `SELECT` can be edited like a table.
 - **SQL formatter** (⌘⇧F), **query history** (⌘Y), **saved queries**
   (⌘⇧S / ⌘⇧O) for one connection or all of them.
-- **EXPLAIN** (⌘E) as a plan tree with cost, rows and a bar per step.
-  *Analyze* shows actual times; it runs inside a transaction that is rolled
-  back.
+- **EXPLAIN** (⌘E) as a plan tree (or the raw output). Each step's bar is
+  its *own* cost or time as a share of the plan (red for the biggest); row
+  estimates that are off by more than 10× are amber. One plain-language tip
+  for the most expensive step, such as an index for a filtered full scan
+  (with Copy CREATE INDEX). The *Analyze* switch shows actual times; it runs
+  inside a transaction that is rolled back. Copy plan copies the raw output.
 
 ## Copy, export and import
 

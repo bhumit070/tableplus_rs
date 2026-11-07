@@ -1949,7 +1949,7 @@ impl Session {
     pub fn status_context(&self, cx: &App) -> Option<String> {
         match self.tabs.get(self.active)? {
             TabItem::Table(t) => Some(t.read(cx).status_line(cx)),
-            TabItem::Query(q) => q.read(cx).status_line(),
+            TabItem::Query(q) => Some(q.read(cx).status_line(cx)),
         }
     }
 }

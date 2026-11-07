@@ -6,29 +6,37 @@ use std::sync::Arc;
 
 use gpui::{
     App, ClipboardItem, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement,
-    Render, SharedString, Styled, Subscription, Window, div, prelude::*, px, rems,
+    Render, SharedString, Styled, Subscription, Window, div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dialog::DialogFooter;
-use gpui_component::input::{Editor, EditorState, Input, InputState};
+use gpui_component::input::{Editor, EditorState, Input, InputState, Position};
+use gpui_component::menu::DropdownMenu as _;
 use gpui_component::menu::PopupMenuItem;
 use gpui_component::notification::Notification;
-use gpui_component::tab::{Tab, TabBar};
+use gpui_component::switch::Switch;
 use gpui_component::table::{TableEvent, TableState};
 use gpui_component::{
-    ActiveTheme as _, Selectable as _, Sizable as _, WindowExt as _, h_flex, resizable_panel,
+    ActiveTheme as _, Icon, Selectable as _, Sizable as _, WindowExt as _, h_flex, resizable_panel,
     v_flex, v_resizable,
 };
 use gpui_kit_assets::IconName;
 
 use super::cell_edit::{self, EditStart};
 use super::copy;
+use super::dialog;
 use super::grid::{Grid, data_table};
 use super::row_panel;
-use super::{RunQuery, Shared};
-use crate::db::{Cancel, ColumnInfo, DbObject, Driver, ObjectKind, QueryResult};
+use super::theme::{dp, kbd, tokens};
+use super::{DisabledWhen as _, QueryHistory, RunQuery, Shared, SwitchDatabase};
+use crate::db::explain::{self, PlanNode};
+use crate::db::split::split_statements;
+use crate::db::target::with_limit;
+use crate::db::{BatchFailed, Cancel, ColumnInfo, DbObject, Driver, ObjectKind, QueryResult};
 use crate::{history, runtime};
-use gpui::{AnyElement, FontWeight};
+use anyhow::Error;
+use gpui::{AnyElement, FontWeight, Hsla, relative, transparent_black};
+use lsp_types::{Diagnostic as LspDiagnostic, DiagnosticSeverity, Range as LspRange};
 use uuid::Uuid;
 
 pub struct QueryTab {
@@ -58,9 +66,19 @@ pub struct QueryTab {
     /// A commit is on its way; ⌘S again mustn't send it twice.
     committing: bool,
     /// The last EXPLAIN, shown instead of results until the next run.
-    plan: Option<crate::db::explain::PlanNode>,
+    plan: Option<PlanNode>,
+    /// The server's answer for `plan`, for the Raw view and Copy plan.
+    plan_raw: String,
+    /// Whether `plan` came from EXPLAIN ANALYZE.
+    plan_analyzed: bool,
+    /// Plan shown as text instead of the tree.
+    plan_as_raw: bool,
     /// Set once this tab's text is a saved query; ⌘⇧S then updates it.
     saved: Option<crate::saved::SavedQuery>,
+    /// Rows a plain SELECT is limited to (toolbar "Limit"); `None` = all.
+    limit: Option<usize>,
+    /// With `error`: the statement that failed, for its tab.
+    error_stmt: Option<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -112,6 +130,18 @@ fn placeholder(d: Driver) -> &'static str {
         _ => "SELECT * FROM users WHERE id = 1;",
     }
 }
+
+/// The editor position (line, UTF-16 column) of byte `offset` in `text`.
+fn position(text: &str, offset: usize) -> Position {
+    let before = &text[..offset.min(text.len())];
+    let line = before.matches('\n').count() as u32;
+    let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let character = before[line_start..].encode_utf16().count() as u32;
+    Position { line, character }
+}
+
+/// Toolbar "Limit" choices.
+const LIMITS: [Option<usize>; 5] = [None, Some(100), Some(500), Some(1000), Some(5000)];
 
 impl QueryTab {
     pub fn new(
@@ -186,7 +216,12 @@ impl QueryTab {
             cancel: None,
             show_detail: false,
             saved: None,
+            limit: None,
+            error_stmt: None,
             plan: None,
+            plan_raw: String::new(),
+            plan_analyzed: false,
+            plan_as_raw: false,
             committing: false,
             error: None,
             elapsed: 0,
@@ -243,7 +278,6 @@ impl QueryTab {
     /// ⌘E: the plan of the selected / first statement. `analyze` runs it
     /// (inside a transaction that's rolled back, so writes don't stick).
     pub fn explain(&mut self, analyze: bool, window: &mut Window, cx: &mut Context<Self>) {
-        use crate::db::explain;
         if self.running {
             return;
         }
@@ -283,17 +317,23 @@ impl QueryTab {
                 window,
                 cx,
                 move |w, cx| {
-                    weak.update(cx, |t, cx| t.run_explain(w2.clone(), w, cx))
+                    weak.update(cx, |t, cx| t.run_explain(w2.clone(), true, w, cx))
                         .ok();
                 },
             ) {
                 return;
             }
         }
-        self.run_explain(wrapped, window, cx);
+        self.run_explain(wrapped, analyze, window, cx);
     }
 
-    fn run_explain(&mut self, sql: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn run_explain(
+        &mut self,
+        sql: String,
+        analyze: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let driver = self.shared.cfg.driver;
         self.running = true;
         self.error = None;
@@ -313,7 +353,7 @@ impl QueryTab {
                 })
                 .cloned()
                 .unwrap_or_default();
-            crate::db::explain::parse(driver, &r)
+            Ok((explain::parse(driver, &r)?, explain::raw_text(driver, &r)))
         });
         cx.spawn_in(window, async move |this, cx| {
             let res = task.await;
@@ -321,7 +361,11 @@ impl QueryTab {
                 this.running = false;
                 this.cancel = None;
                 match res {
-                    Ok(p) => this.plan = Some(p),
+                    Ok((p, raw)) => {
+                        this.plan = Some(p);
+                        this.plan_raw = raw;
+                        this.plan_analyzed = analyze;
+                    }
                     Err(e) => this.error = Some(format!("{e:#}")),
                 }
                 cx.notify();
@@ -331,104 +375,279 @@ impl QueryTab {
         .detach();
     }
 
-    fn render_plan(
-        &self,
-        plan: &crate::db::explain::PlanNode,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let theme = cx.theme().clone();
+    fn render_plan(&self, plan: &PlanNode, cx: &mut Context<Self>) -> AnyElement {
+        let t = tokens(cx);
+        let mono = cx.theme().mono_font_family.clone();
+        let driver = self.shared.cfg.driver;
+        let me = cx.entity();
+        let header =
+            h_flex()
+                .h(dp(40.))
+                .flex_none()
+                .px(dp(10.))
+                .gap(dp(10.))
+                .border_b_1()
+                .border_color(t.border)
+                .child(
+                    dialog::segmented(
+                        "plan-view",
+                        &["Tree", "Raw"],
+                        self.plan_as_raw as usize,
+                        Rc::new({
+                            let me = me.clone();
+                            move |i, _, cx| {
+                                me.update(cx, |this, cx| {
+                                    this.plan_as_raw = i == 1;
+                                    cx.notify();
+                                })
+                            }
+                        }),
+                        cx,
+                    )
+                    .w(dp(140.)),
+                )
+                .when(driver != Driver::Sqlite, |d| {
+                    d.child(
+                        Switch::new("plan-analyze")
+                            .checked(self.plan_analyzed)
+                            .label("Analyze")
+                            .tooltip("Run it for real times and rows (rolled back afterwards)")
+                            .on_click(cx.listener(|this, on: &bool, window, cx| {
+                                this.explain(*on, window, cx)
+                            })),
+                    )
+                })
+                .child(div().flex_1())
+                .children(plan.details.iter().filter(|d| d.ends_with(" ms")).map(|d| {
+                    div()
+                        .text_size(dp(11.5))
+                        .text_color(t.text_muted)
+                        .child(d.clone())
+                }))
+                .child(
+                    Button::new("copy-plan")
+                        .cursor_pointer()
+                        .icon(IconName::Copy)
+                        .label("Copy plan")
+                        .ghost()
+                        .xsmall()
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(this.plan_raw.clone()));
+                            window.push_notification("Plan copied", cx);
+                        })),
+                );
+        if self.plan_as_raw {
+            return v_flex()
+                .size_full()
+                .child(header)
+                .child(
+                    div()
+                        .id("plan-raw")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .p(dp(12.))
+                        .font_family(mono)
+                        .text_size(dp(12.))
+                        .text_color(t.text_secondary)
+                        .children(self.plan_raw.lines().map(|l| {
+                            div().whitespace_nowrap().child(if l.is_empty() {
+                                " ".to_string()
+                            } else {
+                                l.to_string()
+                            })
+                        })),
+                )
+                .into_any_element();
+        }
+
         let nodes = plan.flatten();
-        let max = nodes
-            .iter()
-            .map(|(_, n)| n.self_weight())
-            .fold(0.0_f64, f64::max)
+        let total = plan
+            .actual_ms
+            .or(plan.cost)
+            .unwrap_or(0.0)
             .max(f64::EPSILON);
-        let fmt = |v: f64| {
+        let hottest = nodes
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.1.self_weight().total_cmp(&b.1.1.self_weight()))
+            .map(|(i, _)| i);
+        let num = |v: f64| {
             if v >= 100.0 {
+                group(v.round() as u64)
+            } else if v.fract() == 0.0 {
                 format!("{v:.0}")
             } else {
                 format!("{v:.2}")
             }
         };
-        div()
-            .id("plan")
-            .size_full()
-            .overflow_y_scroll()
-            .p_2()
-            .child(
-                v_flex()
-                    .gap_1()
-                    .children(nodes.into_iter().map(|(depth, n)| {
-                        let share = n.self_weight() / max;
-                        let bar = if share > 0.66 {
-                            theme.danger
-                        } else if share > 0.33 {
-                            theme.warning
-                        } else {
-                            theme.success
-                        };
-                        let mut stats = vec![];
-                        if let Some(c) = n.cost {
-                            stats.push(format!("cost {}", fmt(c)));
-                        }
-                        if let Some(r) = n.rows {
-                            stats.push(format!("est. rows {}", fmt(r)));
-                        }
-                        if let Some(t) = n.actual_ms {
-                            stats.push(format!("{} ms", fmt(t)));
-                        }
-                        if let Some(r) = n.actual_rows {
-                            stats.push(format!("rows {}", fmt(r)));
-                        }
-                        h_flex()
-                            .pl(px(16. * depth as f32))
-                            .gap_2()
-                            .items_start()
-                            .child(
+        let col = |w: f32| div().flex_none().w(dp(w));
+        // SQLite's plan has steps but no numbers: no bars then.
+        let costed = nodes
+            .iter()
+            .any(|(_, n)| n.cost.is_some() || n.actual_ms.is_some());
+        let head = h_flex()
+            .h(dp(30.))
+            .px(dp(12.))
+            .gap(dp(12.))
+            .border_b_1()
+            .border_color(t.border)
+            .bg(t.sidebar)
+            .text_size(dp(11.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(t.text_muted)
+            .child(div().flex_1().child("OPERATION"))
+            .when(costed, |d| {
+                d.child(col(130.).child(if self.plan_analyzed {
+                    "OWN TIME"
+                } else {
+                    "OWN COST"
+                }))
+                .child(col(150.).child("SELF · WITH CHILDREN"))
+                .child(col(150.).child("ROWS  EST → ACTUAL"))
+            })
+            .when(self.plan_analyzed, |d| d.child(col(80.).child("TIME")));
+        let rows = nodes.iter().enumerate().map(|(i, (depth, n))| {
+            let own = n.self_weight() / total;
+            let incl = n.actual_ms.or(n.cost).unwrap_or(0.0) / total;
+            let bar = if Some(i) == hottest && own > 0.0 {
+                t.danger
+            } else if own > 0.3 {
+                t.warning
+            } else {
+                t.accent
+            };
+            let rows_text = match (n.rows, n.actual_rows) {
+                (Some(e), Some(a)) => {
+                    let off = (e.max(1.0) / a.max(1.0)).max(a.max(1.0) / e.max(1.0)) > 10.0;
+                    div().when(off, |d| d.text_color(t.warning)).child(format!(
+                        "{} → {}",
+                        num(e),
+                        num(a)
+                    ))
+                }
+                (Some(e), None) => div().child(num(e)),
+                (None, Some(a)) => div().child(format!("→ {}", num(a))),
+                (None, None) => div().text_color(t.text_faint).child("—"),
+            };
+            h_flex()
+                .px(dp(12.))
+                .py(dp(7.))
+                .gap(dp(12.))
+                .items_start()
+                .border_b_1()
+                .border_color(t.border.opacity(0.6))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .pl(dp(22. * *depth as f32))
+                        .gap(dp(2.))
+                        .child(
+                            div()
+                                .text_size(dp(12.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(t.text)
+                                .child(n.label.clone()),
+                        )
+                        .children(n.details.iter().filter(|d| !d.ends_with(" ms")).map(|d| {
+                            div()
+                                .font_family(mono.clone())
+                                .text_size(dp(11.5))
+                                .text_color(t.text_muted)
+                                .child(d.clone())
+                        })),
+                )
+                .when(costed, |d| {
+                    d.child(
+                        col(130.).pt(dp(5.)).child(
+                            div().h(dp(6.)).w_full().rounded_full().bg(t.hover).child(
                                 div()
-                                    .mt(px(6.))
-                                    .w(px(48.))
-                                    .h(px(6.))
-                                    .flex_none()
-                                    .rounded_sm()
-                                    .bg(theme.border)
-                                    .child(
-                                        div()
-                                            .h_full()
-                                            .rounded_sm()
-                                            .w(px(48. * share as f32))
-                                            .bg(bar),
-                                    ),
-                            )
+                                    .h_full()
+                                    .rounded_full()
+                                    .bg(bar)
+                                    .w(relative(own.clamp(0.0, 1.0) as f32)),
+                            ),
+                        ),
+                    )
+                    .child(
+                        col(150.)
+                            .text_size(dp(11.5))
+                            .text_color(t.text_secondary)
+                            .child(format!(
+                                "self {:.0}% · total {:.0}%",
+                                own * 100.0,
+                                incl * 100.0
+                            )),
+                    )
+                    .child(
+                        col(150.)
+                            .font_family(mono.clone())
+                            .text_size(dp(11.5))
+                            .text_color(t.text_secondary)
+                            .child(rows_text),
+                    )
+                })
+                .when(self.plan_analyzed, |d| {
+                    d.child(
+                        col(80.)
+                            .font_family(mono.clone())
+                            .text_size(dp(11.5))
+                            .text_color(t.text_secondary)
                             .child(
-                                v_flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(
-                                        h_flex()
-                                            .gap_2()
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .child(n.label.clone()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(theme.muted_foreground)
-                                                    .child(stats.join(" · ")),
-                                            ),
-                                    )
-                                    .children(n.details.iter().map(|d| {
-                                        div()
-                                            .text_xs()
-                                            .font_family(theme.mono_font_family.clone())
-                                            .text_color(theme.muted_foreground)
-                                            .child(d.clone())
-                                    })),
-                            )
-                    })),
+                                n.actual_ms
+                                    .map(|ms| format!("{} ms", num(ms)))
+                                    .unwrap_or_default(),
+                            ),
+                    )
+                })
+        });
+        let tip = explain::insight(plan).map(|i| {
+            let sql = i.sql.clone();
+            h_flex()
+                .m(dp(10.))
+                .px(dp(12.))
+                .py(dp(10.))
+                .gap(dp(10.))
+                .rounded(dp(8.))
+                .border_1()
+                .border_color(t.accent.opacity(0.35))
+                .bg(t.accent.opacity(0.08))
+                .child(Icon::new(IconName::Lightbulb).small().text_color(t.accent))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(dp(12.5))
+                        .text_color(t.text)
+                        .child(i.text),
+                )
+                .when_some(sql, |d, sql| {
+                    d.child(
+                        Button::new("copy-index")
+                            .cursor_pointer()
+                            .icon(IconName::Copy)
+                            .label("Copy CREATE INDEX")
+                            .outline()
+                            .xsmall()
+                            .on_click(move |_, window, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(sql.clone()));
+                                window.push_notification("Copied", cx);
+                            }),
+                    )
+                })
+        });
+        v_flex()
+            .size_full()
+            .child(header)
+            .children(tip)
+            .child(head)
+            .child(
+                div()
+                    .id("plan")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(v_flex().children(rows)),
             )
             .into_any_element()
     }
@@ -438,7 +657,26 @@ impl QueryTab {
         self.last_run = text.clone();
         self.running = true;
         self.error = None;
+        self.error_stmt = None;
+        self.mark_failed(None, cx);
         cx.notify();
+        let driver = self.shared.cfg.driver;
+        let stmts = match driver {
+            Driver::Postgres | Driver::MySql | Driver::Sqlite => {
+                split_statements(&text, driver == Driver::MySql)
+            }
+            _ => vec![],
+        };
+        // The toolbar limit: added to plain SELECTs that have none. History
+        // keeps the text as typed.
+        let to_run = match self.limit {
+            Some(n) if !stmts.is_empty() => stmts
+                .iter()
+                .map(|s| with_limit(s, n).unwrap_or_else(|| s.clone()))
+                .collect::<Vec<_>>()
+                .join(";\n"),
+            _ => text.clone(),
+        };
         let conn = self.shared.conn.clone();
         let start = std::time::Instant::now();
         let cancel = Arc::new(Cancel::default());
@@ -447,7 +685,7 @@ impl QueryTab {
         let task = runtime::spawn(async move {
             let c = conn.read().await;
             let ran_at = history::now();
-            let res = c.execute_cancellable(&text, &cancel).await;
+            let res = c.execute_cancellable(&to_run, &cancel).await;
             let entry = history::Entry {
                 conn_id,
                 database: c.current_database(),
@@ -474,7 +712,7 @@ impl QueryTab {
         });
         cx.spawn_in(window, async move |this, cx| {
             let res = task.await;
-            this.update_in(cx, |this, window, cx| {
+            this.update_in(cx, |this, _, cx| {
                 this.running = false;
                 this.cancel = None;
                 this.elapsed = start.elapsed().as_millis();
@@ -489,13 +727,21 @@ impl QueryTab {
                         this.show_active(cx);
                     }
                     Err(e) => {
-                        this.error = Some(format!("{e:#}"));
+                        this.error = Some(error_text(&e));
                         let cancelled = e
                             .root_cause()
                             .to_string()
                             .starts_with(crate::db::cancel::CANCELLED);
+                        // What ran before the failing statement stays
+                        // visible, next to the error's own tab.
+                        let failed = e.downcast_ref::<BatchFailed>().cloned();
+                        let index = failed.as_ref().map(|f| f.index);
+                        this.results = failed.map(|f| f.done).unwrap_or_default();
+                        this.error_stmt = index.and_then(|i| stmts.get(i).cloned());
+                        this.active = this.results.len();
+                        this.show_active(cx);
                         if !cancelled {
-                            window.push_notification(Notification::error("Query failed"), cx);
+                            this.mark_failed(index, cx);
                         }
                     }
                 }
@@ -623,6 +869,50 @@ impl QueryTab {
     }
 
     /// ⌘. / Stop: cancels the running batch.
+    /// Underlines statement `index` of the last run in the editor (or
+    /// clears the mark). Only when that text is still in the editor.
+    fn mark_failed(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
+        let driver = self.shared.cfg.driver;
+        let full = self.editor.read(cx).value().to_string();
+        let range = index.and_then(|i| {
+            let base = full.find(&self.last_run)?;
+            let stmts = split_statements(&self.last_run, driver == Driver::MySql);
+            let mut from = 0;
+            let mut found = None;
+            for (n, stmt) in stmts.iter().enumerate() {
+                let t = stmt.trim();
+                let at = self.last_run[from..].find(t)? + from;
+                if n == i {
+                    found = Some((base + at, base + at + t.len()));
+                    break;
+                }
+                from = at + t.len();
+            }
+            found
+        });
+        let message = self.error.clone().unwrap_or_default();
+        self.editor.update(cx, |e, cx| {
+            if let Some(d) = e.diagnostics_mut() {
+                d.clear();
+                if let Some((a, b)) = range {
+                    d.push(LspDiagnostic {
+                        range: LspRange::new(position(&full, a), position(&full, b)),
+                        severity: Some(DiagnosticSeverity::ERROR),
+                        message: message.clone(),
+                        ..Default::default()
+                    });
+                }
+            }
+            cx.notify();
+        });
+    }
+
+    /// "Ln 3, Col 14" for the status bar.
+    fn cursor_label(&self, cx: &App) -> String {
+        let p = self.editor.read(cx).cursor_position();
+        format!("Ln {}, Col {}", p.line + 1, p.character + 1)
+    }
+
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         let Some(cancel) = self.cancel.clone() else {
             return;
@@ -715,6 +1005,14 @@ impl QueryTab {
             .ok();
         })
         .detach();
+    }
+
+    /// Puts `text` in the editor and runs it, as ⌘↵ would.
+    #[cfg(test)]
+    pub fn type_and_run(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor
+            .update(cx, |e, cx| e.set_value(text.to_string(), window, cx));
+        self.execute(text.into(), window, cx);
     }
 
     #[cfg(test)]
@@ -893,7 +1191,15 @@ impl QueryTab {
     }
 
     /// For the status bar: "Result 1 · 6 rows · 42 ms", once something ran.
-    pub fn status_line(&self) -> Option<String> {
+    pub fn status_line(&self, cx: &App) -> String {
+        let cursor = self.cursor_label(cx);
+        match self.result_line() {
+            Some(r) => format!("{r}  ·  {cursor}"),
+            None => cursor,
+        }
+    }
+
+    fn result_line(&self) -> Option<String> {
         if self.running {
             return Some("Running…".into());
         }
@@ -912,34 +1218,165 @@ impl QueryTab {
         ))
     }
 
+    /// One tab per statement result (status dot, rows · time), plus the
+    /// failing statement's tab when a run stopped on an error.
+    fn render_result_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = tokens(cx);
+        let mut tabs: Vec<AnyElement> = vec![];
+        let tab = |i: usize, dot: Hsla, label: String, meta: String, cx: &mut Context<Self>| {
+            let active = i == self.active;
+            h_flex()
+                .id(("result-tab", i))
+                .debug_selector(move || format!("result-tab-{i}"))
+                .h_full()
+                .px(dp(12.))
+                .gap(dp(8.))
+                .flex_none()
+                .max_w(dp(280.))
+                .cursor_pointer()
+                .border_b_2()
+                .border_color(if active {
+                    t.accent
+                } else {
+                    transparent_black()
+                })
+                .text_size(dp(12.))
+                .text_color(if active { t.text } else { t.text_secondary })
+                .hover(|s| s.text_color(t.text))
+                .child(div().flex_none().size(dp(6.)).rounded_full().bg(dot))
+                .child(
+                    div()
+                        .truncate()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(dp(11.))
+                        .text_color(t.text_faint)
+                        .child(meta),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if i == this.active || this.blocked_by_edits(window, cx) {
+                        return;
+                    }
+                    this.active = i;
+                    this.show_active(cx);
+                    cx.notify();
+                }))
+                .into_any_element()
+        };
+        let first_line = |s: &str| {
+            s.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(40)
+                .collect::<String>()
+        };
+        for (i, r) in self.results.iter().enumerate() {
+            let (dot, meta) = if r.columns.is_empty() {
+                (
+                    t.warning,
+                    format!("{} affected · {} ms", r.affected.unwrap_or(0), r.elapsed_ms),
+                )
+            } else {
+                (
+                    t.success,
+                    format!("{} · {} ms", rows_label(r.rows.len()), r.elapsed_ms),
+                )
+            };
+            tabs.push(tab(i, dot, first_line(&r.statement), meta, cx));
+        }
+        if self.error.is_some() && self.plan.is_none() {
+            let label = self
+                .error_stmt
+                .as_deref()
+                .map(first_line)
+                .unwrap_or_else(|| "Error".into());
+            tabs.push(tab(self.results.len(), t.danger, label, "error".into(), cx));
+        }
+        h_flex()
+            .id("result-tabs")
+            .h(dp(34.))
+            .flex_none()
+            .overflow_x_scroll()
+            .border_b_1()
+            .border_color(t.border)
+            .bg(t.sidebar)
+            .children(tabs)
+            .into_any_element()
+    }
+
     fn render_results(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = tokens(cx);
         let theme = cx.theme().clone();
-        let current = self.results.get(self.active);
+        let showing_error = self.error.is_some() && self.active >= self.results.len();
+        let current = self.results.get(self.active).filter(|_| !showing_error);
         let summary = match current {
             _ if self.running => "Running…".to_string(),
-            _ if self.plan.is_some() => {
-                "Query plan · bars show each step's share of the cost / time".to_string()
-            }
-            None => "⌘↵ to run".to_string(),
+            _ if self.plan.is_some() => match self.shared.cfg.driver {
+                Driver::Sqlite => "Query plan · SQLite reports the steps, not their cost".into(),
+                _ => "Query plan · bars show each step's own share of the cost / time".into(),
+            },
+            _ if showing_error => "The batch stopped here".to_string(),
+            None => "⌘↵ runs the selection, or everything".to_string(),
             Some(r) if r.columns.is_empty() => {
+                format!("{} affected · {} ms", r.affected.unwrap_or(0), r.elapsed_ms)
+            }
+            Some(r) => {
+                let limited = self.limit.is_some_and(|n| r.rows.len() == n)
+                    && r.statement
+                        .trim_end()
+                        .ends_with(&format!("LIMIT {}", r.rows.len()));
                 format!(
-                    "{} row(s) affected · {} ms",
-                    r.affected.unwrap_or(0),
-                    r.elapsed_ms
+                    "{} · {} ms{}",
+                    rows_label(r.rows.len()),
+                    r.elapsed_ms,
+                    if limited { " · limited" } else { "" }
                 )
             }
-            Some(r) => format!("{} row(s) · {} ms", r.rows.len(), r.elapsed_ms),
         };
         let body = if let (Some(p), None) = (&self.plan, &self.error) {
             self.render_plan(p, cx)
-        } else if let Some(e) = &self.error {
-            div()
+        } else if showing_error {
+            let e = self.error.clone().unwrap_or_default();
+            v_flex()
+                .id("query-error")
                 .size_full()
-                .p_3()
-                .text_sm()
-                .text_color(theme.danger)
-                .font_family(theme.mono_font_family.clone())
-                .child(e.clone())
+                .overflow_y_scroll()
+                .p(dp(16.))
+                .gap(dp(8.))
+                .child(
+                    h_flex()
+                        .gap(dp(8.))
+                        .text_size(dp(13.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(t.danger)
+                        .child(Icon::new(IconName::CircleX).small())
+                        .child("Query failed"),
+                )
+                .child(
+                    div()
+                        .p(dp(12.))
+                        .rounded(dp(8.))
+                        .border_1()
+                        .border_color(t.danger.opacity(0.35))
+                        .bg(t.danger.opacity(0.08))
+                        .font_family(theme.mono_font_family.clone())
+                        .text_size(dp(12.))
+                        .text_color(t.text)
+                        .children(e.lines().map(|l| div().child(l.to_string()))),
+                )
+                .when(self.results.is_empty() && self.error_stmt.is_some(), |d| {
+                    d.child(
+                        div()
+                            .text_size(dp(12.))
+                            .text_color(t.text_muted)
+                            .child("The failing statement is underlined in the editor."),
+                    )
+                })
                 .into_any_element()
         } else if current.is_some_and(|r| r.columns.is_empty()) {
             div()
@@ -947,8 +1384,27 @@ impl QueryTab {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_color(theme.muted_foreground)
+                .text_color(t.text_muted)
                 .child(summary.clone())
+                .into_any_element()
+        } else if current.is_none() && !self.running {
+            v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap(dp(8.))
+                .text_size(dp(12.5))
+                .text_color(t.text_muted)
+                .child(Icon::new(IconName::Play).text_color(t.text_faint))
+                .child("Run a query to see results here.")
+                .child(
+                    h_flex()
+                        .gap(dp(6.))
+                        .child(kbd("⌘↵", cx))
+                        .child("run")
+                        .child(kbd("⌘E", cx))
+                        .child("explain"),
+                )
                 .into_any_element()
         } else {
             let grid = cell_edit::editable(data_table(&self.grid, cx), cx);
@@ -974,50 +1430,100 @@ impl QueryTab {
                 grid.into_any_element()
             }
         };
+        let has_tabs = self.plan.is_none() && (!self.results.is_empty() || self.error.is_some());
+        let read_only = self
+            .edit_note
+            .clone()
+            .filter(|_| self.plan.is_none() && current.is_some_and(|r| !r.columns.is_empty()));
         v_flex()
             .size_full()
-            .when(self.results.len() > 1, |d| {
-                d.child(
-                    TabBar::new("results")
-                        .underline()
-                        .small()
-                        .selected_index(self.active)
-                        .children(self.results.iter().enumerate().map(|(i, r)| {
-                            let first = r
-                                .statement
-                                .lines()
-                                .next()
-                                .unwrap_or("")
-                                .chars()
-                                .take(28)
-                                .collect::<String>();
-                            Tab::new()
-                                .cursor_pointer()
-                                .label(format!("{}: {first}", i + 1))
-                        }))
-                        .on_click(cx.listener(|this, ix: &usize, window, cx| {
-                            if *ix == this.active || this.blocked_by_edits(window, cx) {
-                                return;
-                            }
-                            this.active = *ix;
-                            this.show_active(cx);
-                            cx.notify();
-                        })),
-                )
-            })
+            .when(has_tabs, |d| d.child(self.render_result_tabs(cx)))
             .child(div().flex_1().min_h_0().child(body))
             .child(
                 h_flex()
-                    .h(rems(1.875))
-                    .px_2()
+                    .h(dp(30.))
+                    .flex_none()
+                    .px(dp(10.))
                     .border_t_1()
-                    .border_color(theme.border)
-                    .bg(theme.title_bar)
-                    .gap_1()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
+                    .border_color(t.border)
+                    .bg(t.sidebar)
+                    .gap(dp(8.))
+                    .text_size(dp(11.5))
+                    .text_color(t.text_muted)
                     .child(summary)
+                    .when_some(read_only, |d, note| {
+                        let why = note
+                            .strip_prefix("Read-only: ")
+                            .unwrap_or(&note)
+                            .to_string();
+                        d.child(
+                            h_flex()
+                                .gap(dp(6.))
+                                .min_w_0()
+                                .child(
+                                    h_flex()
+                                        .gap(dp(4.))
+                                        .flex_none()
+                                        .h(dp(18.))
+                                        .px(dp(6.))
+                                        .rounded(dp(5.))
+                                        .bg(t.hover)
+                                        .text_color(t.text_secondary)
+                                        .child(Icon::new(IconName::Lock).xsmall())
+                                        .child("Read-only"),
+                                )
+                                .child(div().truncate().child(why)),
+                        )
+                    })
+                    .when(
+                        self.plan.is_none() && self.target.is_some() && current.is_some(),
+                        |d| {
+                            d.child(
+                                div()
+                                    .text_color(t.text_faint)
+                                    .child("Editable · ↵ or type to edit a cell"),
+                            )
+                        },
+                    )
                     .child(div().flex_1())
+                    .map(|bar| {
+                        let pending = self.grid.read(cx).delegate().change_count();
+                        if pending == 0 {
+                            return bar;
+                        }
+                        bar.child(
+                            Button::new("discard-result")
+                                .cursor_pointer()
+                                .label("Discard")
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(|this, _, _, cx| this.discard(cx))),
+                        )
+                        .child(
+                            Button::new("preview-result")
+                                .cursor_pointer()
+                                .label("Preview SQL")
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    let sql: SharedString = this.preview(cx).into();
+                                    window.open_alert_dialog(cx, move |d, _, _| {
+                                        d.title("Pending changes").description(sql.clone())
+                                    });
+                                })),
+                        )
+                        .child(
+                            Button::new("commit-result")
+                                .cursor_pointer()
+                                .label(format!("Commit {pending}"))
+                                .primary()
+                                .xsmall()
+                                .tooltip("Commit (⌘S)")
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.commit(window, cx)),
+                                ),
+                        )
+                    })
                     .child(
                         Button::new("toggle-detail")
                             .cursor_pointer()
@@ -1030,51 +1536,44 @@ impl QueryTab {
                                 this.show_detail = !this.show_detail;
                                 cx.notify();
                             })),
-                    )
-                    .map(|bar| {
-                        let pending = self.grid.read(cx).delegate().change_count();
-                        if pending > 0 {
-                            bar.child(
-                                Button::new("discard-result")
-                                    .cursor_pointer()
-                                    .label("Discard")
-                                    .ghost()
-                                    .xsmall()
-                                    .on_click(cx.listener(|this, _, _, cx| this.discard(cx))),
-                            )
-                            .child(
-                                Button::new("preview-result")
-                                    .cursor_pointer()
-                                    .label("Preview SQL")
-                                    .ghost()
-                                    .xsmall()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        let sql: SharedString = this.preview(cx).into();
-                                        window.open_alert_dialog(cx, move |d, _, _| {
-                                            d.title("Pending changes").description(sql.clone())
-                                        });
-                                    })),
-                            )
-                            .child(
-                                Button::new("commit-result")
-                                    .cursor_pointer()
-                                    .label(format!("Commit {pending}"))
-                                    .primary()
-                                    .xsmall()
-                                    .tooltip("Commit (⌘S)")
-                                    .on_click(
-                                        cx.listener(|this, _, window, cx| this.commit(window, cx)),
-                                    ),
-                            )
-                        } else {
-                            bar.when_some(self.edit_note.clone(), |b, note| b.child(note))
-                                .when(self.target.is_some(), |b| {
-                                    b.child("Editable · Enter or type to edit a cell")
-                                })
-                        }
-                    }),
+                    ),
             )
     }
+}
+
+/// An error chain one cause per line, skipping a cause that only repeats
+/// the line above it (drivers often wrap their own message).
+fn error_text(e: &Error) -> String {
+    let mut lines: Vec<String> = vec![];
+    for part in e.chain().map(|c| c.to_string()) {
+        if lines.last().is_some_and(|l| l.contains(&part)) {
+            continue;
+        }
+        lines.push(part);
+    }
+    lines.join("\n")
+}
+
+/// "1 row", "1,234 rows".
+fn rows_label(n: usize) -> String {
+    if n == 1 {
+        "1 row".into()
+    } else {
+        format!("{} rows", group(n as u64))
+    }
+}
+
+/// 12345 → "12,345".
+fn group(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 impl copy::ExportHost for QueryTab {
@@ -1125,96 +1624,157 @@ impl Focusable for QueryTab {
 
 impl Render for QueryTab {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
+        let t = tokens(cx);
+        let driver = self.shared.cfg.driver;
+        let sql = matches!(driver, Driver::Postgres | Driver::MySql | Driver::Sqlite);
+        // A label with its shortcut after it, faint (design.md, Shortcut hint).
+        let hinted = |label: &str, keys: &str| {
+            h_flex()
+                .gap(dp(6.))
+                .child(label.to_string())
+                .child(div().text_color(t.text_faint).child(keys.to_string()))
+        };
+        let sep = || div().w(dp(1.)).h(dp(18.)).mx(dp(4.)).bg(t.border);
+        let db = self
+            .shared
+            .conn
+            .try_read()
+            .map(|c| c.current_database())
+            .unwrap_or_default();
+        let limit = self.limit;
+        let me = cx.entity().downgrade();
         let toolbar = h_flex()
-            .h(rems(2.25))
-            .px_2()
-            .gap_1()
+            .h(dp(44.))
+            .flex_none()
+            .px(dp(10.))
+            .gap(dp(4.))
             .border_b_1()
-            .border_color(theme.border)
-            .child(if self.running {
-                Button::new("stop")
-                    .cursor_pointer()
-                    .icon(IconName::Square)
-                    .label("Stop")
-                    .danger()
-                    .small()
-                    .tooltip("Cancel the running query (⌘.)")
-                    .on_click(cx.listener(|this, _, _, cx| this.cancel(cx)))
-            } else {
+            .border_color(t.border)
+            .child(
                 Button::new("run")
                     .cursor_pointer()
                     .icon(IconName::Play)
-                    .label("Run")
+                    .child(hinted("Run", "⌘↵"))
                     .primary()
                     .small()
-                    .tooltip("Run selection or all (⌘↵)")
-                    .on_click(cx.listener(|this, _, window, cx| this.run(&RunQuery, window, cx)))
-            })
-            .when(
-                matches!(
-                    self.shared.cfg.driver,
-                    Driver::Postgres | Driver::MySql | Driver::Sqlite
-                ),
-                |d| {
-                    d.child(
-                        Button::new("explain")
-                            .cursor_pointer()
-                            .label("Explain")
-                            .ghost()
-                            .small()
-                            .tooltip("Show the query plan (⌘E)")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.explain(false, window, cx)),
-                            ),
-                    )
-                    .when(self.shared.cfg.driver != Driver::Sqlite, |d| {
-                        d.child(
-                            Button::new("analyze")
-                                .cursor_pointer()
-                                .label("Analyze")
-                                .ghost()
-                                .small()
-                                .tooltip("Run it and show actual times (rolled back afterwards)")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.explain(true, window, cx)
-                                })),
-                        )
-                    })
-                },
+                    .loading(self.running)
+                    .disabled_when(self.running)
+                    .tooltip("Run the selection, or everything")
+                    .on_click(cx.listener(|this, _, window, cx| this.run(&RunQuery, window, cx))),
             )
+            .child(
+                Button::new("stop")
+                    .cursor_pointer()
+                    .icon(IconName::Square)
+                    .child(hinted("Stop", "⌘."))
+                    .outline()
+                    .small()
+                    .disabled_when(!self.running)
+                    .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
+            )
+            .child(sep())
+            .when(sql, |d| {
+                d.child(
+                    Button::new("explain")
+                        .cursor_pointer()
+                        .child(hinted("Explain", "⌘E"))
+                        .ghost()
+                        .small()
+                        .disabled_when(self.running)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.explain(false, window, cx)),
+                        ),
+                )
+                .child(
+                    Button::new("format")
+                        .cursor_pointer()
+                        .child(hinted("Format", "⌘⇧F"))
+                        .ghost()
+                        .small()
+                        .on_click(cx.listener(|this, _, window, cx| this.format(window, cx))),
+                )
+                .child(sep())
+            })
             .child(
                 Button::new("save-query")
                     .cursor_pointer()
-                    .label("Save")
+                    .child(hinted("Save", "⌘⇧S"))
                     .ghost()
                     .small()
-                    .tooltip("Save query (⌘⇧S)")
                     .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
             )
-            .when(
-                !matches!(self.shared.cfg.driver, Driver::Redis | Driver::Mongo),
-                |d| {
-                    d.child(
-                        Button::new("format")
-                            .cursor_pointer()
-                            .label("Format")
-                            .ghost()
-                            .small()
-                            .tooltip("Format SQL (⌘⇧F)")
-                            .on_click(cx.listener(|this, _, window, cx| this.format(window, cx))),
-                    )
-                },
+            .child(
+                Button::new("history")
+                    .cursor_pointer()
+                    .child(hinted("History", "⌘Y"))
+                    .ghost()
+                    .small()
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(QueryHistory), cx)),
             )
-            .child(div().text_xs().text_color(theme.muted_foreground).child(
-                match self.shared.cfg.driver {
-                    Driver::Redis => "One command per line",
-                    Driver::Mongo => {
-                        "mongosh syntax: db.coll.find({...}), aggregate([...]), or a {command}"
-                    }
-                    _ => "Separate statements with ;",
-                },
-            ));
+            .child(div().flex_1())
+            .when(!db.is_empty(), |d| {
+                d.child(
+                    div()
+                        .text_size(dp(11.5))
+                        .text_color(t.text_muted)
+                        .child("Run on"),
+                )
+                .child(
+                    Button::new("run-on")
+                        .cursor_pointer()
+                        .icon(IconName::Database)
+                        .label(db.clone())
+                        .outline()
+                        .small()
+                        .dropdown_caret(true)
+                        .tooltip("Switch database (⌘K)")
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(SwitchDatabase), cx)
+                        }),
+                )
+            })
+            .when(sql, |d| {
+                d.child(
+                    div()
+                        .pl(dp(6.))
+                        .text_size(dp(11.5))
+                        .text_color(t.text_muted)
+                        .child("Limit"),
+                )
+                .child(
+                    Button::new("limit")
+                        .cursor_pointer()
+                        .label(match limit {
+                            Some(n) => rows_label(n).replace(" rows", ""),
+                            None => "None".into(),
+                        })
+                        .outline()
+                        .small()
+                        .dropdown_caret(true)
+                        .tooltip("Adds LIMIT to SELECTs that have none")
+                        .dropdown_menu(move |menu, _, _| {
+                            LIMITS.iter().fold(menu, |menu, &choice| {
+                                let me = me.clone();
+                                menu.item(
+                                    PopupMenuItem::new(match choice {
+                                        Some(n) => rows_label(n),
+                                        None => "No limit".into(),
+                                    })
+                                    .checked(choice == limit)
+                                    .on_click(
+                                        move |_, _, cx| {
+                                            me.update(cx, |this, cx| {
+                                                this.limit = choice;
+                                                cx.notify();
+                                            })
+                                            .ok();
+                                        },
+                                    ),
+                                )
+                            })
+                        }),
+                )
+            });
         v_flex()
             .size_full()
             .key_context("QueryTab")
@@ -1237,6 +1797,18 @@ impl Render for QueryTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::anyhow;
+
+    #[test]
+    fn error_chain_one_cause_per_line() {
+        let e = anyhow!("no such column: nope")
+            .context("error returned from database: no such column: nope")
+            .context("statement 3 of 3 failed.");
+        assert_eq!(
+            error_text(&e),
+            "statement 3 of 3 failed.\nerror returned from database: no such column: nope"
+        );
+    }
 
     fn col(name: &str, pk: bool) -> ColumnInfo {
         ColumnInfo {

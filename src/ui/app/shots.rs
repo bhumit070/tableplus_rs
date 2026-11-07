@@ -302,6 +302,32 @@ fn screenshots() {
 
     s.in_window(|w, cx| session.update(cx, |s, cx| s.new_query(w, cx)));
     s.snap("02-query");
+    // Three statements; the last one fails and gets its own tab.
+    let query = s.cx.update(|cx| session.read(cx).active_query().unwrap());
+    s.in_window(|w, cx| {
+        query.update(cx, |q, cx| {
+            q.type_and_run(
+                "select id, status, total from orders where total > 500 order by total desc;\nupdate orders set currency = currency where id < 0;\nselect nope from orders;",
+                w,
+                cx,
+            )
+        })
+    });
+    s.wait("query", |cx| !query.read(cx).running());
+    s.snap("02-query-results");
+    s.in_window(|w, cx| {
+        query.update(cx, |q, cx| {
+            q.type_and_run(
+                "select status, count(*) from orders where total > 500 group by status;",
+                w,
+                cx,
+            )
+        })
+    });
+    s.wait("query", |cx| !query.read(cx).running());
+    s.in_window(|w, cx| query.update(cx, |q, cx| q.explain(false, w, cx)));
+    s.wait("plan", |cx| !query.read(cx).running());
+    s.snap("14-explain");
 
     // Home with saved connections (not written anywhere); the open demo
     // database is one of them, so "Open now" shows too.

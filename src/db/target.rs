@@ -183,6 +183,26 @@ pub fn single_table(stmt: &str, driver: Driver) -> Option<(Option<String>, Strin
     }
 }
 
+/// `stmt` with `LIMIT n` added, when it's a plain SELECT (or WITH … SELECT)
+/// that doesn't already limit itself; `None` leaves it alone. The limit
+/// goes on its own line, so a trailing `-- comment` can't swallow it.
+pub fn with_limit(stmt: &str, n: usize) -> Option<String> {
+    let toks = top_level_tokens(stmt);
+    let first = toks.iter().find(|t| matches!(t, Tok::Word(_)))?;
+    let reads =
+        is_kw(first, "select") || (is_kw(first, "with") && toks.iter().any(|t| is_kw(t, "select")));
+    let limited = toks.iter().any(|t| {
+        ["limit", "fetch", "offset", "top", "into", "for"]
+            .iter()
+            .any(|kw| is_kw(t, kw))
+    });
+    if !reads || limited {
+        return None;
+    }
+    let body = stmt.trim_end().trim_end_matches(';').trim_end();
+    Some(format!("{body}\nLIMIT {n}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,6 +267,33 @@ mod tests {
             "select * from users natural join roles",
         ] {
             assert_eq!(t(sql), None, "{sql}");
+        }
+    }
+
+    #[test]
+    fn adds_a_limit_only_where_it_fits() {
+        assert_eq!(
+            with_limit("select * from t;", 100).as_deref(),
+            Some("select * from t\nLIMIT 100")
+        );
+        assert_eq!(
+            with_limit("SELECT a FROM t -- note", 5).as_deref(),
+            Some("SELECT a FROM t -- note\nLIMIT 5")
+        );
+        assert!(with_limit("with x as (select 1) select * from x", 5).is_some());
+        // A limit inside a subquery doesn't count.
+        assert!(with_limit("select * from (select * from t limit 3) s", 5).is_some());
+        for sql in [
+            "select * from t limit 10",
+            "select * from t offset 5",
+            "select * from t fetch first 3 rows only",
+            "select * from t for update",
+            "select 1 into @x",
+            "update t set a = 1",
+            "with x as (select 1) delete from t",
+            "insert into t select * from u",
+        ] {
+            assert_eq!(with_limit(sql, 5), None, "{sql}");
         }
     }
 }

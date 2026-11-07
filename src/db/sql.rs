@@ -19,8 +19,8 @@ use sqlx::{
 use super::cancel::{CANCELLED, Cancel};
 use super::split::split_statements;
 use super::{
-    Change, ColumnInfo, ConnectionConfig, DbObject, Driver, FilterOp, ForeignKey, ObjectKind,
-    QueryResult, Structure, TableQuery, sql_literal,
+    BatchFailed, Change, ColumnInfo, ConnectionConfig, DbObject, Driver, FilterOp, ForeignKey,
+    ObjectKind, QueryResult, Structure, TableQuery, sql_literal,
 };
 use anyhow::{Error, anyhow};
 use redis::RedisError;
@@ -539,9 +539,17 @@ macro_rules! run_batch {
                 if n == 1 && !rolled_back {
                     return Err(e);
                 }
-                return Err(e.context(format!("Stopped at statement {} of {n}.{ran}{note}", i + 1)));
+                return Err(e.context(BatchFailed {
+                    index: i,
+                    done: out,
+                    message: format!("Stopped at statement {} of {n}.{ran}{note}", i + 1),
+                }));
             }
-            return Err(e.context(format!("statement {} of {n} failed.{ran}{note}", i + 1)));
+            return Err(e.context(BatchFailed {
+                index: i,
+                done: out,
+                message: format!("statement {} of {n} failed.{ran}{note}", i + 1),
+            }));
         }
         if rolled_back {
             bail!("BEGIN without COMMIT or ROLLBACK: nothing was saved.{note} End the batch with COMMIT; to keep the changes.");
