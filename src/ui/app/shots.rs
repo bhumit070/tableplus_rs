@@ -255,6 +255,16 @@ fn screenshots() {
     s.in_window(|w, cx| tab.update(cx, |t, cx| t.show_filter_example(w, cx)));
     s.wait("filtered", |cx| !tab.read(cx).is_loading(cx));
     s.snap("10-filters");
+    let editor = s.in_window(|w, cx| session.update(cx, |s, cx| s.new_table_for_test(w, cx)));
+    s.in_window(|w, cx| {
+        editor.update(cx, |e, cx| {
+            e.set_name("events", w, cx);
+            e.start_for_test(None, w, cx);
+        })
+    });
+    s.snap("18-new-table");
+    s.in_window(|w, cx| w.close_dialog(cx));
+    s.settle();
     s.in_window(|w, cx| tab.update(cx, |t, cx| t.clear_filters(w, cx)));
     s.wait("unfiltered", |cx| {
         !tab.read(cx).is_loading(cx) && tab.read(cx).loaded_rows(cx) > 0

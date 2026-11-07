@@ -93,7 +93,10 @@ actually involved.
 - **Structure view:** columns, indexes, foreign keys and the table's
   `CREATE TABLE` statement.
 - **New Table / Edit Columns:** add, rename, retype or drop columns, change
-  NULL / default / primary key. The DDL is shown before it runs.
+  NULL and defaults, with the DDL shown live as you edit; each type field
+  has a menu of the engine's common types. A new table starts blank, with
+  `id` + `created_at` / `updated_at`, or as a copy of another table's
+  columns. Nothing runs until Create table / Apply.
 - **Sidebar actions:** open, copy name, new query, rename, duplicate,
   vacuum / optimize, truncate and drop.
 - **PostgreSQL schemas:** tables are grouped by schema, and the schema in

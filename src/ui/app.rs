@@ -3088,6 +3088,28 @@ mod tests {
         wait_until(&mut cx, "altered", |cx| {
             tab.read_with(cx, |t, _| t.column_names() == ["id", "title", "year"])
         });
+        cx.update(|w, cx| w.close_dialog(cx));
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+
+        // Start from "id + timestamps", and "Copy of…" another table.
+        let ed = session.update_in(&mut cx, |s, w, cx| s.new_table_for_test(w, cx));
+        ed.update_in(&mut cx, |e, w, cx| {
+            e.set_name("events", w, cx);
+            e.start_for_test(None, w, cx);
+        });
+        assert_eq!(ed.read_with(&cx, |e, _| e.column_count()), 3);
+        ed.update_in(&mut cx, |e, w, cx| e.apply_for_test(w, cx));
+        wait_until(&mut cx, "events created", |cx| {
+            session.read_with(cx, |s, _| s.object_index("events").is_some())
+        });
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        let ed = session.update_in(&mut cx, |s, w, cx| s.new_table_for_test(w, cx));
+        ed.update_in(&mut cx, |e, w, cx| e.start_for_test(Some("books"), w, cx));
+        wait_until(&mut cx, "copied columns", |cx| {
+            ed.read_with(cx, |e, _| e.column_count() == 3)
+        });
         let _ = std::fs::remove_file(file);
     }
 

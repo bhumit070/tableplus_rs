@@ -1,24 +1,30 @@
-//! New Table / Edit Columns dialog: one row per column (name, type,
-//! NULL, default, primary key), Preview SQL, then Apply. Edits of an
+//! New table / Edit columns dialog (design.md screen 18): one row per
+//! column (name, type with a menu of common types, NULL, default, primary
+//! key) and the DDL it makes, live. A new table can start blank, with
+//! id + timestamps, or as a copy of another table's columns. Edits of an
 //! existing table become ALTER statements; nothing runs before Apply.
 
 use std::rc::Rc;
 
+use std::cell::Cell;
+
 use gpui::{
-    App, AppContext as _, Context, Entity, IntoElement, ParentElement, Render, SharedString,
-    Styled, Window, div, prelude::*, px,
+    App, AppContext as _, Context, Entity, FontWeight, IntoElement, ParentElement, Render, Styled,
+    Window, div, prelude::*,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::checkbox::Checkbox;
-use gpui_component::dialog::DialogFooter;
 use gpui_component::input::{Input, InputState};
+use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::notification::Notification;
+use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit_assets::IconName;
 
-use super::Shared;
+use super::theme::{dp, tokens};
+use super::{SearchList, Shared, dialog, search_list};
 use crate::db::ddl::{self, ColChange, ColDef};
-use crate::db::{ColumnInfo, DbObject, Driver};
+use crate::db::{ColumnInfo, DbObject, Driver, ObjectKind};
 use crate::runtime;
 use crate::ui::DisabledWhen as _;
 use anyhow::Result;
@@ -38,8 +44,20 @@ struct Row {
 /// Called after the change ran, to reload the sidebar / tab.
 pub type OnDone = Rc<dyn Fn(&mut Window, &mut App)>;
 
+/// What a new table starts from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Start {
+    Blank,
+    Timestamps,
+    CopyOf,
+}
+
 pub struct TableEditor {
     shared: Rc<Shared>,
+    start: Start,
+    /// "Copy of…": the tables to copy from, once listed.
+    copy_from: Option<Entity<SelectState<SearchList>>>,
+    copy_tables: Vec<DbObject>,
     /// Editing this table; `None` = creating one.
     object: Option<DbObject>,
     schema: Option<String>,
@@ -74,13 +92,12 @@ impl TableEditor {
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<TableEditor> {
-        let title = match &object {
-            Some(o) => format!("Edit Columns · {}", o.title()),
-            None => "New Table".to_string(),
-        };
         let view = cx.new(|cx| {
             let table_name = cx.new(|cx| InputState::new(window, cx).placeholder("table_name"));
             let mut ed = TableEditor {
+                start: Start::Blank,
+                copy_from: None,
+                copy_tables: vec![],
                 schema: object.as_ref().and_then(|o| o.schema.clone()).or(schema),
                 shared,
                 object,
@@ -95,71 +112,150 @@ impl TableEditor {
                     ed.push_row(Some(ColDef::from_info(c)), window, cx);
                 }
             } else {
-                let int = if ed.shared.cfg.driver == Driver::Postgres {
-                    "bigint"
-                } else {
-                    "integer"
-                };
-                let id = ColDef {
-                    name: "id".into(),
-                    ty: int.into(),
-                    nullable: false,
-                    default: None,
-                    pk: true,
-                };
-                ed.push_row(None, window, cx);
-                let r = ed.rows.last_mut().unwrap();
-                r.pk = id.pk;
-                r.nullable = id.nullable;
-                let (n, t) = (r.name.clone(), r.ty.clone());
-                n.update(cx, |i, cx| i.set_value(id.name, window, cx));
-                t.update(cx, |i, cx| i.set_value(id.ty, window, cx));
+                ed.apply_start(Start::Blank, window, cx);
             }
             ed
         });
-        let first = std::cell::Cell::new(true);
+        let first = Cell::new(true);
         let result = view.clone();
-        window.open_dialog(cx, move |dialog, window, cx| {
+        let width = dialog::width(880., cx);
+        window.open_dialog(cx, move |d, window, cx| {
             if first.replace(false) && view.read(cx).object.is_none() {
                 let name = view.read(cx).table_name.clone();
                 name.update(cx, |n, cx| n.focus(window, cx));
             }
-            let (v1, v2) = (view.clone(), view.clone());
-            dialog
-                .title(title.clone())
-                .w(px(860.))
-                .child(view.clone())
-                .footer(
-                    DialogFooter::new()
-                        .child(
-                            Button::new("preview-ddl")
-                                .cursor_pointer()
-                                .label("Preview SQL")
-                                .small()
-                                .on_click(move |_, window, cx| {
-                                    v1.update(cx, |e, cx| e.preview(window, cx));
-                                }),
-                        )
-                        .child(
-                            Button::new("cancel-ddl")
-                                .cursor_pointer()
-                                .label("Cancel")
-                                .small()
-                                .on_click(|_, w, cx| w.close_dialog(cx)),
-                        )
-                        .child(
-                            Button::new("apply-ddl")
-                                .cursor_pointer()
-                                .label("Apply")
-                                .primary()
-                                .small()
-                                .on_click(move |_, window, cx| {
-                                    v2.update(cx, |e, cx| e.apply(window, cx));
-                                }),
-                        ),
-                )
+            dialog::shell(d, width, cx).child(view.clone())
         });
         result
+    }
+
+    /// Replaces the columns of a new table with `start`'s.
+    fn apply_start(&mut self, start: Start, window: &mut Window, cx: &mut Context<Self>) {
+        self.start = start;
+        let driver = self.shared.cfg.driver;
+        let int = if driver == Driver::Postgres {
+            "bigint"
+        } else {
+            "integer"
+        };
+        let id = ColDef {
+            name: "id".into(),
+            ty: int.into(),
+            nullable: false,
+            default: None,
+            pk: true,
+        };
+        let (stamp, now) = match driver {
+            Driver::Postgres => ("timestamptz", "now()"),
+            Driver::MySql => ("datetime", "CURRENT_TIMESTAMP"),
+            _ => ("text", "CURRENT_TIMESTAMP"),
+        };
+        let stamp = |name: &str| ColDef {
+            name: name.into(),
+            ty: stamp.into(),
+            nullable: false,
+            default: Some(now.into()),
+            pk: false,
+        };
+        let columns = match start {
+            Start::Blank => vec![id],
+            Start::Timestamps => vec![id, stamp("created_at"), stamp("updated_at")],
+            Start::CopyOf => {
+                self.list_tables(window, cx);
+                return;
+            }
+        };
+        self.copy_from = None;
+        self.set_columns(columns, window, cx);
+    }
+
+    /// New columns (not from an existing table) in place of the current
+    /// ones.
+    fn set_columns(&mut self, columns: Vec<ColDef>, window: &mut Window, cx: &mut Context<Self>) {
+        self.rows.clear();
+        for column in columns {
+            self.push_row(None, window, cx);
+            let row = self.rows.last_mut().expect("just pushed");
+            row.pk = column.pk;
+            row.nullable = column.nullable;
+            let (name, ty, default) = (row.name.clone(), row.ty.clone(), row.default.clone());
+            name.update(cx, |input, cx| input.set_value(column.name, window, cx));
+            ty.update(cx, |input, cx| input.set_value(column.ty, window, cx));
+            if let Some(value) = column.default {
+                default.update(cx, |input, cx| input.set_value(value, window, cx));
+            }
+        }
+        cx.notify();
+    }
+
+    /// "Copy of…": list the tables to pick from.
+    fn list_tables(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let conn = self.shared.conn.clone();
+        let task = runtime::spawn(async move { conn.read().await.list_objects().await });
+        cx.spawn_in(window, async move |this, cx| {
+            let listed = task.await;
+            this.update_in(cx, |editor, window, cx| {
+                let tables: Vec<DbObject> = match listed {
+                    Ok(objects) => objects
+                        .into_iter()
+                        .filter(|o| o.kind == ObjectKind::Table)
+                        .collect(),
+                    Err(e) => {
+                        editor.error = Some(format!("{e:#}"));
+                        cx.notify();
+                        return;
+                    }
+                };
+                let names = tables.iter().map(|t| t.title()).collect();
+                let select = cx.new(|cx| {
+                    SelectState::new(search_list(names), None, window, cx).searchable(true)
+                });
+                cx.subscribe_in(
+                    &select,
+                    window,
+                    |editor, _, event: &SelectEvent<SearchList>, window, cx| {
+                        if let SelectEvent::Confirm(Some(title)) = event {
+                            editor.copy_columns_of(title.clone(), window, cx);
+                        }
+                    },
+                )
+                .detach();
+                editor.copy_tables = tables;
+                editor.copy_from = Some(select);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Takes the columns (and key) of the table titled `title`.
+    fn copy_columns_of(&mut self, title: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(table) = self
+            .copy_tables
+            .iter()
+            .find(|t| t.title() == title)
+            .cloned()
+        else {
+            return;
+        };
+        let conn = self.shared.conn.clone();
+        let task = runtime::spawn(async move { conn.read().await.structure(&table).await });
+        cx.spawn_in(window, async move |this, cx| {
+            let structure = task.await;
+            this.update_in(cx, |editor, window, cx| match structure {
+                Ok(structure) => {
+                    let columns = structure.columns.iter().map(ColDef::from_info).collect();
+                    editor.set_columns(columns, window, cx);
+                }
+                Err(e) => {
+                    editor.error = Some(format!("{e:#}"));
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn push_row(&mut self, orig: Option<ColDef>, window: &mut Window, cx: &mut Context<Self>) {
@@ -236,21 +332,6 @@ impl TableEditor {
                     }
                 }
                 ddl::alter_table(driver, schema, &obj.name, &changes)
-            }
-        }
-    }
-
-    fn preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.statements(cx) {
-            Ok(s) if s.is_empty() => window.push_notification("No changes", cx),
-            Ok(s) => {
-                let sql: SharedString = s.join("\n").into();
-                window
-                    .open_alert_dialog(cx, move |d, _, _| d.title("SQL").description(sql.clone()));
-            }
-            Err(e) => {
-                self.error = Some(format!("{e:#}"));
-                cx.notify();
             }
         }
     }
@@ -333,6 +414,34 @@ impl TableEditor {
         n.update(cx, |x, cx| x.set_value(name.to_string(), window, cx));
     }
 
+    /// `None`: start from "id + timestamps"; `Some(title)`: "Copy of…" that
+    /// table.
+    #[cfg(test)]
+    pub fn start_for_test(
+        &mut self,
+        copy: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match copy {
+            None => self.apply_start(Start::Timestamps, window, cx),
+            Some(title) => {
+                self.start = Start::CopyOf;
+                self.copy_tables = vec![DbObject {
+                    schema: None,
+                    name: title.into(),
+                    kind: ObjectKind::Table,
+                }];
+                self.copy_columns_of(title.into(), window, cx);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn column_count(&self) -> usize {
+        self.rows.len()
+    }
+
     #[cfg(test)]
     pub fn drop_row(&mut self, i: usize) {
         self.rows[i].dropped = true;
@@ -356,124 +465,327 @@ impl TableEditor {
     }
 }
 
+/// Types offered by each row's type menu, most used first.
+fn common_types(driver: Driver) -> &'static [&'static str] {
+    match driver {
+        Driver::Postgres => &[
+            "bigint",
+            "integer",
+            "text",
+            "varchar(255)",
+            "boolean",
+            "numeric(12,2)",
+            "timestamptz",
+            "date",
+            "uuid",
+            "jsonb",
+        ],
+        Driver::MySql => &[
+            "bigint",
+            "int",
+            "varchar(255)",
+            "text",
+            "tinyint(1)",
+            "decimal(12,2)",
+            "datetime",
+            "date",
+            "json",
+        ],
+        _ => &["integer", "text", "real", "numeric", "blob"],
+    }
+}
+
 impl Render for TableEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let header = |s: &'static str, w: f32| {
+        let t = tokens(cx);
+        let mono = cx.theme().mono_font_family.clone();
+        let driver = self.shared.cfg.driver;
+        let creating = self.object.is_none();
+        let header = |label: &'static str, width: f32| {
             div()
-                .w(px(w))
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(s)
+                .w(dp(width))
+                .text_size(dp(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(t.text_muted)
+                .child(label)
+        };
+        // The DDL these rows make, as Apply would run it.
+        let named = !self.table_name.read(cx).value().trim().is_empty();
+        let ddl_text = match self.statements(cx) {
+            Ok(statements) if statements.is_empty() => "-- no changes".to_string(),
+            Ok(statements) => statements.join("\n"),
+            Err(_) if creating && !named => "-- name the table to see its CREATE TABLE".to_string(),
+            Err(e) => format!("-- {e:#}"),
+        };
+        let me = cx.entity();
+        let start_index = match self.start {
+            Start::Blank => 0,
+            Start::Timestamps => 1,
+            Start::CopyOf => 2,
         };
         v_flex()
-            .gap_2()
-            .when(self.object.is_none(), |d| {
-                d.child(
+            .gap(dp(14.))
+            .child(dialog::title(
+                match &self.object {
+                    Some(object) => format!("Edit columns · {}", object.title()),
+                    None => "New table".to_string(),
+                },
+                None,
+                cx,
+            ))
+            .when(creating, |column| {
+                column.child(
                     h_flex()
-                        .gap_2()
-                        .child(div().w(px(80.)).text_sm().child("Table name"))
-                        .child(div().flex_1().child(Input::new(&self.table_name).small())),
+                        .gap(dp(12.))
+                        .items_end()
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .gap(dp(6.))
+                                .child(header("NAME", 80.))
+                                .child(Input::new(&self.table_name)),
+                        )
+                        .child(
+                            v_flex()
+                                .gap(dp(6.))
+                                .child(header("START FROM", 120.))
+                                .child(
+                                    dialog::segmented(
+                                        "table-start",
+                                        &["Blank", "id + timestamps", "Copy of…"],
+                                        start_index,
+                                        Rc::new(move |index, window, cx| {
+                                            let start =
+                                                [Start::Blank, Start::Timestamps, Start::CopyOf]
+                                                    [index];
+                                            me.update(cx, |editor, cx| {
+                                                editor.apply_start(start, window, cx)
+                                            })
+                                        }),
+                                        cx,
+                                    )
+                                    .w(dp(360.)),
+                                ),
+                        ),
                 )
             })
+            .when_some(
+                self.copy_from
+                    .clone()
+                    .filter(|_| self.start == Start::CopyOf),
+                |column, select| {
+                    column.child(
+                        h_flex()
+                            .gap(dp(8.))
+                            .text_size(dp(12.))
+                            .text_color(t.text_secondary)
+                            .child("Columns of")
+                            .child(
+                                div()
+                                    .w(dp(280.))
+                                    .child(Select::new(&select).cursor_pointer().small()),
+                            ),
+                    )
+                },
+            )
             .child(
                 h_flex()
-                    .gap_2()
-                    .child(header("Column", 200.))
-                    .child(header("Type", 180.))
+                    .gap(dp(8.))
+                    .child(header("COLUMN", 200.))
+                    .child(header("TYPE", 210.))
                     .child(header("NULL", 50.))
-                    .child(header("Default", 200.))
-                    .child(header("Key", 50.)),
+                    .child(header("DEFAULT", 200.))
+                    .child(header("KEY", 50.)),
             )
             .child(
                 div()
                     .id("table-editor-rows")
-                    .max_h(px(380.))
+                    .max_h(dp(300.))
                     .overflow_y_scroll()
-                    .child(v_flex().gap_1().children(self.rows.iter().enumerate().map(|(i, r)| {
-                        // Clicks find their row by this id: positions shift
-                        // when a row is removed before the next redraw.
-                        let key = r.name.entity_id();
-                        h_flex()
-                            .gap_2()
-                            .when(r.dropped, |d| d.opacity(0.45))
-                            .child(div().w(px(200.)).child(Input::new(&r.name).small()))
-                            .child(div().w(px(180.)).child(Input::new(&r.ty).small()))
-                            .child(
-                                div().w(px(50.)).child(
-                                    Checkbox::new(("null", i)).cursor_pointer().checked(r.nullable).on_click(
-                                        cx.listener(move |e, v: &bool, _, cx| {
-                                            if let Some(r) = e.row_mut(key) {
-                                                r.nullable = *v;
-                                            }
-                                            cx.notify();
-                                        }),
-                                    ),
-                                ),
-                            )
-                            .child(div().w(px(200.)).child(Input::new(&r.default).small()))
-                            .child(
-                                div().w(px(50.)).child(
-                                    // Only new tables set the key here.
-                                    Checkbox::new(("pk", i)).cursor_pointer()
-                                        .checked(r.pk)
-                                        .disabled_when(self.object.is_some())
-                                        .on_click(cx.listener(move |e, v: &bool, _, cx| {
-                                            if let Some(r) = e.row_mut(key) {
-                                                r.pk = *v;
-                                                if *v {
-                                                    r.nullable = false;
+                    .child(
+                        v_flex()
+                            .gap(dp(6.))
+                            .children(self.rows.iter().enumerate().map(|(index, row)| {
+                                // Clicks find their row by this id: positions shift
+                                // when a row is removed before the next redraw.
+                                let key = row.name.entity_id();
+                                let ty = row.ty.clone();
+                                h_flex()
+                                    .gap(dp(8.))
+                                    .when(row.dropped, |line| line.opacity(0.45))
+                                    .child(div().w(dp(200.)).child(Input::new(&row.name).small()))
+                                    .child(
+                                        h_flex()
+                                            .w(dp(210.))
+                                            .gap(dp(2.))
+                                            .child(
+                                                div().flex_1().child(Input::new(&row.ty).small()),
+                                            )
+                                            .child(
+                                                Button::new(("types", index))
+                                                    .cursor_pointer()
+                                                    .icon(IconName::ChevronDown)
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .dropdown_menu(move |menu, _, _| {
+                                                        common_types(driver).iter().fold(
+                                                            menu,
+                                                            |menu, name| {
+                                                                let ty = ty.clone();
+                                                                menu.item(
+                                                                    PopupMenuItem::new(*name)
+                                                                        .on_click(
+                                                                            move |_, window, cx| {
+                                                                                ty.update(
+                                                                            cx,
+                                                                            |input, cx| {
+                                                                                input.set_value(
+                                                                                    *name, window,
+                                                                                    cx,
+                                                                                )
+                                                                            },
+                                                                        )
+                                                                            },
+                                                                        ),
+                                                                )
+                                                            },
+                                                        )
+                                                    }),
+                                            ),
+                                    )
+                                    .child(
+                                        div().w(dp(50.)).child(
+                                            Checkbox::new(("null", index))
+                                                .cursor_pointer()
+                                                .checked(row.nullable)
+                                                .on_click(cx.listener(
+                                                    move |editor, on: &bool, _, cx| {
+                                                        if let Some(row) = editor.row_mut(key) {
+                                                            row.nullable = *on;
+                                                        }
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        ),
+                                    )
+                                    .child(
+                                        div().w(dp(200.)).child(Input::new(&row.default).small()),
+                                    )
+                                    .child(
+                                        div().w(dp(50.)).child(
+                                            // Only new tables set the key here.
+                                            Checkbox::new(("pk", index))
+                                                .cursor_pointer()
+                                                .checked(row.pk)
+                                                .disabled_when(self.object.is_some())
+                                                .on_click(cx.listener(
+                                                    move |editor, on: &bool, _, cx| {
+                                                        if let Some(row) = editor.row_mut(key) {
+                                                            row.pk = *on;
+                                                            if *on {
+                                                                row.nullable = false;
+                                                            }
+                                                        }
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        ),
+                                    )
+                                    .child(
+                                        Button::new(("drop-col", index))
+                                            .cursor_pointer()
+                                            .icon(if row.dropped {
+                                                IconName::Undo
+                                            } else {
+                                                IconName::Trash
+                                            })
+                                            .ghost()
+                                            .xsmall()
+                                            .tooltip(if row.dropped {
+                                                "Keep column"
+                                            } else {
+                                                "Remove column"
+                                            })
+                                            .on_click(cx.listener(move |editor, _, _, cx| {
+                                                let Some(index) = editor
+                                                    .rows
+                                                    .iter()
+                                                    .position(|row| row.name.entity_id() == key)
+                                                else {
+                                                    return;
+                                                };
+                                                if editor.rows[index].orig.is_none() {
+                                                    editor.rows.remove(index);
+                                                } else {
+                                                    editor.rows[index].dropped =
+                                                        !editor.rows[index].dropped;
                                                 }
-                                            }
-                                            cx.notify();
-                                        })),
-                                ),
-                            )
-                            .child(
-                                Button::new(("drop-col", i)).cursor_pointer()
-                                    .icon(if r.dropped { IconName::Undo } else { IconName::Delete })
-                                    .ghost()
-                                    .xsmall()
-                                    .tooltip(if r.dropped { "Keep column" } else { "Remove column" })
-                                    .on_click(cx.listener(move |e, _, _, cx| {
-                                        let Some(i) =
-                                            e.rows.iter().position(|r| r.name.entity_id() == key)
-                                        else {
-                                            return;
-                                        };
-                                        if e.rows[i].orig.is_none() {
-                                            e.rows.remove(i);
-                                        } else {
-                                            e.rows[i].dropped = !e.rows[i].dropped;
-                                        }
-                                        cx.notify();
-                                    })),
-                            )
-                    }))),
+                                                cx.notify();
+                                            })),
+                                    )
+                            })),
+                    ),
             )
             .child(
                 h_flex().child(
-                    Button::new("add-col").cursor_pointer()
+                    Button::new("add-col")
+                        .cursor_pointer()
                         .icon(IconName::Plus)
-                        .label("Add Column")
+                        .label("Add column")
                         .ghost()
                         .small()
-                        .on_click(cx.listener(|e, _, window, cx| {
-                            e.push_row(None, window, cx);
+                        .on_click(cx.listener(|editor, _, window, cx| {
+                            editor.push_row(None, window, cx);
                             cx.notify();
                         })),
                 ),
             )
-            .when(self.shared.cfg.driver == Driver::Sqlite && self.object.is_some(), |d| {
-                d.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child("SQLite can add, rename and remove columns; other changes need a new table."),
-                )
+            .when(driver == Driver::Sqlite && !creating, |column| {
+                column.child(div().text_size(dp(12.)).text_color(t.text_muted).child(
+                    "SQLite can add, rename and remove columns; other changes need a new table.",
+                ))
             })
-            .when_some(self.error.clone(), |d, e| {
-                d.child(div().text_sm().text_color(theme.danger).child(e))
+            .child(
+                div()
+                    .id("table-editor-ddl")
+                    .max_h(dp(140.))
+                    .overflow_y_scroll()
+                    .p(dp(12.))
+                    .rounded(dp(8.))
+                    .border_1()
+                    .border_color(t.border)
+                    .bg(t.canvas)
+                    .font_family(mono)
+                    .text_size(dp(11.5))
+                    .text_color(t.text_secondary)
+                    .children(
+                        ddl_text
+                            .lines()
+                            .map(|line| div().child(line.to_string()))
+                            .collect::<Vec<_>>(),
+                    ),
+            )
+            .when_some(self.error.clone(), |column, e| {
+                column.child(div().text_size(dp(12.)).text_color(t.danger).child(e))
             })
+            .child(dialog::footer(
+                "Nothing runs until you apply it.",
+                vec![
+                    Button::new("cancel-ddl")
+                        .cursor_pointer()
+                        .label("Cancel")
+                        .outline()
+                        .on_click(|_, window, cx| window.close_dialog(cx))
+                        .into_any_element(),
+                    Button::new("apply-ddl")
+                        .cursor_pointer()
+                        .label(if creating { "Create table" } else { "Apply" })
+                        .primary()
+                        .loading(self.running)
+                        .on_click(cx.listener(|editor, _, window, cx| editor.apply(window, cx)))
+                        .into_any_element(),
+                ],
+                cx,
+            ))
     }
 }
