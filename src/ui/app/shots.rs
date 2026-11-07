@@ -254,6 +254,23 @@ fn screenshots() {
     let tab = s.cx.update(|cx| session.read(cx).active_table().unwrap());
     s.wait("rows", |cx| tab.read(cx).loaded_rows(cx) > 0);
     s.snap("01-table");
+    // Row panel on References.
+    let grid = s.cx.update(|cx| tab.read(cx).grid_for_test());
+    s.in_window(|w, cx| {
+        grid.update(cx, |g, cx| g.set_selected_row(1, cx));
+        cx.set_global(crate::ui::row_panel::PanelTab::References);
+        w.dispatch_action(Box::new(crate::ui::ToggleRowDetail), cx);
+    });
+    s.snap("01-row-panel");
+    s.in_window(|w, cx| {
+        cx.set_global(crate::ui::row_panel::PanelTab::Json);
+        w.refresh();
+    });
+    s.snap("01-row-panel-json");
+    s.in_window(|w, cx| {
+        cx.set_global(crate::ui::row_panel::PanelTab::Fields);
+        w.dispatch_action(Box::new(crate::ui::ToggleRowDetail), cx);
+    });
     s.in_window(|w, cx| tab.update(cx, |t, cx| t.show_filter_example(w, cx)));
     s.wait("filtered", |cx| !tab.read(cx).is_loading(cx));
     s.snap("10-filters");

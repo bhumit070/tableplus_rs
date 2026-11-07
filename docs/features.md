@@ -87,8 +87,11 @@ actually involved.
 - **⌥⌫** sets the selected cell to NULL; **⌥↵** opens the bigger editor,
   which JSON cells use by default: highlighted, *Format*, live validity,
   *Set NULL*.
-- **Row detail panel** (⌘⇧I): every field of the selected row, with JSON
-  pretty-printed.
+- **Row detail panel** (⌘⇧I), with three tabs: **Fields** (every field
+  of the selected row, JSON pretty-printed, edit and copy per field),
+  **JSON** (the row as one object, JSON columns nested, with Copy) and
+  **References** (the row's foreign keys, each opening the referenced
+  row).
 - **Foreign keys:** a → in a foreign-key cell opens the referenced row.
 - **Structure view:** columns, indexes, foreign keys and the table's
   `CREATE TABLE` statement.
