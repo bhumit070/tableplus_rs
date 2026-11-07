@@ -82,6 +82,10 @@ async fn probe<C: Connection>(
 
 /// A pool that can't get a connection says only "pool timed out": say
 /// what that means for the user.
+/// The start of the error for a dropped connection; `db::is_connection_lost`
+/// looks for it.
+pub const LOST_CONNECTION: &str = "Lost the connection to the server";
+
 pub(super) fn explain_lost(e: Error) -> Error {
     let lost = e.downcast_ref::<SqlxError>().is_some_and(|e| {
         matches!(
@@ -92,7 +96,9 @@ pub(super) fn explain_lost(e: Error) -> Error {
         e.is_timeout() || e.is_io_error() || e.is_connection_dropped() || e.is_connection_refusal()
     });
     if lost {
-        e.context("Lost the connection to the server (it may be down or unreachable). Try again or reconnect")
+        e.context(format!(
+            "{LOST_CONNECTION} (it may be down or unreachable). Try again or reconnect"
+        ))
     } else {
         e
     }

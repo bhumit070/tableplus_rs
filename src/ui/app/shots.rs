@@ -322,6 +322,19 @@ fn screenshots() {
         })
     });
     s.snap("01-table-staged");
+    // Connection lost, with the staged edits kept.
+    s.in_window(|w, cx| {
+        session.update(cx, |s, _| {
+            s.shared
+                .report("Lost the connection to the server: connection reset by peer")
+        });
+        w.refresh();
+    });
+    s.snap("22-connection-lost");
+    s.in_window(|w, cx| {
+        session.update(cx, |s, _| *s.shared.lost.borrow_mut() = None);
+        w.refresh();
+    });
 
     // The safe-mode confirmation, as on a production connection.
     let mut prod = s.cx.update(|cx| session.read(cx).cfg().clone());

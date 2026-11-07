@@ -201,6 +201,7 @@ impl AppView {
                 match res {
                     Ok(conn) => {
                         let shared = Rc::new(Shared {
+                            lost: Default::default(),
                             cfg,
                             conn: Arc::new(RwLock::new(conn)),
                             schema: Default::default(),
@@ -744,8 +745,14 @@ impl AppView {
                     Some(v) => format!("{} {v}", cfg.driver.label()),
                     None => cfg.driver.label().to_string(),
                 };
-                bar.child(div().size(dp(7.)).rounded_full().bg(t.success))
-                    .child(div().text_color(t.text_secondary).child("Connected"))
+                let lost = s.shared.lost.borrow().is_some();
+                let (dot, state) = if lost {
+                    (t.warning, "Reconnecting…")
+                } else {
+                    (t.success, "Connected")
+                };
+                bar.child(div().size(dp(7.)).rounded_full().bg(dot))
+                    .child(div().text_color(t.text_secondary).child(state))
                     .child(server)
                     .when_some(cfg.ssh.as_ref(), |d, ssh| {
                         d.child(sep()).child(format!("via SSH tunnel {}", ssh.host))
@@ -2462,6 +2469,40 @@ mod tests {
             query.read_with(&cx, |q, cx| q.text(cx)),
             "select total from t"
         );
+        let _ = remove_file(file);
+    }
+
+    /// A lost connection shows the banner; Retry now asks the server and,
+    /// with it answering, the banner goes away.
+    #[gpui::test]
+    fn connection_lost_banner_retries(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = temp_dir().join(format!("tabula-ui-lost-{}.db", cfg.id));
+        write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        assert!(cx.debug_bounds("connection-lost").is_none());
+        session.update(&mut cx, |s, cx| {
+            s.shared
+                .report("Lost the connection to the server: broken pipe");
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let button = cx
+            .debug_bounds("retry-connection-button")
+            .expect("banner shown");
+        cx.simulate_click(button.center(), Modifiers::none());
+        wait_until(&mut cx, "reconnected", |cx| {
+            session.read_with(cx, |s, _| s.shared.lost.borrow().is_none())
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("connection-lost").is_none());
         let _ = remove_file(file);
     }
 

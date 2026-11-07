@@ -345,6 +345,12 @@ pub struct BatchFailed {
     pub message: String,
 }
 
+/// Whether an error (as text) means the server went away: a dropped
+/// connection, or a read that timed out.
+pub fn is_connection_lost(error: &str) -> bool {
+    error.contains(sql::LOST_CONNECTION) || error.contains("the server didn't answer within")
+}
+
 impl Display for BatchFailed {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.write_str(&self.message)

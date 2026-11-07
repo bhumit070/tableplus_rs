@@ -758,6 +758,7 @@ impl QueryTab {
                     }
                     Err(e) => {
                         this.error = Some(error_text(&e));
+                        this.shared.report(&format!("{e:#}"));
                         let cancelled = e
                             .root_cause()
                             .to_string()

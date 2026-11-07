@@ -1,7 +1,9 @@
 //! One open connection: sidebar (database switcher, search, object tree) and
 //! a tab strip of table and query tabs.
 
+use std::mem::take;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, Focusable, FontWeight, IntoElement,
@@ -73,6 +75,13 @@ pub struct Session {
     loading: bool,
     /// The database a ⌘K switch is moving to, until it's done.
     switching_db: Option<String>,
+    /// While the connection is lost: when the next automatic retry runs,
+    /// and how many have failed (the wait doubles, up to a minute).
+    retry_at: Option<Instant>,
+    retries: u32,
+    /// Set when the connection comes back; the next render reloads the
+    /// sidebar (it needs the window).
+    reload_objects_later: bool,
     /// Databases switched to in this session, newest first, for the
     /// switcher's Recent section.
     recent_dbs: Vec<String>,
@@ -112,6 +121,9 @@ impl Session {
             loading: false,
             switching_db: None,
             recent_dbs: Vec::new(),
+            retry_at: None,
+            retries: 0,
+            reload_objects_later: false,
             load_error: None,
             dbs_error: None,
             focus: cx.focus_handle(),
@@ -119,6 +131,7 @@ impl Session {
         };
         this.load_objects(window, cx);
         this.load_server_version(window, cx);
+        Self::watch_connection(cx);
         this
     }
 
@@ -193,6 +206,7 @@ impl Session {
                         // An old list would look current; show the error instead.
                         this.objects.clear();
                         this.load_error = Some(format!("{e:#}"));
+                        this.shared.report(&format!("{e:#}"));
                         this.rebuild_tree(cx);
                         window.push_notification(
                             Notification::error(format!("{e:#}")).title("Couldn't load tables"),
@@ -1885,8 +1899,143 @@ impl Focusable for Session {
     }
 }
 
+impl Session {
+    /// Watches for a lost connection (design.md screen 22): every second,
+    /// schedule or run a retry, and repaint the countdown.
+    fn watch_connection(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let alive = this
+                    .update(cx, |session, cx| session.check_connection(cx))
+                    .is_ok();
+                if !alive {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn check_connection(&mut self, cx: &mut Context<Self>) {
+        if self.shared.lost.borrow().is_none() {
+            self.retry_at = None;
+            self.retries = 0;
+            return;
+        }
+        let due = *self
+            .retry_at
+            .get_or_insert_with(|| Instant::now() + Duration::from_secs(5));
+        if Instant::now() >= due {
+            self.retry_now(cx);
+        }
+        cx.notify();
+    }
+
+    /// Asks the server for its version: an answer means it's back, and the
+    /// sidebar and open table reload; otherwise wait longer and try again.
+    fn retry_now(&mut self, cx: &mut Context<Self>) {
+        // A retry in flight: wait for it.
+        self.retry_at = Some(Instant::now() + Duration::from_secs(60));
+        let conn = self.shared.conn.clone();
+        let driver = self.shared.cfg.driver;
+        let task = runtime::spawn(async move { conn.read().await.server_version(driver).await });
+        cx.spawn(async move |this, cx| {
+            let answer = task.await;
+            this.update(cx, |session, cx| {
+                match answer {
+                    Ok(_) => {
+                        *session.shared.lost.borrow_mut() = None;
+                        session.retry_at = None;
+                        session.retries = 0;
+                        session.reload_after_reconnect(cx);
+                    }
+                    Err(_) => {
+                        session.retries += 1;
+                        let wait = (5u64 << session.retries.min(4)).min(60);
+                        session.retry_at = Some(Instant::now() + Duration::from_secs(wait));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Back online: the open table reloads (unless it has staged edits,
+    /// which stay) and the sidebar refreshes on its next load.
+    fn reload_after_reconnect(&mut self, cx: &mut Context<Self>) {
+        if let Some(TabItem::Table(tab)) = self.tabs.get(self.active) {
+            tab.update(cx, |tab, cx| {
+                if !tab.is_dirty(cx) {
+                    tab.reload(cx);
+                }
+            });
+        }
+        self.reload_objects_later = true;
+    }
+
+    fn render_lost_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let reason = self.shared.lost.borrow().clone()?;
+        let t = tokens(cx);
+        let wait = self
+            .retry_at
+            .map(|at| at.saturating_duration_since(Instant::now()).as_secs())
+            .unwrap_or(5);
+        Some(
+            h_flex()
+                .debug_selector(|| "connection-lost".into())
+                .gap(dp(10.))
+                .px(dp(14.))
+                .py(dp(8.))
+                .bg(t.warning.opacity(0.14))
+                .border_b_1()
+                .border_color(t.warning.opacity(0.4))
+                .text_size(dp(12.5))
+                .child(Icon::new(IconName::WifiOff).small().text_color(t.warning))
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(t.warning)
+                        .child(format!(
+                            "Lost the connection to {}",
+                            self.shared.cfg.display_name()
+                        )),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(t.text_secondary)
+                        .child(format!(
+                            "Retrying in {wait} s. Your staged edits are kept. ({reason})"
+                        )),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "retry-connection-button".into())
+                        .child(
+                            Button::new("retry-connection")
+                                .cursor_pointer()
+                                .label("Retry now")
+                                .outline()
+                                .xsmall()
+                                .on_click(cx.listener(|session, _, _, cx| session.retry_now(cx))),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
 impl Render for Session {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if take(&mut self.reload_objects_later) {
+            self.load_objects(window, cx);
+        }
+        let banner = self.render_lost_banner(cx);
         let content = match self.tabs.get(self.active) {
             Some(TabItem::Table(t)) => t.clone().into_any_element(),
             Some(TabItem::Query(q)) => q.clone().into_any_element(),
@@ -1897,6 +2046,7 @@ impl Render for Session {
             .size_full()
             .key_context("Session")
             .track_focus(&self.focus)
+            .children(banner)
             .child(
                 h_resizable("session-split")
                     .child(

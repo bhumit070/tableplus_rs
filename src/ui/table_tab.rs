@@ -618,6 +618,7 @@ impl TableTab {
             Ok(v) => v,
             Err(e) => {
                 self.error = Some(format!("{e:#}"));
+                self.shared.report(&format!("{e:#}"));
                 // Rows from before would pass for current (and be editable).
                 // A reload only starts without staged edits, so none are lost.
                 self.table.update(cx, |t, cx| {

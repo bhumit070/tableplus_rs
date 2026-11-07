@@ -59,7 +59,11 @@ actually involved.
   spinner tile in the left rail; backups and restores keep a progress
   toast until they finish. A connection that couldn't be opened keeps the
   reason on its home card, with Retry and Details (and Edit connection…
-  from there). An empty table offers *Add row* and *Import
+  from there). If a connection drops while you work, an amber banner
+  says so and retries on its own (after 5 s, then waiting longer each
+  time, up to a minute), with *Retry now*; the status bar shows
+  "Reconnecting…", what's on screen stays readable and staged edits are
+  kept. When the server answers again, the table reloads. An empty table offers *Add row* and *Import
   CSV…*; a filter that matches nothing says so and offers *Clear filters*.
 - **Staged editing:** edits are tinted (amber edited, green new, red
   deleted) and nothing is written until you commit (⌘S). A bar below the

@@ -30,7 +30,7 @@ use std::sync::Arc;
 use gpui::{App, Hsla, KeyBinding};
 use tokio::sync::RwLock;
 
-use crate::db::{Connection, ConnectionConfig};
+use crate::db::{Connection, ConnectionConfig, is_connection_lost};
 use gpui::{Styled, Window, actions, px};
 use gpui_component::{
     Disableable, dialog::DialogFooter, input::ShowCompletions, notification::Notification,
@@ -122,6 +122,18 @@ pub struct Shared {
     pub conn: Arc<RwLock<Connection>>,
     /// Names for autocomplete; refreshed whenever the sidebar reloads.
     pub schema: Rc<RefCell<completion::Schema>>,
+    /// Set when a request found the server gone (design.md screen 22): the
+    /// session shows the "connection lost" banner and retries.
+    pub lost: RefCell<Option<String>>,
+}
+
+impl Shared {
+    /// Notes `error` when it means the connection is gone.
+    pub fn report(&self, error: &str) {
+        if is_connection_lost(error) {
+            *self.lost.borrow_mut() = Some(error.lines().next().unwrap_or(error).to_string());
+        }
+    }
 }
 
 /// Applies the safe mode: returns true when the caller may go ahead now;
