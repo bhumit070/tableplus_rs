@@ -2,6 +2,7 @@
 //! per open connection, no limit), and the active view.
 
 use std::cell::RefCell;
+use std::cmp::Reverse;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -770,21 +771,25 @@ impl AppView {
         for (i, s) in self.sessions.iter().enumerate() {
             let cfg = &s.read(cx).shared.cfg;
             open_ids.push(cfg.id.clone());
-            let mut detail = format!("open · {}", cfg.driver.label());
-            if let Some(k) = shortcut_hint(i) {
-                detail.push_str(&format!(" · {k}"));
-            }
             items.push(PickItem {
-                detail: Some(detail),
+                detail: Some(cfg.driver.label().to_string()),
                 dot: Some(tag_color(cfg, cx)),
                 current: self.active == Some(i),
+                group: Some("Open now".into()),
+                hint: shortcut_hint(i),
                 ..PickItem::new(format!("s:{i}"), cfg.display_name())
             });
         }
-        for cfg in &self.home.read(cx).connections {
-            if open_ids.contains(&cfg.id) {
-                continue;
-            }
+        // Saved ones by when they were last used, newest first.
+        let mut saved: Vec<&ConnectionConfig> = self
+            .home
+            .read(cx)
+            .connections
+            .iter()
+            .filter(|c| !open_ids.contains(&c.id))
+            .collect();
+        saved.sort_by_key(|c| Reverse(c.last_used.unwrap_or(0)));
+        for cfg in saved {
             let place = match cfg.driver {
                 crate::db::Driver::Sqlite => cfg.file.clone(),
                 _ => cfg.host.clone(),
@@ -792,10 +797,16 @@ impl AppView {
             items.push(PickItem {
                 detail: Some(format!("{} · {place}", cfg.driver.label())),
                 dot: Some(tag_color(cfg, cx)),
+                group: Some("Saved".into()),
                 ..PickItem::new(format!("c:{}", cfg.id), cfg.display_name())
             });
         }
-        items.push(PickItem::new("new", "New Connection…"));
+        items.push(PickItem {
+            icon: Some(IconName::Plus),
+            group: Some("New".into()),
+            hint: Some("⌘N".into()),
+            ..PickItem::new("new", "New connection…")
+        });
         let me = cx.entity().downgrade();
         let on_pick: OnPick = Rc::new(move |id, window, cx| {
             me.update(cx, |a, cx| a.pick_connection(&id, window, cx))

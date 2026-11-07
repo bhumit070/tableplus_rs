@@ -334,6 +334,15 @@ fn screenshots() {
     s.in_window(|w, cx| query.update(cx, |q, cx| q.explain(false, w, cx)));
     s.wait("plan", |cx| !query.read(cx).running());
     s.snap("14-explain");
+    s.in_window(|w, cx| session.update(cx, |s, cx| s.open_goto(w, cx)));
+    s.snap("05-palette");
+    s.in_window(|w, cx| w.close_dialog(cx));
+    s.settle();
+    let app = s.app.clone();
+    s.in_window(|w, cx| app.update(cx, |a, cx| a.open_connection_picker(w, cx)));
+    s.snap("17-open-connection");
+    s.in_window(|w, cx| w.close_dialog(cx));
+    s.settle();
     let conn_id = s.cx.update(|cx| session.read(cx).cfg().id.clone());
     let weak = session.downgrade();
     let history = s.in_window(|w, cx| {

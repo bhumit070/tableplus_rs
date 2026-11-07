@@ -380,24 +380,30 @@ impl Session {
             .enumerate()
             .filter(|(_, o)| o.kind != ObjectKind::Keys)
             .map(|(i, o)| {
-                let kind = match o.kind {
-                    ObjectKind::View => "view",
-                    ObjectKind::Collection => "collection",
-                    _ => "table",
-                };
-                let detail = match &o.schema {
-                    Some(s) => format!("{kind} · {s}"),
-                    None => kind.to_string(),
+                let (group, icon) = match o.kind {
+                    ObjectKind::View => ("Views", IconName::Eye),
+                    ObjectKind::Collection => ("Collections", IconName::Braces),
+                    _ => ("Tables", IconName::Table),
                 };
                 PickItem {
-                    detail: Some(detail),
+                    detail: o.schema.clone(),
+                    group: Some(group.into()),
+                    icon: Some(icon),
                     ..PickItem::new(format!("o:{i}"), o.name.clone())
                 }
             })
             .collect();
+        // Tables, then views, then collections; each in sidebar order.
+        items.sort_by_key(|i| match i.group.as_deref() {
+            Some("Tables") => 0,
+            Some("Views") => 1,
+            _ => 2,
+        });
         for (i, (label, keys, _)) in goto_commands().iter().enumerate() {
             items.push(PickItem {
-                detail: Some(format!("command · {keys}")),
+                group: Some("Commands".into()),
+                icon: Some(IconName::SquareTerminal),
+                hint: Some(keys.to_string()),
                 ..PickItem::new(format!("cmd:{i}"), *label)
             });
         }
@@ -521,6 +527,8 @@ impl Session {
             .iter()
             .map(|d| PickItem {
                 current: *d == self.current_db,
+                icon: Some(IconName::Database),
+                group: Some("Databases".into()),
                 ..PickItem::new(d, d)
             })
             .collect();
