@@ -2,8 +2,12 @@
 
 ## Connections
 
-- A saved list with **environment tags** (local, development, staging,
-  production), shown as colored badges. Connections saved with the old
+- A **connections home** of cards, grouped *Open now* and *Saved*: engine,
+  endpoint, SSH / TLS / safe-mode tags, environment and when it was last
+  used. Search with `/`, filter by environment. Clicking an open
+  connection switches to it; a saved one opens with a double click.
+- **Environment tags** (local, development, staging, production), shown as
+  colored badges. Connections saved with the old
   *testing* tag open as development.
 - **No connection limit.** Each open connection gets an icon in the left
   rail; ⌘1…⌘9 jump between them.

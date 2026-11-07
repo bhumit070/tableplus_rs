@@ -1,33 +1,43 @@
-//! Start screen: the saved-connection list.
+//! Connections home (design.md, screen 03): saved connections as cards,
+//! grouped Open now / Saved, with search (`/`), an environment filter,
+//! Import and New connection.
 
+use std::collections::HashSet;
+use std::rc::Rc;
+
+use chrono::Utc;
 use gpui::{
-    Context, Entity, InteractiveElement, IntoElement, ParentElement, Render, Styled, Subscription,
-    WeakEntity, Window, div, prelude::*, px,
+    AnyElement, App, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, FontWeight, Hsla,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Render,
+    Styled, Subscription, WeakEntity, Window, div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dialog::DialogFooter;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_component::notification::Notification;
+use gpui_component::spinner::Spinner;
 use gpui_component::{ActiveTheme as _, Icon, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit_assets::IconName;
-
-use super::app::AppView;
-use super::conn_form::ConnForm;
-use super::tag_color;
-use crate::db::{ConnectionConfig, Driver};
-use crate::{import, store};
-use gpui::{ClickEvent, FontWeight, PathPromptOptions};
 use uuid::Uuid;
+
+use super::app::{AppView, shortcut_hint};
+use super::conn_form::{ConnForm, OnDone};
+use super::dialog;
+use super::theme::{caps, dp, engine_badge, env_pill, kbd, keychain_name, safe_mode_badge, tokens};
+use crate::db::{ConnectionConfig, Driver, EnvTag, SafeMode};
+use crate::{import, settings, store};
 
 pub struct Home {
     app: WeakEntity<AppView>,
     pub connections: Vec<ConnectionConfig>,
     search: Entity<InputState>,
     /// Ids of connections being opened (several at launch).
-    pub connecting: std::collections::HashSet<String>,
+    pub connecting: HashSet<String>,
     /// Set when connections.json couldn't be read (it's kept aside).
     load_warning: Option<String>,
+    env_filter: Option<EnvTag>,
+    focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
 
@@ -48,6 +58,8 @@ impl Home {
             load_warning,
             search,
             connecting: Default::default(),
+            env_filter: None,
+            focus: cx.focus_handle(),
             _subs: subs,
         }
     }
@@ -85,7 +97,7 @@ impl Home {
         let is_new = cfg.is_none();
         let mut cfg = cfg.unwrap_or_else(|| {
             let mut c = ConnectionConfig::new(Driver::Postgres);
-            c.safe_mode = crate::settings::get(cx).default_safe_mode;
+            c.safe_mode = settings::get(cx).default_safe_mode;
             c
         });
         // The form must show the real secret: a blank field saved back
@@ -98,16 +110,15 @@ impl Home {
             return;
         }
         let home = cx.entity().downgrade();
-        let on_done: super::conn_form::OnDone =
-            std::rc::Rc::new(move |cfg, connect, window, cx| {
-                home.update(cx, |h, cx| {
-                    h.upsert(&cfg, window, cx);
-                    if connect {
-                        h.connect(cfg.clone(), window, cx);
-                    }
-                })
-                .ok();
-            });
+        let on_done: OnDone = Rc::new(move |cfg, connect, window, cx| {
+            home.update(cx, |h, cx| {
+                h.upsert(&cfg, window, cx);
+                if connect {
+                    h.connect(cfg.clone(), window, cx);
+                }
+            })
+            .ok();
+        });
         ConnForm::open(cfg, is_new, on_done, window, cx);
     }
 
@@ -139,6 +150,9 @@ impl Home {
                 app.connect(cfg, window, cx, move |ok, window, cx| {
                     home.update(cx, |h, cx| {
                         h.connecting.remove(&retry.id);
+                        if ok {
+                            h.touch(&retry.id, window, cx);
+                        }
                         // Imported connections have no password yet: let the user add it.
                         // (Not when the keychain failed: saving that form
                         // would replace the stored password with a blank.)
@@ -366,15 +380,39 @@ impl Home {
         });
     }
 
-    fn render_row(
+    /// Marks `id` as just used, so the card can say when.
+    fn touch(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(c) = self.connections.iter_mut().find(|c| c.id == id) {
+            c.last_used = Some(Utc::now().timestamp());
+            self.persist(window, cx);
+        }
+    }
+
+    /// Shows the open connection's tab in the rail, or connects.
+    fn open(&mut self, cfg: &ConnectionConfig, window: &mut Window, cx: &mut Context<Self>) {
+        let open = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).open_ids(cx))
+            .unwrap_or_default();
+        match open.iter().position(|id| *id == cfg.id) {
+            Some(i) => {
+                self.app.update(cx, |a, cx| a.activate_session(i, cx)).ok();
+            }
+            None => self.connect(cfg.clone(), window, cx),
+        }
+    }
+
+    fn render_card(
         &self,
         ix: usize,
         cfg: &ConnectionConfig,
+        open_ix: Option<usize>,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let theme = cx.theme();
+    ) -> AnyElement {
+        let t = tokens(cx);
         let connecting = self.connecting.contains(&cfg.id);
-        let subtitle = match cfg.driver {
+        let endpoint = match cfg.driver {
             Driver::Sqlite => cfg.file.clone(),
             _ if cfg.host.starts_with("mongodb") => "connection string".into(),
             _ => {
@@ -386,142 +424,191 @@ impl Home {
                 let db = if cfg.database.is_empty() {
                     String::new()
                 } else {
-                    format!(" / {}", cfg.database)
+                    format!("/{}", cfg.database)
                 };
                 format!("{user}{}:{}{db}", cfg.host, cfg.port)
             }
         };
+        // Up to three facts worth a glance: tunnel, TLS, safe mode.
+        let mut tags: Vec<(String, Hsla)> = vec![];
+        if cfg.ssh.is_some() {
+            tags.push(("SSH".into(), t.text_secondary));
+        }
+        if cfg.ssl {
+            tags.push(("TLS".into(), t.text_secondary));
+        }
+        let (safe, safe_color, _) = safe_mode_badge(cfg, cx);
+        if cfg.safety() != SafeMode::Off && cfg.safety() != SafeMode::Auto {
+            tags.push((safe, safe_color));
+        }
+        tags.truncate(3);
+
+        let footer: AnyElement = if connecting {
+            h_flex()
+                .gap(dp(6.))
+                .text_size(dp(11.5))
+                .text_color(t.text_muted)
+                .child(Spinner::new().xsmall())
+                .child("Connecting…")
+                .into_any_element()
+        } else if let Some(i) = open_ix {
+            h_flex()
+                .gap(dp(6.))
+                .text_size(dp(11.5))
+                .text_color(t.success)
+                .child(div().size(dp(6.)).rounded_full().bg(t.success))
+                .child("Open")
+                .children(shortcut_hint(i).map(|k| kbd(k, cx)))
+                .into_any_element()
+        } else {
+            div()
+                .text_size(dp(11.5))
+                .text_color(t.text_faint)
+                .child(match cfg.last_used {
+                    Some(at) => format!("Used {}", ago(Utc::now().timestamp() - at)),
+                    None => "Never opened".into(),
+                })
+                .into_any_element()
+        };
+
         let (c1, c2, c3, c4) = (cfg.clone(), cfg.clone(), cfg.clone(), cfg.clone());
         let home = cx.entity().downgrade();
-        div()
-            .id(("conn", ix))
-            .group("conn-row")
-            .flex()
-            .items_center()
-            .gap_3()
-            .px_3()
-            .py_2()
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.background)
-            .hover(|s| s.bg(theme.list_hover))
-            .cursor_pointer()
+        let actions = h_flex()
+            .gap(dp(2.))
+            .invisible()
+            .group_hover("conn-card", |s| s.visible())
             .child(
-                div()
-                    .w(px(4.))
-                    .h(px(34.))
-                    .rounded_full()
-                    .bg(tag_color(cfg, cx)),
-            )
-            .child(
-                div()
-                    .size(px(34.))
-                    .rounded_md()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(theme.secondary)
-                    .text_xs()
-                    .font_weight(FontWeight::BOLD)
-                    .child(cfg.driver.short()),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .truncate()
-                            .child(cfg.display_name()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .truncate()
-                            .child(subtitle),
-                    ),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(tag_color(cfg, cx))
-                    .child(cfg.tag.label()),
-            )
-            .child(
-                h_flex()
-                    .gap_0p5()
-                    .invisible()
-                    .group_hover("conn-row", |s| s.visible())
-                    .child(
-                        Button::new(("edit", ix))
-                            .cursor_pointer()
-                            .icon(IconName::Pencil)
-                            .ghost()
-                            .xsmall()
-                            .tooltip("Edit")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.open_form(Some(c1.clone()), window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new(("dup", ix))
-                            .cursor_pointer()
-                            .icon(IconName::Copy)
-                            .ghost()
-                            .xsmall()
-                            .tooltip("Duplicate")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.duplicate(&c2, window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new(("del", ix))
-                            .cursor_pointer()
-                            .icon(IconName::Trash)
-                            .ghost()
-                            .xsmall()
-                            .tooltip("Delete")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.delete(c3.clone(), window, cx);
-                            })),
-                    ),
-            )
-            .child(
-                Button::new(("open", ix))
+                Button::new(("edit", ix))
                     .cursor_pointer()
-                    .label("Connect")
-                    .small()
-                    .primary()
-                    .loading(connecting)
+                    .icon(IconName::Pencil)
+                    .ghost()
+                    .xsmall()
+                    .tooltip("Edit")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
-                        this.connect(c4.clone(), window, cx);
+                        this.open_form(Some(c1.clone()), window, cx);
                     })),
+            )
+            .child(
+                Button::new(("dup", ix))
+                    .cursor_pointer()
+                    .icon(IconName::Copy)
+                    .ghost()
+                    .xsmall()
+                    .tooltip("Duplicate")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.duplicate(&c2, window, cx);
+                    })),
+            )
+            .child(
+                Button::new(("del", ix))
+                    .cursor_pointer()
+                    .icon(IconName::Trash)
+                    .ghost()
+                    .xsmall()
+                    .tooltip("Delete")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.delete(c3.clone(), window, cx);
+                    })),
+            );
+
+        v_flex()
+            .id(("conn", ix))
+            .debug_selector(move || format!("conn-card-{ix}"))
+            .group("conn-card")
+            .h(dp(128.))
+            .min_w_0()
+            .p(dp(14.))
+            .gap(dp(6.))
+            .rounded(dp(12.))
+            .border_1()
+            .border_color(if open_ix.is_some() {
+                t.success.opacity(0.35)
+            } else {
+                t.border
+            })
+            .bg(t.sidebar)
+            .hover(|s| s.bg(t.hover).border_color(t.accent.opacity(0.5)))
+            .cursor_pointer()
+            .child(
+                h_flex()
+                    .gap(dp(12.))
+                    .items_start()
+                    .child(engine_badge(cfg.driver, 36., cx))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(dp(3.))
+                            .child(
+                                div()
+                                    .text_size(dp(13.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(t.text)
+                                    .truncate()
+                                    .child(cfg.display_name()),
+                            )
+                            .child(
+                                div()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_size(dp(11.5))
+                                    .text_color(t.text_muted)
+                                    .truncate()
+                                    .child(endpoint),
+                            ),
+                    )
+                    .child(actions),
+            )
+            .child(
+                // Same height with or without tags, so footers line up.
+                h_flex()
+                    .h(dp(18.))
+                    .gap(dp(6.))
+                    .children(tags.into_iter().map(|(label, color)| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .h(dp(18.))
+                            .px(dp(6.))
+                            .rounded(dp(5.))
+                            .border_1()
+                            .border_color(t.border)
+                            .text_size(dp(10.5))
+                            .text_color(color)
+                            .child(label)
+                    })),
+            )
+            .child(div().flex_1())
+            .child(
+                h_flex()
+                    .child(env_pill(cfg.tag, cx))
+                    .child(div().flex_1())
+                    .child(footer),
             )
             .on_click({
                 let cfg = cfg.clone();
                 cx.listener(move |this, ev: &ClickEvent, window, cx| {
-                    if ev.click_count() == 2 {
-                        this.connect(cfg.clone(), window, cx);
+                    // An open connection switches on one click; opening a
+                    // saved one takes a double click (or the menu).
+                    if open_ix.is_some() || ev.click_count() == 2 {
+                        this.open(&cfg, window, cx);
                     }
                 })
             })
             .context_menu({
-                let cfg = cfg.clone();
+                let cfg = c4;
                 move |menu, _, _| {
                     let cfg = cfg.clone();
                     let (h1, h2, h3, h4) = (home.clone(), home.clone(), home.clone(), home.clone());
                     let (a, b, c, d) = (cfg.clone(), cfg.clone(), cfg.clone(), cfg);
-                    menu.item(PopupMenuItem::new("Connect").on_click(move |_, w, cx| {
-                        h1.update(cx, |h, cx| h.connect(a.clone(), w, cx)).ok();
-                    }))
+                    menu.item(
+                        PopupMenuItem::new(if open_ix.is_some() { "Show" } else { "Connect" })
+                            .on_click(move |_, w, cx| {
+                                h1.update(cx, |h, cx| h.open(&a, w, cx)).ok();
+                            }),
+                    )
                     .item(PopupMenuItem::new("Edit…").on_click(move |_, w, cx| {
                         h2.update(cx, |h, cx| h.open_form(Some(b.clone()), w, cx))
                             .ok();
@@ -535,117 +622,325 @@ impl Home {
                     }))
                 }
             })
+            .into_any_element()
+    }
+
+    /// Cards in rows of `cols`.
+    fn grid(cards: Vec<AnyElement>, cols: usize) -> Div {
+        div()
+            .grid()
+            .grid_cols(cols as u16)
+            .gap(dp(16.))
+            .children(cards)
+    }
+
+    fn import_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let (h1, h2) = (cx.entity().downgrade(), cx.entity().downgrade());
+        Button::new("import")
+            .cursor_pointer()
+            .icon(IconName::Download)
+            .label("Import")
+            .outline()
+            .dropdown_caret(true)
+            .dropdown_menu(move |menu, _, _| {
+                let (h1, h2) = (h1.clone(), h2.clone());
+                menu.item(PopupMenuItem::new("From TablePlus on this Mac").on_click(
+                    move |_, w, cx| {
+                        h1.update(cx, |h, cx| h.import_tableplus(w, cx)).ok();
+                    },
+                ))
+                .item(PopupMenuItem::new("From TablePlus export file…").on_click(
+                    move |_, w, cx| {
+                        h2.update(cx, |h, cx| h.import_file(w, cx)).ok();
+                    },
+                ))
+            })
+    }
+
+    fn render_empty(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = tokens(cx);
+        v_flex()
+            .items_center()
+            .gap(dp(14.))
+            .pt(dp(90.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(dp(56.))
+                    .rounded(dp(14.))
+                    .bg(t.accent.opacity(0.12))
+                    .child(
+                        Icon::new(IconName::DatabasePlus)
+                            .size(dp(26.))
+                            .text_color(t.accent),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(dp(16.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(t.text)
+                    .child("No connections yet"),
+            )
+            .child(
+                div()
+                    .text_size(dp(12.5))
+                    .text_color(t.text_muted)
+                    .child("Add one, or bring your connections over from TablePlus."),
+            )
+            .child(
+                h_flex()
+                    .gap(dp(8.))
+                    .pt(dp(4.))
+                    .child(
+                        Button::new("first-conn")
+                            .cursor_pointer()
+                            .icon(IconName::Plus)
+                            .label("New connection")
+                            .primary()
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_form(None, window, cx)),
+                            ),
+                    )
+                    .child(self.import_button(cx)),
+            )
+            .child(
+                h_flex()
+                    .gap(dp(6.))
+                    .pt(dp(8.))
+                    .text_size(dp(11.5))
+                    .text_color(t.text_faint)
+                    .child(Icon::new(IconName::Lock).xsmall())
+                    .child(format!(
+                        "Passwords are kept in {}, never in Tabula's files.",
+                        keychain_name()
+                    )),
+            )
+            .into_any_element()
+    }
+}
+
+/// "just now", "5 min ago", "3 h ago", "yesterday", "4 days ago".
+fn ago(secs: i64) -> String {
+    match secs.max(0) {
+        s if s < 60 => "just now".into(),
+        s if s < 3600 => format!("{} min ago", s / 60),
+        s if s < 86_400 => format!("{} h ago", s / 3600),
+        s if s < 2 * 86_400 => "yesterday".into(),
+        s if s < 30 * 86_400 => format!("{} days ago", s / 86_400),
+        s if s < 365 * 86_400 => format!("{} months ago", (s / (30 * 86_400)).max(1)),
+        _ => "over a year ago".into(),
+    }
+}
+
+const ENV_FILTERS: [(Option<EnvTag>, &str); 5] = [
+    (None, "All"),
+    (Some(EnvTag::Local), "Local"),
+    (Some(EnvTag::Development), "Dev"),
+    (Some(EnvTag::Staging), "Staging"),
+    (Some(EnvTag::Production), "Prod"),
+];
+
+impl Focusable for Home {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
     }
 }
 
 impl Render for Home {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = tokens(cx);
+        // So `/` reaches the search box with nothing else focused.
+        if window.focused(cx).is_none() {
+            self.focus.focus(window, cx);
+        }
         let q = self.search.read(cx).value().to_lowercase();
+        let open = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).open_ids(cx))
+            .unwrap_or_default();
         let visible: Vec<(usize, ConnectionConfig)> = self
             .connections
             .iter()
             .enumerate()
+            .filter(|(_, c)| self.env_filter.is_none_or(|e| c.tag == e))
             .filter(|(_, c)| {
                 q.is_empty()
                     || c.display_name().to_lowercase().contains(&q)
                     || c.host.to_lowercase().contains(&q)
                     || c.database.to_lowercase().contains(&q)
+                    || c.driver.label().to_lowercase().contains(&q)
             })
             .map(|(i, c)| (i, c.clone()))
             .collect();
-        let list = if self.connections.is_empty() {
+        // 380px cards, up to three across.
+        let width = window.viewport_size().width / window.rem_size() * 13.;
+        let cols = (((width - 60. - 64.) / 396.).floor() as usize).clamp(1, 3);
+
+        let mut open_cards = vec![];
+        let mut saved_cards = vec![];
+        for (i, c) in &visible {
+            let open_ix = open.iter().position(|id| *id == c.id);
+            let card = self.render_card(*i, c, open_ix, cx);
+            if open_ix.is_some() {
+                open_cards.push((open_ix, card));
+            } else {
+                saved_cards.push(card);
+            }
+        }
+        open_cards.sort_by_key(|(i, _)| *i);
+        let open_cards: Vec<AnyElement> = open_cards.into_iter().map(|(_, c)| c).collect();
+        let (n_open, n_saved) = (open_cards.len(), saved_cards.len());
+
+        let env_ix = ENV_FILTERS
+            .iter()
+            .position(|(e, _)| *e == self.env_filter)
+            .unwrap_or(0);
+        let me = cx.entity();
+        let toolbar = h_flex()
+            .gap(dp(8.))
+            .child(
+                div().flex_1().child(
+                    Input::new(&self.search)
+                        .cleanable(true)
+                        .prefix(Icon::new(IconName::Search).small().text_color(t.text_muted))
+                        .suffix(kbd("/", cx)),
+                ),
+            )
+            .child(
+                dialog::segmented(
+                    "env-filter",
+                    &ENV_FILTERS.map(|(_, l)| l),
+                    env_ix,
+                    Rc::new(move |i, _, cx| {
+                        me.update(cx, |h, cx| {
+                            h.env_filter = ENV_FILTERS[i].0;
+                            cx.notify();
+                        })
+                    }),
+                    cx,
+                )
+                .w(dp(330.)),
+            )
+            .child(self.import_button(cx))
+            .child(
+                Button::new("new-conn")
+                    .cursor_pointer()
+                    .icon(IconName::Plus)
+                    .label("New connection")
+                    .primary()
+                    .tooltip("⌘N")
+                    .on_click(cx.listener(|this, _, window, cx| this.open_form(None, window, cx))),
+            );
+
+        let section = |label: &str, n: usize, cards: Vec<AnyElement>, cx: &App| {
+            v_flex()
+                .gap(dp(10.))
+                .child(
+                    h_flex().gap(dp(8.)).child(caps(label, cx)).child(
+                        div()
+                            .text_size(dp(11.))
+                            .text_color(tokens(cx).text_faint)
+                            .child(n.to_string()),
+                    ),
+                )
+                .child(Self::grid(cards, cols))
+        };
+
+        let body: AnyElement = if self.connections.is_empty() {
+            self.render_empty(cx)
+        } else if visible.is_empty() {
             v_flex()
                 .items_center()
-                .gap_3()
-                .py_10()
-                .text_color(theme.muted_foreground)
-                .child(Icon::new(IconName::DatabasePlus).size(px(40.)))
-                .child("No connections yet")
+                .gap(dp(10.))
+                .pt(dp(60.))
+                .text_size(dp(12.5))
+                .text_color(t.text_muted)
+                .child("No connection matches.")
                 .child(
-                    Button::new("first-conn")
+                    Button::new("clear-filters")
                         .cursor_pointer()
-                        .label("Create a connection")
-                        .primary()
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.open_form(None, window, cx)),
-                        ),
+                        .label("Clear search and filter")
+                        .outline()
+                        .small()
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.env_filter = None;
+                            this.search.update(cx, |s, cx| s.set_value("", window, cx));
+                            cx.notify();
+                        })),
                 )
                 .into_any_element()
         } else {
             v_flex()
-                .gap_2()
-                .children(
-                    visible
-                        .iter()
-                        .map(|(i, c)| self.render_row(*i, c, cx).into_any_element()),
-                )
+                .gap(dp(24.))
+                .when(n_open > 0, |d| {
+                    d.child(section("Open now", n_open, open_cards, cx))
+                })
+                .when(n_saved > 0, |d| {
+                    d.child(section("Saved", n_saved, saved_cards, cx))
+                })
                 .into_any_element()
         };
-        div().id("home-scroll").size_full().overflow_y_scroll().bg(theme.background).child(
-            v_flex()
-                .w_full()
-                .max_w(px(760.))
-                .mx_auto()
-                .px_6()
-                .py_8()
-                .gap_4()
-                .child(
-                    h_flex()
-                        .gap_3()
-                        .child(Icon::new(IconName::Database).size(px(28.)).text_color(theme.primary))
-                        .child(
-                            v_flex()
-                                .child(div().text_xl().font_weight(FontWeight::BOLD).child("Connections"))
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(theme.muted_foreground)
-                                        .child("Open as many as you like — each one appears in the left rail."),
-                                ),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(div().flex_1().child(Input::new(&self.search).cleanable(true).prefix(Icon::new(IconName::Search).small())))
-                        .child({
-                            let (h1, h2) = (cx.entity().downgrade(), cx.entity().downgrade());
-                            Button::new("import").cursor_pointer()
-                                .icon(IconName::Download)
-                                .label("Import")
-                                .dropdown_caret(true)
-                                .dropdown_menu(move |menu, _, _| {
-                                    let (h1, h2) = (h1.clone(), h2.clone());
-                                    menu.item(PopupMenuItem::new("From TablePlus on this Mac").on_click(move |_, w, cx| {
-                                        h1.update(cx, |h, cx| h.import_tableplus(w, cx)).ok();
-                                    }))
-                                    .item(PopupMenuItem::new("From TablePlus export file…").on_click(move |_, w, cx| {
-                                        h2.update(cx, |h, cx| h.import_file(w, cx)).ok();
-                                    }))
-                                })
-                        })
-                        .child(
-                            Button::new("new-conn").cursor_pointer()
-                                .icon(IconName::Plus)
-                                .label("New Connection")
-                                .primary()
-                                .tooltip("⌘N")
-                                .on_click(cx.listener(|this, _, window, cx| this.open_form(None, window, cx))),
-                        ),
-                )
-                .when_some(self.load_warning.clone(), |d, w| {
-                    d.child(
-                        div()
-                            .p_3()
-                            .rounded_md()
-                            .text_sm()
-                            .bg(theme.warning.opacity(0.15))
-                            .text_color(theme.warning)
-                            .child(w),
+
+        let count = self.connections.len();
+        div()
+            .id("home-scroll")
+            .track_focus(&self.focus)
+            .key_context("Home")
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                if ev.keystroke.key == "/" && !ev.keystroke.modifiers.modified() {
+                    cx.stop_propagation();
+                    this.search.update(cx, |s, cx| s.focus(window, cx));
+                }
+            }))
+            .size_full()
+            .overflow_y_scroll()
+            .bg(t.canvas)
+            .child(
+                v_flex()
+                    .w_full()
+                    .max_w(dp(380. * 3. + 16. * 2. + 64.))
+                    .mx_auto()
+                    .px(dp(32.))
+                    .py(dp(32.))
+                    .gap(dp(20.))
+                    .child(
+                        v_flex()
+                            .gap(dp(4.))
+                            .child(
+                                div()
+                                    .text_size(dp(22.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(t.text)
+                                    .child("Connections"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(dp(12.5))
+                                    .text_color(t.text_muted)
+                                    .child(match count {
+                                        0 => "Each connection you open gets a tile in the left rail.".to_string(),
+                                        1 => "1 saved · open as many as you like; each gets a tile in the left rail.".to_string(),
+                                        n => format!("{n} saved · open as many as you like; each gets a tile in the left rail."),
+                                    }),
+                            ),
                     )
-                })
-                .child(list),
-        )
+                    .when(count > 0, |d| d.child(toolbar))
+                    .when_some(self.load_warning.clone(), |d, w| {
+                        d.child(
+                            div()
+                                .p(dp(12.))
+                                .rounded(dp(8.))
+                                .text_size(dp(12.5))
+                                .bg(t.warning.opacity(0.14))
+                                .text_color(t.warning)
+                                .child(w),
+                        )
+                    })
+                    .child(body),
+            )
     }
 }

@@ -687,7 +687,7 @@ impl Render for AppView {
 }
 
 /// "⌘1"… for the first nine open connections.
-fn shortcut_hint(i: usize) -> Option<String> {
+pub fn shortcut_hint(i: usize) -> Option<String> {
     let m = if cfg!(target_os = "macos") {
         "⌘"
     } else {
@@ -697,6 +697,14 @@ fn shortcut_hint(i: usize) -> Option<String> {
 }
 
 impl AppView {
+    /// Ids of the open connections, in rail order.
+    pub fn open_ids(&self, cx: &App) -> Vec<String> {
+        self.sessions
+            .iter()
+            .map(|s| s.read(cx).shared.cfg.id.clone())
+            .collect()
+    }
+
     /// ⌘1…⌘9: show the n-th open connection (rail order).
     pub fn activate_session(&mut self, i: usize, cx: &mut Context<Self>) {
         if i < self.sessions.len() {
@@ -1012,13 +1020,15 @@ mod shots;
 
 #[cfg(test)]
 mod tests {
+    use std::env::temp_dir;
+    use std::fs::{remove_file, write};
     use std::time::{Duration, Instant};
 
     use gpui::{TestAppContext, VisualTestContext};
     use gpui_component::Root;
 
     use super::*;
-    use crate::db::{ConnectionConfig, Driver};
+    use crate::db::{ConnectionConfig, Driver, EnvTag};
     use chrono::NaiveTime;
     use futures::executor::block_on;
     use gpui::{ClipboardItem, Modifiers};
@@ -1766,6 +1776,76 @@ mod tests {
         wait_until(&mut cx, "all rows", |cx| rows(cx) == 3);
         assert_eq!(tab.read_with(&cx, |t, _| t.chips_for_test()), 0);
         let _ = std::fs::remove_file(file);
+    }
+
+    /// Home: an open connection's card switches to it (no second copy); the
+    /// environment filter hides cards; `/` focuses the search.
+    #[gpui::test]
+    fn home_cards(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let (app, mut cx) = open(cx);
+        let home = app.read_with(&cx, |a, _| a.home.clone());
+        let mut files = vec![];
+        let mut cfgs = vec![];
+        for (name, tag) in [
+            ("tabula-home-a", EnvTag::Local),
+            ("tabula-home-b", EnvTag::Production),
+        ] {
+            let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+            cfg.name = name.into();
+            cfg.tag = tag;
+            let file = temp_dir().join(format!("{name}-{}.db", cfg.id));
+            write(&file, b"").unwrap();
+            cfg.file = file.to_string_lossy().into();
+            files.push(file);
+            cfgs.push(cfg);
+        }
+        home.update(&mut cx, |h, cx| {
+            h.connections = cfgs.clone();
+            cx.notify();
+        });
+        let first = cfgs[0].clone();
+        app.update_in(&mut cx, |a, w, cx| a.connect(first, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connected", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        app.update(&mut cx, |a, cx| {
+            a.active = None;
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        // One click on the open card shows it again.
+        let b = cx.debug_bounds("conn-card-0").expect("card drawn");
+        cx.simulate_click(b.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(
+            app.read_with(&cx, |a, _| (a.active, a.sessions.len())),
+            (Some(0), 1)
+        );
+
+        app.update(&mut cx, |a, cx| {
+            a.active = None;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        // Prod only: the local card goes away.
+        let b = cx.debug_bounds("env-filter-4").expect("filter drawn");
+        cx.simulate_click(b.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("conn-card-0").is_none());
+        assert!(cx.debug_bounds("conn-card-1").is_some());
+
+        // `/` puts the cursor in the search box.
+        cx.update(|window, cx| window.blur(cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("/");
+        cx.simulate_input("zzz");
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("conn-card-1").is_none(), "search applied");
+        for f in files {
+            let _ = remove_file(f);
+        }
     }
 
     /// Pasting a connection URL fills the form; Save keeps the password

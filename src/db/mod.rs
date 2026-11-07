@@ -182,6 +182,9 @@ pub struct ConnectionConfig {
     pub ssh: Option<ssh::SshConfig>,
     #[serde(default)]
     pub safe_mode: SafeMode,
+    /// When it last connected (Unix seconds), for the home screen.
+    #[serde(default)]
+    pub last_used: Option<i64>,
 }
 
 /// How carefully Tabula treats writes on a connection.
@@ -236,6 +239,7 @@ impl ConnectionConfig {
             password: String::new(),
             ssh: None,
             safe_mode: SafeMode::Auto,
+            last_used: None,
         }
     }
 

@@ -77,6 +77,7 @@ enum Tested {
 
 pub struct ConnForm {
     id: String,
+    last_used: Option<i64>,
     is_new: bool,
     driver: Driver,
     tag: EnvTag,
@@ -222,6 +223,7 @@ impl ConnForm {
 
         Self {
             id: cfg.id,
+            last_used: cfg.last_used,
             is_new,
             driver: cfg.driver,
             tag: cfg.tag,
@@ -353,6 +355,7 @@ impl ConnForm {
             .unwrap_or("");
         ConnectionConfig {
             id: self.id.clone(),
+            last_used: self.last_used,
             name: v(&self.name),
             driver,
             tag: self.tag,

@@ -13,6 +13,7 @@ use gpui_component::{Root, Theme, ThemeMode};
 
 use super::*;
 use crate::db::{ConnectionConfig, Driver};
+use chrono::Utc;
 use futures::executor::block_on;
 use gpui_component::init;
 use gpui_kit_assets::AllAssets;
@@ -302,9 +303,12 @@ fn screenshots() {
     s.in_window(|w, cx| session.update(cx, |s, cx| s.new_query(w, cx)));
     s.snap("02-query");
 
-    // Home with saved connections (not written anywhere).
+    // Home with saved connections (not written anywhere); the open demo
+    // database is one of them, so "Open now" shows too.
+    let demo = s.cx.update(|cx| session.read(cx).cfg().clone());
     s.cx.update(|cx| {
         home.update(cx, |h, cx| {
+            h.connections.push(demo);
             for (name, driver, tag, host) in [
                 (
                     "acme-production",
@@ -341,6 +345,11 @@ fn screenshots() {
                 c.name = name.into();
                 c.tag = tag;
                 c.host = host.into();
+                if name == "acme-production" {
+                    c.ssh = Some(Default::default());
+                    c.ssl = true;
+                    c.last_used = Some(Utc::now().timestamp() - 3 * 3600);
+                }
                 h.connections.push(c);
             }
             cx.notify();
