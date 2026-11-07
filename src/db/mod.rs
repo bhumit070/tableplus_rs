@@ -354,47 +354,130 @@ impl Display for BatchFailed {
 pub enum FilterOp {
     Eq,
     Ne,
-    Lt,
-    Gt,
-    Le,
-    Ge,
-    Contains,
-    NotContains,
+    In,
+    NotIn,
     IsNull,
     IsNotNull,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Between,
+    Contains,
+    NotContains,
+    StartsWith,
+    EndsWith,
+    Like,
+    Regex,
+}
+
+/// What a column holds, as far as filters care (design.md, answer #18).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilterKind {
+    Number,
+    Date,
+    Text,
+    Other,
+}
+
+impl FilterKind {
+    /// From a column's declared type ("integer", "timestamp with time zone",
+    /// "varchar(40)"…).
+    pub fn of(data_type: &str) -> Self {
+        let t = data_type.to_ascii_lowercase();
+        let has = |words: &[&str]| words.iter().any(|w| t.contains(w));
+        if has(&[
+            "int", "numeric", "decimal", "real", "double", "float", "serial", "money",
+        ]) {
+            FilterKind::Number
+        } else if has(&["date", "time", "year"]) {
+            FilterKind::Date
+        } else if has(&["char", "text", "string", "uuid", "citext", "enum", "clob"]) || t.is_empty()
+        {
+            FilterKind::Text
+        } else {
+            FilterKind::Other
+        }
+    }
 }
 
 impl FilterOp {
-    pub const ALL: [FilterOp; 10] = [
+    pub const ALL: [FilterOp; 17] = [
         FilterOp::Eq,
         FilterOp::Ne,
-        FilterOp::Lt,
-        FilterOp::Gt,
-        FilterOp::Le,
-        FilterOp::Ge,
-        FilterOp::Contains,
-        FilterOp::NotContains,
+        FilterOp::In,
+        FilterOp::NotIn,
         FilterOp::IsNull,
         FilterOp::IsNotNull,
+        FilterOp::Lt,
+        FilterOp::Le,
+        FilterOp::Gt,
+        FilterOp::Ge,
+        FilterOp::Between,
+        FilterOp::Contains,
+        FilterOp::NotContains,
+        FilterOp::StartsWith,
+        FilterOp::EndsWith,
+        FilterOp::Like,
+        FilterOp::Regex,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             FilterOp::Eq => "=",
-            FilterOp::Ne => "<>",
+            FilterOp::Ne => "≠",
+            FilterOp::In => "in",
+            FilterOp::NotIn => "not in",
+            FilterOp::IsNull => "is null",
+            FilterOp::IsNotNull => "is not null",
             FilterOp::Lt => "<",
+            FilterOp::Le => "≤",
             FilterOp::Gt => ">",
-            FilterOp::Le => "<=",
-            FilterOp::Ge => ">=",
+            FilterOp::Ge => "≥",
+            FilterOp::Between => "between",
             FilterOp::Contains => "contains",
-            FilterOp::NotContains => "not contains",
-            FilterOp::IsNull => "is NULL",
-            FilterOp::IsNotNull => "is not NULL",
+            FilterOp::NotContains => "doesn't contain",
+            FilterOp::StartsWith => "starts with",
+            FilterOp::EndsWith => "ends with",
+            FilterOp::Like => "LIKE",
+            FilterOp::Regex => "~ regex",
         }
     }
 
     pub fn needs_value(self) -> bool {
         !matches!(self, FilterOp::IsNull | FilterOp::IsNotNull)
+    }
+
+    /// The operators that make sense for a column of `kind` (answer #18):
+    /// the general ones, then ranges for numbers and dates, text matching
+    /// for text. `regex` where the database has it.
+    pub fn for_kind(kind: FilterKind, driver: Driver) -> Vec<FilterOp> {
+        use FilterOp::*;
+        let mut ops = vec![Eq, Ne, In, NotIn, IsNull, IsNotNull];
+        match kind {
+            FilterKind::Number | FilterKind::Date => {
+                ops.extend([Lt, Le, Gt, Ge, Between]);
+            }
+            FilterKind::Text => {
+                ops.extend([Contains, NotContains, StartsWith, EndsWith, Like]);
+                if driver != Driver::Sqlite {
+                    ops.push(Regex);
+                }
+            }
+            FilterKind::Other => {
+                ops.extend([Lt, Le, Gt, Ge, Between, Contains, NotContains]);
+            }
+        }
+        ops
+    }
+
+    /// `in` / `not in` values: comma separated, blanks dropped.
+    pub fn list(value: &str) -> Vec<String> {
+        value
+            .split(',')
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect()
     }
 }
 
@@ -403,12 +486,16 @@ pub struct Filter {
     pub column: String,
     pub op: FilterOp,
     pub value: String,
+    /// The upper bound of `between`; empty otherwise.
+    pub value2: String,
 }
 
 #[derive(Clone, Debug)]
 pub struct TableQuery {
     pub object: DbObject,
     pub filters: Vec<Filter>,
+    /// Rows matching any filter instead of all of them.
+    pub match_any: bool,
     pub order: Option<(String, bool)>, // (column, ascending)
     pub limit: usize,
     pub offset: usize,
@@ -662,6 +749,15 @@ impl Connection {
             Conn::Sql(c) => c.preview(obj, columns, changes),
             Conn::Redis(_) => redis_kv::preview(changes),
             Conn::Mongo(_) => mongo::preview(obj, changes),
+        }
+    }
+
+    /// The WHERE clause a table query's filters make (SQL databases only),
+    /// for the filter editor's preview.
+    pub fn filter_preview(&self, q: &TableQuery) -> Option<String> {
+        match &self.inner {
+            Conn::Sql(c) => Some(c.where_preview(q)).filter(|w| !w.is_empty()),
+            _ => None,
         }
     }
 

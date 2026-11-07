@@ -19,8 +19,8 @@ use sqlx::{
 use super::cancel::{CANCELLED, Cancel};
 use super::split::split_statements;
 use super::{
-    BatchFailed, Change, ColumnInfo, ConnectionConfig, DbObject, Driver, FilterOp, ForeignKey,
-    ObjectKind, QueryResult, Structure, TableQuery, sql_literal,
+    BatchFailed, Change, ColumnInfo, ConnectionConfig, DbObject, Driver, Filter, FilterOp,
+    ForeignKey, ObjectKind, QueryResult, Structure, TableQuery, sql_literal,
 };
 use anyhow::{Error, anyhow};
 use redis::RedisError;
@@ -1217,37 +1217,86 @@ impl SqlConn {
             .filters
             .iter()
             .filter(|f| !f.column.is_empty())
-            .map(|f| {
-                let c = self.q(&f.column);
-                let text_c = match self.cfg.driver {
-                    Driver::Postgres => format!("{c}::text"),
-                    _ => c.clone(),
-                };
-                let like = match self.cfg.driver {
-                    Driver::Postgres => "ilike",
-                    _ => "like",
-                };
-                let v = self.lit(&f.value);
-                let pat = self.lit(&format!("%{}%", f.value));
-                match f.op {
-                    FilterOp::Eq => format!("{c} = {v}"),
-                    FilterOp::Ne => format!("{c} <> {v}"),
-                    FilterOp::Lt => format!("{c} < {v}"),
-                    FilterOp::Gt => format!("{c} > {v}"),
-                    FilterOp::Le => format!("{c} <= {v}"),
-                    FilterOp::Ge => format!("{c} >= {v}"),
-                    FilterOp::Contains => format!("{text_c} {like} {pat}"),
-                    FilterOp::NotContains => format!("{text_c} not {like} {pat}"),
-                    FilterOp::IsNull => format!("{c} is null"),
-                    FilterOp::IsNotNull => format!("{c} is not null"),
-                }
-            })
+            .filter_map(|f| self.condition(f))
             .collect();
         if parts.is_empty() {
             String::new()
+        } else if q.match_any {
+            format!(" where ({})", parts.join(") or ("))
         } else {
             format!(" where {}", parts.join(" and "))
         }
+    }
+
+    /// One filter as SQL; `None` when it has nothing to test yet (an empty
+    /// `in` list).
+    pub fn condition(&self, f: &Filter) -> Option<String> {
+        let driver = self.cfg.driver;
+        let column = self.q(&f.column);
+        let as_text = match driver {
+            Driver::Postgres => format!("{column}::text"),
+            _ => column.clone(),
+        };
+        // Case-insensitive matching, as the design asks.
+        let like = match driver {
+            Driver::Postgres => "ilike",
+            _ => "like",
+        };
+        let value = self.lit(&f.value);
+        // The typed text is literal: `%` and `_` in it don't match anything.
+        let escaped = f
+            .value
+            .replace('!', "!!")
+            .replace('%', "!%")
+            .replace('_', "!_");
+        let pattern = |before: &str, after: &str| {
+            format!(
+                "{as_text} {like} {} escape '!'",
+                self.lit(&format!("{before}{escaped}{after}"))
+            )
+        };
+        let list = || {
+            let items = FilterOp::list(&f.value);
+            (!items.is_empty()).then(|| {
+                items
+                    .iter()
+                    .map(|item| self.lit(item))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+        };
+        Some(match f.op {
+            FilterOp::Eq => format!("{column} = {value}"),
+            FilterOp::Ne => format!("{column} <> {value}"),
+            FilterOp::In => format!("{column} in ({})", list()?),
+            FilterOp::NotIn => format!("{column} not in ({})", list()?),
+            FilterOp::IsNull => format!("{column} is null"),
+            FilterOp::IsNotNull => format!("{column} is not null"),
+            FilterOp::Lt => format!("{column} < {value}"),
+            FilterOp::Le => format!("{column} <= {value}"),
+            FilterOp::Gt => format!("{column} > {value}"),
+            FilterOp::Ge => format!("{column} >= {value}"),
+            FilterOp::Between => {
+                format!("{column} between {value} and {}", self.lit(&f.value2))
+            }
+            FilterOp::Contains => pattern("%", "%"),
+            FilterOp::NotContains => format!("not ({})", pattern("%", "%")),
+            FilterOp::StartsWith => pattern("", "%"),
+            FilterOp::EndsWith => pattern("%", ""),
+            FilterOp::Like => format!("{as_text} like {value}"),
+            FilterOp::Regex => match driver {
+                Driver::Postgres => format!("{as_text} ~ {value}"),
+                Driver::MySql => format!("{column} regexp {value}"),
+                // SQLite has no regex operator by default; the editor
+                // doesn't offer it there.
+                _ => format!("{as_text} like {value}"),
+            },
+        })
+    }
+
+    /// The WHERE clause filters make, for the filter editor's preview.
+    pub fn where_preview(&self, q: &TableQuery) -> String {
+        self.where_clause(q).trim_start().to_string()
     }
 
     pub async fn fetch_table(&self, q: &TableQuery) -> Result<(QueryResult, Option<u64>)> {
@@ -1549,6 +1598,102 @@ impl SqlConn {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::{Cancel, Connection, FilterKind};
+    use crate::runtime;
+    use futures::executor::block_on;
+    use std::env::temp_dir;
+    use std::fs::{remove_file, write};
+    use uuid::Uuid;
+
+    /// Every filter operator, and all / any, against a real SQLite table.
+    #[test]
+    fn filter_operators_on_sqlite() {
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = temp_dir().join(format!("tabula-filters-{}.db", Uuid::new_v4()));
+        write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let ids = block_on(runtime::spawn(async move {
+            let conn = Connection::connect(&cfg).await?;
+            conn.execute_cancellable(
+                "create table t (id integer primary key, name text, n integer); \
+                 insert into t values (1, 'apple', 5), (2, 'Banana', 15), (3, 'cherry_pie', 25), \
+                 (4, '50% off', null), (5, 'grape', 35)",
+                &Cancel::default(),
+            )
+            .await?;
+            let filter = |column: &str, op: FilterOp, value: &str, value2: &str| Filter {
+                column: column.into(),
+                op,
+                value: value.into(),
+                value2: value2.into(),
+            };
+            let query = |filters: Vec<Filter>, match_any: bool| TableQuery {
+                object: DbObject {
+                    schema: None,
+                    name: "t".into(),
+                    kind: ObjectKind::Table,
+                },
+                filters,
+                match_any,
+                order: Some(("id".into(), true)),
+                limit: 100,
+                offset: 0,
+            };
+            let mut found = vec![];
+            for (filters, any) in [
+                (vec![filter("id", FilterOp::In, "1, 3,5", "")], false),
+                (vec![filter("id", FilterOp::NotIn, "1,2", "")], false),
+                (vec![filter("n", FilterOp::Between, "10", "30")], false),
+                (vec![filter("name", FilterOp::StartsWith, "b", "")], false),
+                (vec![filter("name", FilterOp::EndsWith, "_pie", "")], false),
+                // `%` and `_` typed into contains are literal.
+                (vec![filter("name", FilterOp::Contains, "%", "")], false),
+                (vec![filter("name", FilterOp::Like, "gr%", "")], false),
+                (vec![filter("n", FilterOp::IsNull, "", "")], false),
+                (
+                    vec![
+                        filter("id", FilterOp::Eq, "1", ""),
+                        filter("id", FilterOp::Eq, "2", ""),
+                    ],
+                    true,
+                ),
+                (
+                    vec![
+                        filter("n", FilterOp::Gt, "10", ""),
+                        filter("n", FilterOp::Lt, "30", ""),
+                    ],
+                    false,
+                ),
+            ] {
+                let (rows, _) = conn.fetch_table(&query(filters, any)).await?;
+                found.push(
+                    rows.rows
+                        .iter()
+                        .map(|row| row[0].clone().unwrap_or_default())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+            }
+            conn.close().await;
+            Ok(found)
+        }))
+        .unwrap();
+        assert_eq!(
+            ids,
+            [
+                "1,3,5", "3,4,5", "2,3", "2", "3", "4", "5", "4", "1,2", "2,3"
+            ]
+        );
+        let _ = remove_file(file);
+        assert_eq!(FilterKind::of("integer"), FilterKind::Number);
+        assert_eq!(FilterKind::of("timestamp with time zone"), FilterKind::Date);
+        assert_eq!(FilterKind::of("character varying(40)"), FilterKind::Text);
+        assert_eq!(FilterKind::of("jsonb"), FilterKind::Other);
+        assert!(!FilterOp::for_kind(FilterKind::Text, Driver::Sqlite).contains(&FilterOp::Regex));
+        assert!(
+            FilterOp::for_kind(FilterKind::Number, Driver::Postgres).contains(&FilterOp::Between)
+        );
+    }
 
     #[test]
     fn verify_option_checks_certificates() {

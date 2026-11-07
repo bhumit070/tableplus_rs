@@ -252,6 +252,13 @@ fn screenshots() {
     let tab = s.cx.update(|cx| session.read(cx).active_table().unwrap());
     s.wait("rows", |cx| tab.read(cx).loaded_rows(cx) > 0);
     s.snap("01-table");
+    s.in_window(|w, cx| tab.update(cx, |t, cx| t.show_filter_example(w, cx)));
+    s.wait("filtered", |cx| !tab.read(cx).is_loading(cx));
+    s.snap("10-filters");
+    s.in_window(|w, cx| tab.update(cx, |t, cx| t.clear_filters(w, cx)));
+    s.wait("unfiltered", |cx| {
+        !tab.read(cx).is_loading(cx) && tab.read(cx).loaded_rows(cx) > 0
+    });
     s.in_window(|_, cx| tab.update(cx, |t, cx| t.pretend_loading(cx)));
     s.snap("22-loading");
     s.in_window(|_, cx| tab.update(cx, |t, cx| t.show_no_matches(cx)));

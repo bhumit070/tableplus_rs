@@ -66,6 +66,7 @@ async fn row_count(c: &Connection, obj: &DbObject) -> Option<u64> {
         order: None,
         limit: 1,
         offset: 0,
+        match_any: false,
     };
     c.fetch_table(&q).await.unwrap().1
 }
@@ -122,6 +123,7 @@ async fn sql_scenario(driver: Driver) {
         order,
         limit: 100,
         offset: 0,
+        match_any: false,
     };
     let (res, total) = c
         .fetch_table(&q(vec![], Some(("age".into(), false))))
@@ -173,6 +175,7 @@ async fn sql_scenario(driver: Driver) {
                 column: "name".into(),
                 op: FilterOp::Contains,
                 value: "ada".into(),
+                value2: String::new(),
             }],
             None,
         ))
@@ -190,12 +193,63 @@ async fn sql_scenario(driver: Driver) {
                 column: "age".into(),
                 op: FilterOp::IsNull,
                 value: String::new(),
+                value2: String::new(),
             }],
             None,
         ))
         .await
         .unwrap();
     assert_eq!(total, Some(1));
+
+    // The newer operators (design.md answer #18), and "any".
+    let only = |column: &str, op: FilterOp, value: &str, value2: &str| Filter {
+        column: column.into(),
+        op,
+        value: value.into(),
+        value2: value2.into(),
+    };
+    for (filters, any, expected) in [
+        (
+            vec![only("name", FilterOp::In, "Ada, O'Brien", "")],
+            false,
+            2,
+        ),
+        (vec![only("age", FilterOp::Between, "30", "40")], false, 1),
+        (
+            vec![only("name", FilterOp::StartsWith, "o'b", "")],
+            false,
+            1,
+        ),
+        (vec![only("name", FilterOp::EndsWith, "DA", "")], false, 1),
+        (
+            vec![
+                only("name", FilterOp::Eq, "Ada", ""),
+                only("age", FilterOp::IsNull, "", ""),
+            ],
+            true,
+            2,
+        ),
+    ] {
+        let mut query = q(filters, None);
+        query.match_any = any;
+        let (_, total) = c.fetch_table(&query).await.unwrap();
+        assert_eq!(
+            total,
+            Some(expected),
+            "{driver:?} {:?}",
+            query.filters[0].op
+        );
+    }
+    if driver != Driver::Sqlite {
+        let (_, total) = c
+            .fetch_table(&q(
+                vec![only("name", FilterOp::Regex, "^[A-Z]da$", "")],
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(total, Some(1), "{driver:?} regex");
+    }
 
     // An update that matches nothing must fail and roll back the whole batch.
     let bad = vec![
@@ -215,6 +269,7 @@ async fn sql_scenario(driver: Driver) {
                 column: "id".into(),
                 op: FilterOp::Eq,
                 value: ada_id.clone().unwrap(),
+                value2: String::new(),
             }],
             None,
         ))
@@ -383,6 +438,7 @@ async fn redis_end_to_end() {
         order: None,
         limit: 50,
         offset: 0,
+        match_any: false,
     };
     c.execute("SET other 1").await.unwrap();
     assert_eq!(c.fetch_table(&ns_q).await.unwrap().1, Some(3));
@@ -390,6 +446,7 @@ async fn redis_end_to_end() {
         column: "key".into(),
         op: FilterOp::Contains,
         value: "user".into(),
+        value2: String::new(),
     });
     let (r, n) = c.fetch_table(&ns_q).await.unwrap();
     assert_eq!((n, r.rows[0][0].as_deref()), (Some(1), Some("it:user:1")));
@@ -401,10 +458,12 @@ async fn redis_end_to_end() {
             column: "key".into(),
             op: FilterOp::Contains,
             value: "it:".into(),
+            value2: String::new(),
         }],
         order: None,
         limit: 50,
         offset: 0,
+        match_any: false,
     };
     let (res, total) = c.fetch_table(&q).await.unwrap();
     assert_eq!(total, Some(3));
@@ -528,6 +587,7 @@ async fn mongo_end_to_end() {
         order: Some(("age".into(), true)),
         limit: 50,
         offset: 0,
+        match_any: false,
     };
     let (res, total) = c.fetch_table(&q(vec![])).await.unwrap();
     assert_eq!(total, Some(3));
@@ -547,6 +607,7 @@ async fn mongo_end_to_end() {
             column: "age".into(),
             op: FilterOp::Eq,
             value: "37".into(),
+            value2: String::new(),
         }]))
         .await
         .unwrap();
@@ -559,6 +620,7 @@ async fn mongo_end_to_end() {
             column: "age".into(),
             op: FilterOp::Gt,
             value: "50".into(),
+            value2: String::new(),
         }]))
         .await
         .unwrap();
@@ -568,10 +630,52 @@ async fn mongo_end_to_end() {
             column: "name".into(),
             op: FilterOp::Contains,
             value: "LIN".into(),
+            value2: String::new(),
         }]))
         .await
         .unwrap();
     assert_eq!(total, Some(1));
+    let mongo_filter = |column: &str, op: FilterOp, value: &str, value2: &str| Filter {
+        column: column.into(),
+        op,
+        value: value.into(),
+        value2: value2.into(),
+    };
+    for (filters, any, expected) in [
+        (
+            vec![mongo_filter("age", FilterOp::In, "54, 85", "")],
+            false,
+            2,
+        ),
+        (
+            vec![mongo_filter("age", FilterOp::Between, "50", "60")],
+            false,
+            1,
+        ),
+        (
+            vec![mongo_filter("name", FilterOp::StartsWith, "gr", "")],
+            false,
+            1,
+        ),
+        (
+            vec![mongo_filter("name", FilterOp::Like, "L%s", "")],
+            false,
+            1,
+        ),
+        (
+            vec![
+                mongo_filter("name", FilterOp::Eq, "Grace", ""),
+                mongo_filter("age", FilterOp::Lt, "40", ""),
+            ],
+            true,
+            2,
+        ),
+    ] {
+        let mut query = q(filters);
+        query.match_any = any;
+        let (_, total) = c.fetch_table(&query).await.unwrap();
+        assert_eq!(total, Some(expected), "mongo {:?}", query.filters[0].op);
+    }
 
     let r = c
         .execute(r#"db.people.aggregate([{$group: {_id: null, n: {$sum: 1}}}])"#)
@@ -1468,6 +1572,7 @@ async fn frozen_server_times_out_and_recovers() {
         order: None,
         limit: 5,
         offset: 0,
+        match_any: false,
     };
     std::process::Command::new("docker")
         .args(["pause", "tabula-test-redis"])

@@ -335,15 +335,47 @@ impl MongoConn {
                 FilterOp::NotContains => {
                     doc! {"$not": {"$regex": regex_escape(&f.value), "$options": "i"}}.into()
                 }
+                FilterOp::StartsWith => {
+                    doc! {"$regex": format!("^{}", regex_escape(&f.value)), "$options": "i"}.into()
+                }
+                FilterOp::EndsWith => {
+                    doc! {"$regex": format!("{}$", regex_escape(&f.value)), "$options": "i"}.into()
+                }
+                FilterOp::Like => doc! {"$regex": like_to_regex(&f.value)}.into(),
+                FilterOp::Regex => doc! {"$regex": f.value.clone()}.into(),
+                FilterOp::In | FilterOp::NotIn => {
+                    let items = FilterOp::list(&f.value);
+                    if items.is_empty() {
+                        continue;
+                    }
+                    // Each value as text and as its parsed type, like `=`.
+                    let values: Vec<Bson> = items
+                        .iter()
+                        .flat_map(|item| {
+                            let typed =
+                                parse_json5(item).unwrap_or_else(|_| Bson::String(item.clone()));
+                            [Bson::String(item.clone()), typed]
+                        })
+                        .collect();
+                    let op = if f.op == FilterOp::In { "$in" } else { "$nin" };
+                    doc! {op: values}.into()
+                }
+                FilterOp::Between => {
+                    let upper =
+                        parse_json5(&f.value2).unwrap_or_else(|_| Bson::String(f.value2.clone()));
+                    doc! {"$gte": parsed, "$lte": upper}.into()
+                }
                 FilterOp::IsNull => Bson::Null,
                 FilterOp::IsNotNull => doc! {"$ne": Bson::Null}.into(),
             };
             clauses.push(doc! {f.column.clone(): cond});
         }
-        // `$and`, so two filters on one field (age > 18, age < 30) both apply.
+        // `$and`, so two filters on one field (age > 18, age < 30) both apply;
+        // `$or` for "any".
         let filter = match clauses.len() {
             0 => Document::new(),
             1 => clauses.pop().unwrap(),
+            _ if q.match_any => doc! {"$or": clauses},
             _ => doc! {"$and": clauses},
         };
         let coll = self.coll(&q.object.name);
@@ -614,6 +646,20 @@ fn urlencode(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+/// A SQL LIKE pattern as an anchored regex: `%` any run, `_` one character.
+fn like_to_regex(pattern: &str) -> String {
+    let mut out = String::from("^");
+    for ch in pattern.chars() {
+        match ch {
+            '%' => out.push_str(".*"),
+            '_' => out.push('.'),
+            other => out.push_str(&regex_escape(&other.to_string())),
+        }
+    }
+    out.push('$');
+    out
 }
 
 fn regex_escape(s: &str) -> String {

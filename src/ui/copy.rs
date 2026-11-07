@@ -956,6 +956,7 @@ mod tests {
                 order: Some(("id".into(), true)),
                 limit: 300,
                 offset: 600,
+                match_any: false,
             };
             let target = SqlTarget {
                 driver: Driver::Sqlite,

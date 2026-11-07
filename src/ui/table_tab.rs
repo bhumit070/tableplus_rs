@@ -15,7 +15,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::DropdownMenu as _;
 use gpui_component::menu::PopupMenuItem;
 use gpui_component::notification::Notification;
-use gpui_component::select::{Select, SelectState};
+use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::table::{TableEvent, TableState};
 use gpui_component::{
@@ -26,6 +26,7 @@ use gpui_kit_assets::IconName;
 
 use super::cell_edit::{self, EditStart};
 use super::copy;
+use super::dialog;
 use super::grid::{Grid, data_table};
 use super::loading;
 use super::row_panel;
@@ -35,12 +36,12 @@ use super::{
     ToggleFilter, search_list,
 };
 use crate::db::{
-    DbObject, EnvTag, Filter, FilterOp, ObjectKind, QueryResult, Structure, TableQuery,
+    DbObject, EnvTag, Filter, FilterKind, FilterOp, ObjectKind, QueryResult, Structure, TableQuery,
 };
 use crate::runtime;
 use crate::ui::DisabledWhen as _;
 use anyhow::Result;
-use gpui::{AnyElement, Div, EventEmitter, PathPromptOptions, Stateful};
+use gpui::{AnyElement, Div, EventEmitter, KeyDownEvent, PathPromptOptions, Stateful};
 use tokio::{fs::read, task::spawn_blocking};
 
 pub enum TableTabEvent {
@@ -60,8 +61,12 @@ use crate::settings::PAGE_SIZES;
 
 struct FilterRow {
     column: Entity<SelectState<SearchList>>,
+    /// Only the operators that fit the column's type; swapped when the
+    /// column changes.
     op: Entity<SelectState<Vec<&'static str>>>,
     value: Entity<InputState>,
+    /// `between`'s upper bound.
+    value2: Entity<InputState>,
 }
 
 pub struct TableTab {
@@ -88,6 +93,8 @@ pub struct TableTab {
     /// Filters in effect for the rows shown, with their editor row: the
     /// toolbar's chips.
     applied: Vec<(usize, Filter)>,
+    /// The filter editor's All / Any.
+    match_any: bool,
     page: usize,
     page_size: usize,
     total: Option<u64>,
@@ -233,6 +240,7 @@ impl TableTab {
             filters: Vec::new(),
             show_filters: false,
             applied: vec![],
+            match_any: false,
             page: 0,
             page_size: crate::settings::get(cx).page_size,
             total: None,
@@ -332,6 +340,56 @@ impl TableTab {
         self.reload_unless_dirty(window, cx, |t| t.page = 0);
     }
 
+    /// For screenshots: two conditions, "any", the editor open.
+    #[cfg(test)]
+    pub fn show_filter_example(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_filters = true;
+        self.filters.clear();
+        self.add_filter(window, cx);
+        self.add_filter(window, cx);
+        let set = |row: &FilterRow,
+                   column: &str,
+                   op: FilterOp,
+                   value: &str,
+                   window: &mut Window,
+                   cx: &mut Context<Self>| {
+            let columns = self.table.read(cx).delegate().columns.clone();
+            let index = columns.iter().position(|c| c == column).unwrap_or(0);
+            row.column.update(cx, |state, cx| {
+                state.set_selected_index(Some(IndexPath::new(index)), window, cx)
+            });
+            let ops = self.ops_for(column);
+            let op_index = ops.iter().position(|o| *o == op.label()).unwrap_or(0);
+            row.op.update(cx, |state, cx| {
+                state.set_items(ops, window, cx);
+                state.set_selected_index(Some(IndexPath::new(op_index)), window, cx)
+            });
+            row.value
+                .update(cx, |input, cx| input.set_value(value, window, cx));
+        };
+        set(
+            &self.filters[0],
+            "status",
+            FilterOp::In,
+            "paid, shipped",
+            window,
+            cx,
+        );
+        set(
+            &self.filters[1],
+            "total",
+            FilterOp::Between,
+            "500",
+            window,
+            cx,
+        );
+        self.filters[1]
+            .value2
+            .update(cx, |input, cx| input.set_value("1500", window, cx));
+        self.match_any = true;
+        self.reload_unless_dirty(window, cx, |t| t.page = 0);
+    }
+
     #[cfg(test)]
     pub fn fk_matches_for_test(&self, cx: &App) -> Option<Vec<String>> {
         let g = self.table.read(cx).delegate();
@@ -389,10 +447,22 @@ impl TableTab {
                 let op_label = *f.op.read(cx).selected_value()?;
                 let op = FilterOp::ALL.into_iter().find(|o| o.label() == op_label)?;
                 let value = f.value.read(cx).value().to_string();
+                let value2 = f.value2.read(cx).value().to_string();
                 if op.needs_value() && value.is_empty() {
                     return None;
                 }
-                Some((i, Filter { column, op, value }))
+                if op == FilterOp::Between && value2.is_empty() {
+                    return None;
+                }
+                Some((
+                    i,
+                    Filter {
+                        column,
+                        op,
+                        value,
+                        value2,
+                    },
+                ))
             })
             .collect()
     }
@@ -446,6 +516,9 @@ impl TableTab {
             order,
             limit: self.page_size,
             offset: self.page * self.page_size,
+            // A followed foreign key always applies, so "any" only counts
+            // without one.
+            match_any: self.match_any && self.fixed.is_empty(),
         }
     }
 
@@ -632,9 +705,14 @@ impl TableTab {
                     .map(|(_, f)| f)
                     .chain(tab.fixed.iter())
                     .map(|f| {
-                        format!("{} {} {}", f.column, f.op.label(), f.value)
-                            .trim()
-                            .to_string()
+                        match f.op {
+                            FilterOp::Between => {
+                                format!("{} between {} and {}", f.column, f.value, f.value2)
+                            }
+                            op => format!("{} {} {}", f.column, op.label(), f.value),
+                        }
+                        .trim()
+                        .to_string()
                     })
                     .collect::<Vec<_>>()
                     .join(" · "),
@@ -746,6 +824,7 @@ impl TableTab {
             column: "status".into(),
             op: FilterOp::Eq,
             value: "archived".into(),
+            value2: String::new(),
         }];
         self.applied.clear();
         self.table.update(cx, |t, cx| {
@@ -949,6 +1028,7 @@ impl TableTab {
                 column: rc.clone(),
                 op: FilterOp::Eq,
                 value,
+                value2: String::new(),
             });
         }
         cx.emit(TableTabEvent::OpenReference {
@@ -1074,23 +1154,76 @@ impl TableTab {
         cx.notify();
     }
 
+    /// The operators offered for `column` (design.md, answer #18).
+    fn ops_for(&self, column: &str) -> Vec<&'static str> {
+        let data_type = self
+            .structure
+            .as_ref()
+            .and_then(|s| s.columns.iter().find(|c| c.name == column))
+            .map(|c| c.data_type.clone())
+            .unwrap_or_default();
+        FilterOp::for_kind(FilterKind::of(&data_type), self.shared.cfg.driver)
+            .into_iter()
+            .map(|op| op.label())
+            .collect()
+    }
+
     fn add_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let columns: Vec<String> = self.table.read(cx).delegate().columns.clone();
+        let first = columns.first().cloned().unwrap_or_default();
         let column = cx.new(|cx| {
             SelectState::new(search_list(columns), Some(IndexPath::new(0)), window, cx)
                 .searchable(true)
         });
-        let ops: Vec<&'static str> = FilterOp::ALL.iter().map(|o| o.label()).collect();
+        let ops = self.ops_for(&first);
         let op = cx.new(|cx| SelectState::new(ops, Some(IndexPath::new(0)), window, cx));
-        let value = cx.new(|cx| InputState::new(window, cx).placeholder("Value — Enter to apply"));
-        self._subs.push(
-            cx.subscribe_in(&value, window, |this, _, ev: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = ev {
-                    this.reload_unless_dirty(window, cx, |t| t.page = 0);
-                }
-            }),
-        );
-        self.filters.push(FilterRow { column, op, value });
+        let value = cx.new(|cx| InputState::new(window, cx).placeholder("Value — ↵ applies"));
+        let value2 = cx.new(|cx| InputState::new(window, cx).placeholder("upper bound"));
+        for input in [&value, &value2] {
+            self._subs.push(cx.subscribe_in(
+                input,
+                window,
+                |this, _, ev: &InputEvent, window, cx| {
+                    match ev {
+                        InputEvent::PressEnter { .. } => {
+                            this.reload_unless_dirty(window, cx, |t| t.page = 0)
+                        }
+                        // The WHERE preview follows the typing.
+                        InputEvent::Change => cx.notify(),
+                        _ => {}
+                    }
+                },
+            ));
+        }
+        // Another column: offer its type's operators, keeping the chosen
+        // one when it still fits.
+        let op_state = op.clone();
+        self._subs.push(cx.subscribe_in(
+            &column,
+            window,
+            move |this, _, ev: &SelectEvent<SearchList>, window, cx| {
+                let SelectEvent::Confirm(Some(name)) = ev else {
+                    return;
+                };
+                let ops = this.ops_for(name);
+                let current = op_state.read(cx).selected_value().copied();
+                let keep = current
+                    .and_then(|label| ops.iter().position(|o| *o == label))
+                    .unwrap_or(0);
+                op_state.update(cx, |state, cx| {
+                    state.set_items(ops, window, cx);
+                    state.set_selected_index(Some(IndexPath::new(keep)), window, cx);
+                });
+                cx.notify();
+            },
+        ));
+        self._subs.push(cx.observe(&op, |_, _, cx| cx.notify()));
+        self.filters.push(FilterRow {
+            column,
+            op,
+            value,
+            value2,
+        });
     }
 
     /// Import CSV…: pick a file, confirm the column mapping, insert every
@@ -1427,14 +1560,65 @@ impl TableTab {
 
     fn render_filters(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = tokens(cx);
+        let mono = cx.theme().mono_font_family.clone();
+        // What these conditions become, written by the driver itself.
+        let preview = self
+            .shared
+            .conn
+            .try_read()
+            .ok()
+            .and_then(|conn| conn.filter_preview(&self.current_query(cx)));
+        let me = cx.entity();
         v_flex()
-            .gap(dp(6.))
+            .gap(dp(8.))
             .px(dp(12.))
-            .py(dp(8.))
+            .py(dp(10.))
             .bg(t.sidebar)
             .border_b_1()
             .border_color(t.border)
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                if ev.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    this.show_filters = false;
+                    cx.notify();
+                }
+            }))
+            .when(self.filters.len() > 1, |editor| {
+                editor.child(
+                    h_flex()
+                        .gap(dp(8.))
+                        .text_size(dp(12.))
+                        .text_color(t.text_secondary)
+                        .child("Rows matching")
+                        .child(
+                            dialog::segmented(
+                                "filter-match",
+                                &["all", "any"],
+                                self.match_any as usize,
+                                Rc::new(move |index, window, cx| {
+                                    me.update(cx, |this, cx| {
+                                        let any = index == 1;
+                                        this.reload_unless_dirty(window, cx, |t| {
+                                            t.match_any = any;
+                                            t.page = 0;
+                                        });
+                                    })
+                                }),
+                                cx,
+                            )
+                            .w(dp(110.)),
+                        )
+                        .child("of these conditions"),
+                )
+            })
             .children(self.filters.iter().enumerate().map(|(i, f)| {
+                let op =
+                    f.op.read(cx)
+                        .selected_value()
+                        .and_then(|label| FilterOp::ALL.into_iter().find(|o| o.label() == *label));
+                let needs_value = op.is_none_or(|op| op.needs_value());
+                let between = op == Some(FilterOp::Between);
+                let list = matches!(op, Some(FilterOp::In | FilterOp::NotIn));
                 h_flex()
                     .gap(dp(6.))
                     .child(
@@ -1444,21 +1628,41 @@ impl TableTab {
                     )
                     .child(
                         div()
-                            .w(dp(130.))
+                            .w(dp(150.))
                             .child(Select::new(&f.op).cursor_pointer().small()),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(Input::new(&f.value).small().cleanable(true)),
-                    )
+                    .when(needs_value, |row| {
+                        row.child(
+                            div()
+                                .flex_1()
+                                .child(Input::new(&f.value).small().cleanable(true)),
+                        )
+                    })
+                    .when(between, |row| {
+                        row.child(
+                            div()
+                                .text_size(dp(12.))
+                                .text_color(t.text_muted)
+                                .child("and"),
+                        )
+                        .child(div().flex_1().child(Input::new(&f.value2).small()))
+                    })
+                    .when(list, |row| {
+                        row.child(
+                            div()
+                                .text_size(dp(11.))
+                                .text_color(t.text_faint)
+                                .child("comma separated"),
+                        )
+                    })
+                    .when(!needs_value, |row| row.child(div().flex_1()))
                     .child(
                         Button::new(("rm-filter", i))
                             .cursor_pointer()
                             .icon(IconName::X)
                             .ghost()
                             .small()
-                            .tooltip("Remove this filter")
+                            .tooltip("Remove this condition")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.remove_filter(i, window, cx);
                             })),
@@ -1466,7 +1670,7 @@ impl TableTab {
             }))
             .child(
                 h_flex()
-                    .gap(dp(6.))
+                    .gap(dp(8.))
                     .child(
                         Button::new("add-filter")
                             .cursor_pointer()
@@ -1479,14 +1683,45 @@ impl TableTab {
                                 cx.notify();
                             })),
                     )
+                    .when_some(preview, |row, sql| {
+                        let copy = sql.clone();
+                        row.child(
+                            div()
+                                .debug_selector(|| "where-preview".into())
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .font_family(mono)
+                                .text_size(dp(11.5))
+                                .text_color(t.text_muted)
+                                .child(sql),
+                        )
+                        .child(
+                            Button::new("copy-where")
+                                .cursor_pointer()
+                                .icon(IconName::Copy)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Copy the WHERE clause")
+                                .on_click(move |_, window, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                                    window.push_notification("Copied", cx);
+                                }),
+                        )
+                    })
                     .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_size(dp(11.))
+                            .text_color(t.text_faint)
+                            .child("↵ applies · Esc closes"),
+                    )
                     .child(
                         Button::new("apply-filter")
                             .cursor_pointer()
                             .label("Apply")
                             .primary()
                             .small()
-                            .tooltip("Apply (↵ in a value)")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.reload_unless_dirty(window, cx, |t| t.page = 0);
                             })),
@@ -1538,12 +1773,28 @@ impl TableTab {
     ) -> Stateful<Div> {
         let t = tokens(cx);
         let mono = cx.theme().mono_font_family.clone();
-        let value = if !filter.op.needs_value() {
-            String::new()
-        } else if filter.value.parse::<f64>().is_ok() {
-            filter.value.clone()
-        } else {
-            format!("'{}'", filter.value)
+        // Numbers bare, text quoted; lists item by item; `between a and b`.
+        let shown = |text: &str| {
+            if text.parse::<f64>().is_ok() {
+                text.to_string()
+            } else {
+                format!("'{text}'")
+            }
+        };
+        let value = match filter.op {
+            op if !op.needs_value() => String::new(),
+            FilterOp::In | FilterOp::NotIn => format!(
+                "({})",
+                FilterOp::list(&filter.value)
+                    .iter()
+                    .map(|item| shown(item))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            FilterOp::Between => {
+                format!("{} and {}", shown(&filter.value), shown(&filter.value2))
+            }
+            _ => shown(&filter.value),
         };
         let value_color = if filter.value.parse::<f64>().is_ok() {
             t.number
