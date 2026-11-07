@@ -440,7 +440,13 @@ impl Home {
             .bg(theme.background)
             .hover(|s| s.bg(theme.list_hover))
             .cursor_pointer()
-            .child(div().w(px(4.)).h(px(34.)).rounded_full().bg(tag_color(cfg)))
+            .child(
+                div()
+                    .w(px(4.))
+                    .h(px(34.))
+                    .rounded_full()
+                    .bg(tag_color(cfg, cx)),
+            )
             .child(
                 div()
                     .size(px(34.))
@@ -475,7 +481,7 @@ impl Home {
             .child(
                 div()
                     .text_xs()
-                    .text_color(tag_color(cfg))
+                    .text_color(tag_color(cfg, cx))
                     .child(cfg.tag.label()),
             )
             .child(

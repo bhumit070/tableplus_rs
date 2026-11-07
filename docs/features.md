@@ -2,8 +2,9 @@
 
 ## Connections
 
-- A saved list with **environment tags** (local, development, testing,
-  staging, production), shown as colored badges.
+- A saved list with **environment tags** (local, development, staging,
+  production), shown as colored badges. Connections saved with the old
+  *testing* tag open as development.
 - **No connection limit.** Each open connection gets an icon in the left
   rail; ⌘1…⌘9 jump between them.
 - **Session restore:** last time's connections and tabs, including unsaved

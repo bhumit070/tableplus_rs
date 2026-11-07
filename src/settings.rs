@@ -74,10 +74,12 @@ pub fn init(cx: &mut App) {
 /// which may reload sizes from the theme file.
 pub fn apply_theme(cx: &mut App) {
     let s = get(cx);
-    let theme = Theme::global_mut(cx);
-    theme.font_size = px(s.ui_font_size);
-    theme.mono_font_size = px(s.editor_font_size);
-    cx.refresh_windows();
+    // `update`, not `global_mut`: it also pushes the change to the layer
+    // that paints scrollbars, and refreshes the windows.
+    Theme::update(cx, |theme| {
+        theme.font_size = px(s.ui_font_size);
+        theme.mono_font_size = px(s.editor_font_size);
+    });
 }
 
 pub fn update(cx: &mut App, f: impl FnOnce(&mut Settings)) {

@@ -58,6 +58,7 @@ also starts with a `//!` comment saying the same in more detail.
 | `processes.rs` | ~230 | Process list (⌘⇧P). |
 | `picker.rs` | ~250 | Searchable pick-one dialog. |
 | `settings_view.rs` | ~130 | Settings dialog. |
+| `theme.rs` | ~70 | Bundled Geist fonts and the Tabula Dark / Light themes. |
 
 ## Other files
 
@@ -66,6 +67,10 @@ also starts with a `//!` comment saying the same in more detail.
 | `Cargo.toml`, `Cargo.lock` | Dependencies (see [Dependencies](dependencies.md)) and `.deb` packaging metadata. |
 | `rust-toolchain.toml` | Pins the Rust compiler version. |
 | `compose.yaml` | Throwaway database servers for the end-to-end tests (see [Building and testing](development.md#tests)). |
+| `assets/fonts/` | Geist and Geist Mono, embedded in the binary (SIL OFL, `OFL.txt`). |
+| `assets/themes/` | `tabula.py` turns the design tokens into `tabula.json`, the Tabula Dark / Light themes. |
+| `build.rs` | On Windows, embeds `packaging/windows/tabula.ico` as the app icon. |
+| `packaging/icons/` | `tabula.svg`, the app icon, and `render.sh`, which renders the `.icns`, `.ico` and PNG from it. |
 | `packaging/windows/tabula.wxs` | WiX installer definition for the `.msi`. |
 | `packaging/linux/tabula.desktop` | Linux desktop entry installed by the `.deb`. |
 | `.github/workflows/release.yml` | Tests, builds and publishes releases. |

@@ -216,6 +216,21 @@ mod tests {
     use crate::db::Driver;
 
     #[test]
+    fn old_testing_tag_loads_as_development() {
+        let dir = std::env::temp_dir().join(format!("tabula-store-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("connections.json");
+        let mut c = ConnectionConfig::new(Driver::Sqlite);
+        c.tag = crate::db::EnvTag::Development;
+        save_to(&p, &[c]).unwrap();
+        let saved = std::fs::read_to_string(&p).unwrap();
+        std::fs::write(&p, saved.replace("\"Development\"", "\"Testing\"")).unwrap();
+        assert!(std::fs::read_to_string(&p).unwrap().contains("\"Testing\""));
+        assert_eq!(load_from(&p).0[0].tag, crate::db::EnvTag::Development);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn unreadable_file_is_kept_aside_not_overwritten() {
         let dir = std::env::temp_dir().join(format!("tabula-store-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();

@@ -120,17 +120,17 @@ impl Driver {
 pub enum EnvTag {
     #[default]
     Local,
+    /// Also read from the old "Testing" tag, which this replaced.
+    #[serde(alias = "Testing")]
     Development,
-    Testing,
     Staging,
     Production,
 }
 
 impl EnvTag {
-    pub const ALL: [EnvTag; 5] = [
+    pub const ALL: [EnvTag; 4] = [
         EnvTag::Local,
         EnvTag::Development,
-        EnvTag::Testing,
         EnvTag::Staging,
         EnvTag::Production,
     ];
@@ -139,20 +139,8 @@ impl EnvTag {
         match self {
             EnvTag::Local => "local",
             EnvTag::Development => "development",
-            EnvTag::Testing => "testing",
             EnvTag::Staging => "staging",
             EnvTag::Production => "production",
-        }
-    }
-
-    /// 0xRRGGBB
-    pub fn color(self) -> u32 {
-        match self {
-            EnvTag::Local => 0x8e8e93,
-            EnvTag::Development => 0x34c759,
-            EnvTag::Testing => 0x5ac8fa,
-            EnvTag::Staging => 0xff9f0a,
-            EnvTag::Production => 0xff453a,
         }
     }
 }

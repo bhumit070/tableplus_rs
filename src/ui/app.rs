@@ -298,7 +298,7 @@ impl AppView {
                     .collect();
                 (
                     Some(initials.to_uppercase()),
-                    tag_color(cfg),
+                    tag_color(cfg, cx),
                     match shortcut_hint(i) {
                         Some(k) => format!("{} · {} ({k})", cfg.display_name(), cfg.driver.label()),
                         None => format!("{} · {}", cfg.display_name(), cfg.driver.label()),
@@ -497,7 +497,7 @@ impl AppView {
             }
             items.push(PickItem {
                 detail: Some(detail),
-                dot: Some(tag_color(cfg)),
+                dot: Some(tag_color(cfg, cx)),
                 current: self.active == Some(i),
                 ..PickItem::new(format!("s:{i}"), cfg.display_name())
             });
@@ -512,7 +512,7 @@ impl AppView {
             };
             items.push(PickItem {
                 detail: Some(format!("{} · {place}", cfg.driver.label())),
-                dot: Some(tag_color(cfg)),
+                dot: Some(tag_color(cfg, cx)),
                 ..PickItem::new(format!("c:{}", cfg.id), cfg.display_name())
             });
         }

@@ -13,15 +13,17 @@ pub mod session;
 pub mod settings_view;
 pub mod table_editor;
 pub mod table_tab;
+pub mod theme;
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui::{Hsla, KeyBinding, rgb};
+use gpui::{App, Hsla, KeyBinding};
+use gpui_component::ActiveTheme as _;
 use tokio::sync::RwLock;
 
-use crate::db::{Connection, ConnectionConfig};
+use crate::db::{Connection, ConnectionConfig, EnvTag};
 
 /// Web-style cursors on disabled controls: gpui-component keeps the arrow,
 /// we show "not allowed" (and the hand, set where each control is built,
@@ -228,8 +230,15 @@ pub fn search_list(items: Vec<String>) -> SearchList {
     gpui_component::select::SearchableVec::new(items)
 }
 
-pub fn tag_color(cfg: &ConnectionConfig) -> Hsla {
-    rgb(cfg.tag.color()).into()
+/// The connection's environment colour (design.md, Environment tags).
+pub fn tag_color(cfg: &ConnectionConfig, cx: &App) -> Hsla {
+    let theme = cx.theme();
+    match cfg.tag {
+        EnvTag::Local => theme.success,
+        EnvTag::Development => theme.info,
+        EnvTag::Staging => theme.warning,
+        EnvTag::Production => theme.danger,
+    }
 }
 
 /// `sec!` is ⌘ on macOS and Ctrl elsewhere. Bindings without a context

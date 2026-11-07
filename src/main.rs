@@ -103,6 +103,7 @@ fn main() {
         .with_assets(gpui_kit_assets::AllAssets)
         .run(|cx: &mut App| {
             gpui_component::init(cx);
+            ui::theme::init(cx);
             Theme::sync_system_appearance(None, cx);
             settings::init(cx);
             cx.bind_keys(ui::key_bindings());

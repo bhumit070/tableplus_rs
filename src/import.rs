@@ -96,6 +96,12 @@ fn convert(d: &Map<String, Value>) -> std::result::Result<(ConnectionConfig, boo
     let mut c = ConnectionConfig::new(driver);
     c.name = s(d, "ConnectionName");
     let env = s(d, "Enviroment").to_ascii_lowercase();
+    // Tabula has no Testing tag; Development is the closest.
+    let env = if env == "testing" {
+        "development".into()
+    } else {
+        env
+    };
     c.tag = EnvTag::ALL
         .into_iter()
         .find(|t| t.label() == env)

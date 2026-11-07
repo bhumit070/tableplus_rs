@@ -1786,7 +1786,7 @@ impl Render for Session {
             .gap_2()
             .border_b_1()
             .border_color(theme.border)
-            .child(div().size(px(8.)).rounded_full().bg(tag_color(cfg)))
+            .child(div().size(px(8.)).rounded_full().bg(tag_color(cfg, cx)))
             .child(
                 // Opens the connection picker: switch to another open
                 // connection, open a saved one, or add a new one.

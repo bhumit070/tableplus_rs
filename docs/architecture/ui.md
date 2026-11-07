@@ -133,6 +133,15 @@ A connection that fails to reconnect keeps its saved tabs for next time.
 
 ## Theme and sizes
 
+`ui/theme.rs` registers the bundled Geist and Geist Mono fonts
+(`assets/fonts`, SIL OFL) and installs the **Tabula Dark** and **Tabula
+Light** themes (`assets/themes/tabula.json`) as gpui-component's dark and
+light themes. That file is generated from the colour tokens in
+`assets/themes/tabula.py` (`python3 assets/themes/tabula.py`); code reads
+colours from `cx.theme()`, never as hex, so both modes stay consistent.
+Environment tags take their colour from the theme too: local green,
+development blue, staging amber, production red.
+
 `settings.rs` applies the interface and editor font sizes to the
 gpui-component theme. Light / dark follows the system at launch, and ⌘⇧L
 switches it. ⌘= / ⌘− zoom by changing both font sizes by one point.
