@@ -116,7 +116,9 @@ actually involved.
   (a tab's × closes it), each with a status dot (green rows, amber rows affected, red
   error) and rows · time. When a statement fails, the ones before it keep
   their results, the error gets its own tab, and the statement is
-  underlined in the editor.
+  underlined in the editor. When the error names a column or table that
+  doesn't exist, Tabula suggests the closest one ("Did you mean total?")
+  and Use fixes it in the editor.
 - **Run on** shows (and switches, ⌘K) the database; **Limit** adds
   `LIMIT n` to SELECTs that have none (history keeps what you typed).
 - A **read-only** badge says why a result can't be edited. The status bar

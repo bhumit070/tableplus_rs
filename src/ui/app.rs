@@ -2418,6 +2418,53 @@ mod tests {
         }
     }
 
+    /// An unknown column gets "Did you mean …?", and Use fixes the editor.
+    #[gpui::test]
+    fn query_error_suggests_a_column(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = temp_dir().join(format!("tabula-ui-suggest-{}.db", cfg.id));
+        write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute("create table t (id integer primary key, total numeric)")
+                .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("t").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| s.new_query_for_test(w, cx));
+        let query = session.read_with(&cx, |s, _| s.active_query().unwrap());
+        query.update_in(&mut cx, |q, w, cx| {
+            q.type_and_run("select totl from t", w, cx)
+        });
+        wait_until(&mut cx, "failed", |cx| {
+            query.read_with(cx, |q, _| !q.running())
+        });
+        cx.run_until_parked();
+        let button = cx
+            .debug_bounds("apply-suggestion")
+            .expect("suggestion offered");
+        cx.simulate_click(button.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(
+            query.read_with(&cx, |q, cx| q.text(cx)),
+            "select total from t"
+        );
+        let _ = remove_file(file);
+    }
+
     /// The row menu builds (with its Copy as submenus), and "Filter by this
     /// value" narrows to the cell's value, or to NULL.
     #[gpui::test]

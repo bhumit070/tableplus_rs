@@ -14,6 +14,7 @@ pub mod safety;
 pub mod split;
 mod sql;
 pub mod ssh;
+pub mod suggest;
 pub mod target;
 pub mod url;
 

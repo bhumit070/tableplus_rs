@@ -35,6 +35,7 @@ also starts with a `//!` comment saying the same in more detail.
 | `format.rs` | ~620 | SQL formatter (⌘⇧F). |
 | `explain.rs` | ~520 | EXPLAIN output → `PlanNode` tree for each database. |
 | `ddl.rs` | ~300 | CREATE / ALTER TABLE for the table editor. |
+| `suggest.rs` | ~200 | "Did you mean …?" for query errors: the unknown name in each engine's message, the closest known one, and the rewrite. |
 | `target.rs` | ~300 | Finds the table a SELECT reads from (editable results). |
 | `url.rs` | ~310 | Reads a pasted connection URL into form fields; the password comes back separately, so it only reaches the keychain. |
 | `backup.rs` | ~310 | Backup / restore with `pg_dump`, `psql`, `mysqldump`, `mysql`; SQLite `VACUUM INTO`. |

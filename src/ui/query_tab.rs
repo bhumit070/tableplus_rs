@@ -33,6 +33,7 @@ use super::theme::{dp, kbd, tokens};
 use super::{DisabledWhen as _, QueryHistory, RunQuery, Shared, SwitchDatabase};
 use crate::db::explain::{self, PlanNode};
 use crate::db::split::{split_statements, statement_at};
+use crate::db::suggest::{Unknown, closest, replace_word, unknown_name};
 use crate::db::target::with_limit;
 use crate::db::{BatchFailed, Cancel, ColumnInfo, DbObject, Driver, ObjectKind, QueryResult};
 use crate::{history, runtime};
@@ -928,6 +929,43 @@ impl QueryTab {
         cx.notify();
     }
 
+    /// For an error that names an unknown column or table: that name and
+    /// the closest one the schema has.
+    fn suggestion(&self) -> Option<(String, String)> {
+        let error = self.error.as_deref()?;
+        let unknown = unknown_name(error)?;
+        let schema = self.shared.schema.borrow();
+        let good = match &unknown {
+            Unknown::Column(name) => closest(name, schema.columns.values().flatten()),
+            Unknown::Table(name) => closest(name, schema.tables.iter()),
+        }?;
+        Some((unknown.name().to_string(), good))
+    }
+
+    /// "Use total": puts the suggested name in place of the unknown one,
+    /// in the text that ran.
+    fn apply_suggestion(
+        &mut self,
+        bad: &str,
+        good: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = self.editor.read(cx).value().to_string();
+        let from = text.find(&self.last_run).unwrap_or(0);
+        let Some(fixed) = replace_word(&text, from, bad, good) else {
+            window.push_notification(format!("Couldn't find {bad} in the editor"), cx);
+            return;
+        };
+        self.editor
+            .update(cx, |editor, cx| editor.set_value(fixed, window, cx));
+        self.error = None;
+        self.error_stmt = None;
+        self.mark_failed(None, cx);
+        window.push_notification(format!("Changed {bad} to {good}. ⌘↵ runs it again."), cx);
+        cx.notify();
+    }
+
     /// Marks the tab busy and keeps the loading chip's clock ticking.
     fn start_running(&mut self, cx: &mut Context<Self>) {
         self.running = true;
@@ -1458,6 +1496,39 @@ impl QueryTab {
                         .text_color(t.text)
                         .children(e.lines().map(|l| div().child(l.to_string()))),
                 )
+                .when_some(self.suggestion(), |panel, (bad, good)| {
+                    let (bad_name, good_name) = (bad.clone(), good.clone());
+                    panel.child(
+                        h_flex()
+                            .gap(dp(8.))
+                            .text_size(dp(12.5))
+                            .text_color(t.text)
+                            .child(Icon::new(IconName::Lightbulb).small().text_color(t.accent))
+                            .child("Did you mean")
+                            .child(
+                                h_flex()
+                                    .child(
+                                        div()
+                                            .font_family(theme.mono_font_family.clone())
+                                            .text_color(t.accent)
+                                            .child(good.clone()),
+                                    )
+                                    .child("?"),
+                            )
+                            .child(
+                                div().debug_selector(|| "apply-suggestion".into()).child(
+                                    Button::new("apply-suggestion")
+                                        .cursor_pointer()
+                                        .label(format!("Use {good}"))
+                                        .outline()
+                                        .xsmall()
+                                        .on_click(cx.listener(move |tab, _, window, cx| {
+                                            tab.apply_suggestion(&bad_name, &good_name, window, cx)
+                                        })),
+                                ),
+                            ),
+                    )
+                })
                 .when(self.results.is_empty() && self.error_stmt.is_some(), |d| {
                     d.child(
                         div()

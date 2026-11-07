@@ -367,7 +367,7 @@ fn screenshots() {
     s.in_window(|w, cx| {
         query.update(cx, |q, cx| {
             q.type_and_run(
-                "select id, status, total from orders where total > 500 order by total desc;\nupdate orders set currency = currency where id < 0;\nselect nope from orders;",
+                "select id, status, total from orders where total > 500 order by total desc;\nupdate orders set currency = currency where id < 0;\nselect status, totl from orders;",
                 w,
                 cx,
             )
