@@ -69,7 +69,7 @@ impl AppView {
         })
         .detach();
         if crate::settings::get(cx).restore_sessions && !cfg!(test) {
-            cx.defer_in(window, |this, window, cx| this.restore_state(window, cx));
+            cx.defer_in(window, |this, window, cx| this.offer_restore(window, cx));
         }
         Self {
             home,
@@ -81,6 +81,9 @@ impl AppView {
     }
 
     fn snapshot(&self, cx: &App) -> crate::restore::State {
+        // Last session, while it's still on offer (24.6): quitting without
+        // answering mustn't lose it.
+        let offered = self.home.read(cx).reopen_offer().cloned();
         crate::restore::State {
             // Ones still reconnecting (or that failed to) keep their tabs too.
             sessions: self
@@ -88,6 +91,7 @@ impl AppView {
                 .iter()
                 .map(|s| s.read(cx).snapshot(cx))
                 .chain(self.pending_restore.values().map(|(s, _)| s.clone()))
+                .chain(offered.iter().flat_map(|o| o.sessions.clone()))
                 .collect(),
             active: self
                 .active
@@ -104,13 +108,37 @@ impl AppView {
         }
     }
 
-    /// Connects last time's saved connections; their tabs reopen as each
-    /// one connects (see `connect`).
-    fn restore_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// At launch: last session goes on offer on the home screen ("Pick up
+    /// where you left off?", design.md 24.6), so nothing connects or reads
+    /// the keychain until asked; or reopens at once with "always reopen".
+    fn offer_restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (state, warning) = crate::restore::load();
         if let Some(w) = warning {
             window.push_notification(Notification::warning(w), cx);
         }
+        let saved = self.home.read(cx).connections.clone();
+        let mut state = state;
+        state
+            .sessions
+            .retain(|s| saved.iter().any(|c| c.id == s.conn_id));
+        if state.sessions.is_empty() {
+            return;
+        }
+        if crate::settings::get(cx).always_reopen {
+            self.restore_from(state, window, cx);
+        } else {
+            self.home.update(cx, |h, cx| h.offer_reopen(state, cx));
+        }
+    }
+
+    /// Connects `state`'s saved connections; their tabs reopen as each one
+    /// connects (see `connect`).
+    pub fn restore_from(
+        &mut self,
+        state: crate::restore::State,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let saved = self.home.read(cx).connections.clone();
         for s in state.sessions {
             let Some(cfg) = saved.iter().find(|c| c.id == s.conn_id).cloned() else {
@@ -1921,6 +1949,51 @@ mod tests {
         for f in files {
             let _ = remove_file(f);
         }
+    }
+
+    /// Launch offers last session instead of connecting: nothing opens until
+    /// Reopen (↵); an unanswered offer survives quitting.
+    #[gpui::test]
+    fn welcome_back_offers_last_session(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let (app, mut cx) = open(cx);
+        let home = app.read_with(&cx, |a, _| a.home.clone());
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        cfg.name = "kept".into();
+        let file = temp_dir().join(format!("tabula-ui-reopen-{}.db", cfg.id));
+        write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let state = crate::restore::State {
+            sessions: vec![crate::restore::SessionState {
+                conn_id: cfg.id.clone(),
+                tabs: vec![],
+                active_tab: 0,
+            }],
+            active: Some(cfg.id.clone()),
+        };
+        home.update(&mut cx, |h, cx| {
+            h.connections = vec![cfg.clone()];
+            h.offer_reopen(state, cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("reopen-card").is_some(), "offer shown");
+        assert_eq!(
+            app.read_with(&cx, |a, _| a.sessions.len()),
+            0,
+            "nothing connects"
+        );
+        // Quitting now would keep the offered session.
+        let kept = app.read_with(&cx, |a, cx| a.snapshot(cx));
+        assert_eq!(kept.sessions.len(), 1);
+
+        cx.update(|window, cx| window.blur(cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        wait_until(&mut cx, "reopened", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        assert!(home.read_with(&cx, |h, _| h.reopen_offer().is_none()));
+        let _ = remove_file(file);
     }
 
     /// New Database… switches to the database it created.

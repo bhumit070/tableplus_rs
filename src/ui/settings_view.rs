@@ -179,8 +179,8 @@ impl SettingsView {
             Section::General => v_flex()
                 .gap(dp(16.))
                 .child(row(
-                    "Reopen last session",
-                    "Connections and tabs, including unsaved query text, come back at launch.",
+                    "Offer last session at launch",
+                    "Connections and tabs, including unsaved query text, can come back when Tabula starts.",
                     Checkbox::new("restore-sessions")
                         .cursor_pointer()
                         .checked(s.restore_sessions)
@@ -190,6 +190,20 @@ impl SettingsView {
                         }),
                     cx,
                 ))
+                .when(s.restore_sessions, |d| {
+                    d.child(row(
+                        "Reopen without asking",
+                        "Connects right away at launch (macOS may then ask for the keychain before the window is up).",
+                        Checkbox::new("always-reopen-setting")
+                            .cursor_pointer()
+                            .checked(s.always_reopen)
+                            .on_click(|v: &bool, _, cx| {
+                                let v = *v;
+                                settings::update(cx, |s| s.always_reopen = v)
+                            }),
+                        cx,
+                    ))
+                })
                 .child(row(
                     "Passwords",
                     format!(

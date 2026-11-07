@@ -12,6 +12,7 @@ use gpui::{
     Styled, Subscription, WeakEntity, Window, div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::checkbox::Checkbox;
 use gpui_component::dialog::{DialogButtonProps, DialogFooter};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
@@ -26,6 +27,7 @@ use super::conn_form::{ConnForm, OnDone};
 use super::dialog;
 use super::theme::{caps, dp, engine_badge, env_pill, kbd, keychain_name, safe_mode_badge, tokens};
 use crate::db::{ConnectionConfig, Driver, EnvTag, SafeMode};
+use crate::restore::State;
 use crate::{import, settings, store};
 
 pub struct Home {
@@ -39,6 +41,9 @@ pub struct Home {
     /// Set when connections.json couldn't be read (it's kept aside).
     load_warning: Option<String>,
     env_filter: Option<EnvTag>,
+    /// Last session, offered at launch (design.md 24.6) until reopened or
+    /// dismissed.
+    reopen: Option<State>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -62,6 +67,7 @@ impl Home {
             connecting: Default::default(),
             failed: Default::default(),
             env_filter: None,
+            reopen: None,
             focus: cx.focus_handle(),
             _subs: subs,
         }
@@ -397,6 +403,122 @@ impl Home {
     #[cfg(test)]
     pub fn failure(&self, id: &str) -> Option<String> {
         self.failed.get(id).cloned()
+    }
+
+    /// Puts last session on offer ("Pick up where you left off?").
+    pub fn offer_reopen(&mut self, state: State, cx: &mut Context<Self>) {
+        self.reopen = Some(state);
+        cx.notify();
+    }
+
+    pub fn reopen_offer(&self) -> Option<&State> {
+        self.reopen.as_ref()
+    }
+
+    /// Reopen on the card (or ↵): connects last session's connections.
+    fn reopen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.reopen.take() else {
+            return;
+        };
+        cx.notify();
+        let app = self.app.clone();
+        // AppView reads this view while restoring: after this update.
+        window.defer(cx, move |window, cx| {
+            app.update(cx, |a, cx| a.restore_from(state, window, cx))
+                .ok();
+        });
+    }
+
+    fn render_reopen(&self, state: &State, cx: &mut Context<Self>) -> AnyElement {
+        let t = tokens(cx);
+        let conns: Vec<&ConnectionConfig> = state
+            .sessions
+            .iter()
+            .filter_map(|s| self.connections.iter().find(|c| c.id == s.conn_id))
+            .collect();
+        let tabs: usize = state.sessions.iter().map(|s| s.tabs.len()).sum();
+        let always = settings::get(cx).always_reopen;
+        h_flex()
+            .debug_selector(|| "reopen-card".into())
+            .gap(dp(14.))
+            .p(dp(16.))
+            .rounded(dp(12.))
+            .border_1()
+            .border_color(t.accent.opacity(0.35))
+            .bg(t.accent.opacity(0.07))
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(dp(36.))
+                    .rounded(dp(10.))
+                    .bg(t.accent.opacity(0.15))
+                    .child(Icon::new(IconName::RotateCcwClock).text_color(t.accent)),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(dp(6.))
+                    .child(
+                        div()
+                            .text_size(dp(14.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(t.text)
+                            .child("Pick up where you left off?"),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_wrap()
+                            .gap(dp(8.))
+                            .text_size(dp(12.5))
+                            .text_color(t.text_secondary)
+                            .children(conns.iter().map(|c| {
+                                h_flex()
+                                    .gap(dp(6.))
+                                    .child(env_pill(c.tag, cx))
+                                    .child(c.display_name())
+                            }))
+                            .child(div().text_color(t.text_muted).child(match tabs {
+                                0 => String::new(),
+                                1 => "· 1 tab".to_string(),
+                                n => format!("· {n} tabs"),
+                            })),
+                    )
+                    .child(
+                        Checkbox::new("always-reopen")
+                            .cursor_pointer()
+                            .checked(always)
+                            .label("Don't ask, always reopen")
+                            .on_click(|v: &bool, _, cx| {
+                                let v = *v;
+                                settings::update(cx, |s| s.always_reopen = v)
+                            }),
+                    ),
+            )
+            .child(
+                Button::new("reopen-not-now")
+                    .cursor_pointer()
+                    .label("Not now")
+                    .ghost()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.reopen = None;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div().debug_selector(|| "reopen".into()).child(
+                    Button::new("reopen")
+                        .cursor_pointer()
+                        .icon(IconName::RotateCcw)
+                        .label("Reopen ↵")
+                        .primary()
+                        .on_click(cx.listener(|this, _, window, cx| this.reopen(window, cx))),
+                ),
+            )
+            .into_any_element()
     }
 
     /// Marks `id` as just used, so the card can say when.
@@ -969,9 +1091,13 @@ impl Render for Home {
             .track_focus(&self.focus)
             .key_context("Home")
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
-                if ev.keystroke.key == "/" && !ev.keystroke.modifiers.modified() {
+                let plain = !ev.keystroke.modifiers.modified();
+                if ev.keystroke.key == "/" && plain {
                     cx.stop_propagation();
                     this.search.update(cx, |s, cx| s.focus(window, cx));
+                } else if ev.keystroke.key == "enter" && plain && this.reopen.is_some() {
+                    cx.stop_propagation();
+                    this.reopen(window, cx);
                 }
             }))
             .size_full()
@@ -1006,6 +1132,9 @@ impl Render for Home {
                                     }),
                             ),
                     )
+                    .when_some(self.reopen.clone(), |d, state| {
+                        d.child(self.render_reopen(&state, cx))
+                    })
                     .when(count > 0, |d| d.child(toolbar))
                     .when_some(self.load_warning.clone(), |d, w| {
                         d.child(

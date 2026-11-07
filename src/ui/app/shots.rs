@@ -423,4 +423,27 @@ fn screenshots() {
         })
     });
     s.snap("03-home");
+    // Welcome back: last session on offer.
+    s.cx.update(|cx| {
+        home.update(cx, |h, cx| {
+            let sessions = h
+                .connections
+                .iter()
+                .take(2)
+                .map(|c| crate::restore::SessionState {
+                    conn_id: c.id.clone(),
+                    tabs: vec![],
+                    active_tab: 0,
+                })
+                .collect();
+            h.offer_reopen(
+                crate::restore::State {
+                    sessions,
+                    active: None,
+                },
+                cx,
+            );
+        })
+    });
+    s.snap("24-welcome-back");
 }

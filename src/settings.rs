@@ -33,8 +33,12 @@ pub struct Settings {
     pub ui_font_size: f32,
     /// SQL / query editor text.
     pub editor_font_size: f32,
-    /// Reopen last time's connections and tabs at launch.
+    /// Offer to reopen last time's connections and tabs at launch.
     pub restore_sessions: bool,
+    /// Reopen them without asking (design.md 24.6, "Don't ask, always
+    /// reopen"). Off: launch asks first, so nothing connects (or touches
+    /// the keychain) on its own.
+    pub always_reopen: bool,
     pub appearance: Appearance,
     /// Rows per page when a table opens (one of `PAGE_SIZES`).
     pub page_size: usize,
@@ -49,6 +53,7 @@ impl Default for Settings {
             ui_font_size: 13.,
             editor_font_size: 13.,
             restore_sessions: true,
+            always_reopen: false,
             appearance: Appearance::System,
             page_size: PAGE_SIZES[1],
             default_safe_mode: SafeMode::Auto,

@@ -11,8 +11,11 @@
   *testing* tag open as development.
 - **No connection limit.** Each open connection gets an icon in the left
   rail; ⌘1…⌘9 jump between them.
-- **Session restore:** last time's connections and tabs, including unsaved
-  query text, reopen at launch (can be turned off in Settings).
+- **Session restore:** at launch, a "Pick up where you left off?" card
+  offers last time's connections and tabs (including unsaved query text);
+  Reopen (↵) connects them. Nothing connects, and the keychain isn't
+  touched, until you ask. "Don't ask, always reopen" brings back the
+  automatic reconnect; both are in Settings.
 - **SSH tunnels** with password, private key (with passphrase) or
   ssh-agent. Host keys are checked; a dead tunnel is reopened automatically.
 - **Paste a connection URL** (`postgres://`, `mysql://`, `redis://`,

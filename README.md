@@ -76,8 +76,8 @@ time: **More info → Run anyway**.
 
 - **Connections:** saved list with environment tags (local → production) and
   passwords in the OS keychain (Keychain, Credential Manager, Secret
-  Service). Last session's connections and tabs
-  (including unsaved query text) reopen at launch.
+  Service). At launch, Tabula offers to reopen last session's connections
+  and tabs (including unsaved query text); nothing connects until you say so.
 - **SSH tunnels:** password, private key (with passphrase) or ssh-agent.
   Host keys are checked against `~/.ssh/known_hosts`; a new host asks to be
   trusted, a changed key is refused.
