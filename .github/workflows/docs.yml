@@ -17,10 +17,11 @@ permissions:
   pages: write
   id-token: write
 
-# Only the newest push matters; let a running deploy finish.
+# Only the newest push matters: a newer one cancels an older run (the next
+# deploy replaces whatever an interrupted one left).
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:

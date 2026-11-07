@@ -44,8 +44,12 @@ flowchart LR
    any expected file is missing, the notes list it.
 5. **packages** runs `packages.yml` (below) for the new tag.
 
-Only one release runs at a time (`concurrency: release`), so two pushes
-can't claim the same version.
+Only the newest commit is released. One release runs at a time
+(`concurrency: release`), and a newer push cancels a run still working on an
+older commit. Before publishing, the release job checks that its commit is
+still the head of `main`, and stops quietly if not. It creates the release
+as a draft and makes it public only once every file is uploaded, so a
+cancelled run never leaves a half-finished release or tag behind.
 
 ### Not signed yet
 
@@ -91,7 +95,8 @@ on Debian/Ubuntu or in a container).
 ## Documentation site (`docs.yml`)
 
 Runs on every push to `main` that changes `docs/`, `mkdocs.yml` or the
-workflow itself, and by hand.
+workflow itself, and by hand. A newer push cancels an older run, so only the
+latest docs are deployed.
 
 1. Installs MkDocs Material from `docs/requirements.txt`.
 2. `mkdocs build --strict`: broken internal links or a bad config fail the

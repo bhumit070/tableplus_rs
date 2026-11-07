@@ -16,10 +16,11 @@ on:
       - ".github/workflows/release.yml"
   workflow_dispatch:
 
-# One release at a time, so two pushes can't claim the same version.
+# One release at a time, and only for the newest commit: a newer push cancels
+# a run still building an older one. Publishing guards itself below.
 concurrency:
   group: release
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -166,6 +167,8 @@ jobs:
     # Publish what built, even if one platform failed.
     if: ${{ !cancelled() && needs.version.result == 'success' }}
     runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -173,6 +176,7 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Publish the release
+        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.version.outputs.tag }}
@@ -198,16 +202,29 @@ jobs:
 
           ⚠️ Not in this release (its build failed):$missing"
           fi
+          # Only the newest commit on main is released: if another push
+          # landed meanwhile, its own run releases that one.
+          head=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "main has moved on to $head; not releasing $GITHUB_SHA."
+            exit 0
+          fi
+          # A draft first, made public once every file is up: a run cancelled
+          # mid-upload leaves no half-finished release (or tag) behind.
+          gh release delete "$TAG" --yes 2>/dev/null || true
           gh release create "$TAG" "${files[@]}" \
+            --draft \
             --target "$GITHUB_SHA" \
             --title "Tabula $TAG" \
             --generate-notes \
             --notes "$notes"
+          gh release edit "$TAG" --draft=false
+          echo "published=true" >> "$GITHUB_OUTPUT"
 
   # Homebrew tap and apt repository (packages.yml).
   packages:
     needs: [version, release]
-    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    if: ${{ !cancelled() && needs.release.outputs.published == 'true' }}
     uses: ./.github/workflows/packages.yml
     with:
       tag: ${{ needs.version.outputs.tag }}
