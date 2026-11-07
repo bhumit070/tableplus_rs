@@ -59,6 +59,14 @@ Download the file for your platform from the
     need X11 or Wayland, Vulkan, and a Secret Service keyring (GNOME Keyring
     or KWallet) to save passwords.
 
+## First launch
+
+A fresh install starts with a short setup you can skip at any step: pick a
+theme and text size, then import from TablePlus, add a connection, open a
+SQLite file, or try the sample database. Later launches never connect on
+their own: if you had connections open, the connection list offers to
+**Reopen** them (↵).
+
 ## Add a connection
 
 1. On the start screen, click **New Connection**.

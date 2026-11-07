@@ -40,17 +40,26 @@ flowchart TB
 | View | File | Role |
 | --- | --- | --- |
 | `AppView` | `ui/app.rs` | Window root: title bar (environment, connection / database / schema, ⌘P go-to box, safe-mode badge), connection rail, status bar, which session is in front. Opens connections, saves and restores the session, routes shortcuts. |
-| `Home` | `ui/home.rs` | Start screen: saved connections (connect, edit, duplicate, delete) and TablePlus import. |
-| `ConnForm` | `ui/conn_form.rs` | New / edit connection dialog, with Test and SSH settings. |
+| `Home` | `ui/home.rs` | Connections home: cards grouped Open now / Saved, search, environment filter, TablePlus import, the sample database, the "Welcome back" offer, and the keychain gate before anything reads a password. |
+| `Onboarding` | `ui/onboarding.rs` | First-run steps (Welcome, Look & feel, Connections, You're set), shown in place of everything else until finished or skipped. |
+| `PasswordsStep` | `ui/passwords.rs` | The one-time explanation before Tabula first uses the keychain. |
+| `ConnForm` | `ui/conn_form.rs` | New / edit connection dialog: engine tiles, connection URL, environment, safe mode, SSH section, inline Test connection. |
 | `Session` | `ui/session.rs` | One open connection: sidebar, tab strip, database switching, backup / restore, create / drop database, sidebar menus. |
 | `TableTab` | `ui/table_tab.rs` | A table, view, collection or Redis key space: toolbar (Data / Structure / DDL, filter chips, pager, Refresh, + Row, Export), filter editor, editable grid, pending-changes bar, Structure view, CSV import, foreign-key jumps. |
-| `QueryTab` | `ui/query_tab.rs` | Editor, run / stop, one result tab per statement, editable results, EXPLAIN tree, history and saved-query hooks. |
+| `QueryTab` | `ui/query_tab.rs` | Editor and toolbar, run the statement at the cursor or all, result tabs with status dots, editable results, EXPLAIN tree. |
+| `HistoryView` | `ui/history_view.rs` | Query history and saved queries in one dialog, with a preview and Open / Insert / Save as. |
+| `ExportDialog` | `ui/copy.rs` | Export: format, rows, options, preview, destination, progress toast. |
 | `Grid` | `ui/grid.rs` | The `TableDelegate` behind every data grid: fetched rows plus staged edits, deletions and new rows. |
 | `TableEditor` | `ui/table_editor.rs` | New Table / Edit Columns dialog. |
 | `Processes` | `ui/processes.rs` | Process list dialog, polling every few seconds. |
-| `Picker` | `ui/picker.rs` | Searchable pick-one dialog (⌘K, ⌘N, ⌘P, schemas). |
+| `Picker` | `ui/picker.rs` | Searchable pick-one dialog in the palette look (⌘K, ⌘N, ⌘P, schemas). |
 | `RowPanel` | `ui/row_panel.rs` | Row detail side panel (⌘⇧I). |
-| `SettingsView` | `ui/settings_view.rs` | Settings dialog. |
+| `SettingsView` | `ui/settings_view.rs` | Settings: General, Appearance, Editor, Data grid, Safe mode, Shortcuts. |
+
+Shared building blocks: `ui/dialog.rs` (the dialog surface, title, footer,
+segmented control, tiles, radio rows; ↵ never closes a form),
+`ui/loading.rs` (placeholder rows after 150 ms, the loading chip with Stop,
+busy toasts) and `ui/theme.rs` (tokens, pills, key caps, engine badges).
 
 ## Actions and shortcuts
 

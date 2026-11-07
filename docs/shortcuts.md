@@ -11,6 +11,8 @@ command is also in the menu bar.
 | ⌘N or ⌘⇧K | Open a connection: switch to an open one, open a saved one, or add a new one |
 | ⌘1 … ⌘9 | Switch to the 1st … 9th open connection |
 | ⌘0 | Connection list |
+| / | On the connection list: search |
+| ↵ | On the connection list: reopen last session (when offered) |
 | ⌘K | Switch database |
 | ⌘P | Go to a table, view or collection, or run a command |
 | ⌘⇧P | Process list |
