@@ -44,7 +44,7 @@ command is also in the menu bar.
 | ⌘⇧⌫ | Discard staged changes |
 | ⌘I | Add a row |
 | ⌘⌫ | Delete the selected row (outside text fields) |
-| ⌘F | Toggle the filter bar (outside text fields) |
+| ⌘F | Show / hide the filter editor (outside text fields); filters stay applied as chips |
 | ⌘C | Copy the selected cell |
 | ⌘⇧E | Export the table or result |
 | ⌘⇧I | Row detail panel |

@@ -193,6 +193,17 @@ fn screenshots() {
     s.wait("rows", |cx| tab.read(cx).loaded_rows(cx) > 0);
     s.snap("01-table");
 
+    // Staged changes: an edited cell, a deleted row, a new row.
+    s.in_window(|w, cx| {
+        tab.update(cx, |t, cx| {
+            t.stage_cell(37, 2, "refunded", cx);
+            t.select_cell(38, 0, w, cx);
+            t.delete_rows(&crate::ui::DeleteRows, w, cx);
+            t.add_row(&crate::ui::AddRow, w, cx);
+        })
+    });
+    s.snap("01-table-staged");
+
     s.in_window(|w, cx| session.update(cx, |s, cx| s.new_query(w, cx)));
     s.snap("02-query");
 }

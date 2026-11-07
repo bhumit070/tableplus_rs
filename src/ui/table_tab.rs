@@ -6,18 +6,20 @@ use std::rc::Rc;
 use anyhow::Context as _;
 
 use gpui::{
-    App, ClipboardItem, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement,
-    Render, SharedString, Styled, Subscription, Window, div, prelude::*, px, rems,
+    App, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight, IntoElement,
+    ParentElement, Render, SharedString, Styled, Subscription, Window, div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::menu::DropdownMenu as _;
 use gpui_component::menu::PopupMenuItem;
 use gpui_component::notification::Notification;
 use gpui_component::select::{Select, SelectState};
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::table::{TableEvent, TableState};
 use gpui_component::{
-    ActiveTheme as _, IndexPath, Selectable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Icon, IndexPath, Selectable as _, Sizable as _, WindowExt as _, h_flex,
+    v_flex,
 };
 use gpui_kit_assets::IconName;
 
@@ -25,9 +27,10 @@ use super::cell_edit::{self, EditStart};
 use super::copy;
 use super::grid::{Grid, data_table};
 use super::row_panel;
+use super::theme::{dp, tokens};
 use super::{
-    AddRow, Commit, CopyCell, DeleteRows, Discard, SearchList, SetNull, Shared, ToggleFilter,
-    search_list,
+    AddRow, Commit, CopyCell, DeleteRows, Discard, ExportData, SearchList, SetNull, Shared,
+    ToggleFilter, search_list,
 };
 use crate::db::{DbObject, EnvTag, Filter, FilterOp, QueryResult, Structure, TableQuery};
 use crate::runtime;
@@ -73,7 +76,11 @@ pub struct TableTab {
     /// a removable chip, applied on top of the filter bar.
     fixed: Vec<Filter>,
     filters: Vec<FilterRow>,
+    /// The filter editor (⌘F) is open. Filters apply whether or not it is.
     show_filters: bool,
+    /// Filters in effect for the rows shown, with their editor row: the
+    /// toolbar's chips.
+    applied: Vec<(usize, Filter)>,
     page: usize,
     page_size: usize,
     total: Option<u64>,
@@ -202,6 +209,7 @@ impl TableTab {
             fixed,
             filters: Vec::new(),
             show_filters: false,
+            applied: vec![],
             page: 0,
             page_size: PAGE_SIZES[1],
             total: None,
@@ -284,6 +292,35 @@ impl TableTab {
         self.reload_unless_dirty(window, cx, |t| t.page += 1);
     }
 
+    #[cfg(test)]
+    pub fn set_filter_value_for_test(
+        &mut self,
+        i: usize,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.filters[i]
+            .value
+            .update(cx, |input, cx| input.set_value(value, window, cx));
+        self.reload_unless_dirty(window, cx, |t| t.page = 0);
+    }
+
+    #[cfg(test)]
+    pub fn chips_for_test(&self) -> usize {
+        self.applied.len()
+    }
+
+    #[cfg(test)]
+    pub fn remove_filter_for_test(
+        &mut self,
+        i: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.remove_filter(i, window, cx);
+    }
+
     pub fn title(&self) -> String {
         self.object.title()
     }
@@ -305,9 +342,15 @@ impl TableTab {
     }
 
     fn filter_values(&self, cx: &App) -> Vec<Filter> {
+        self.filter_rows(cx).into_iter().map(|(_, f)| f).collect()
+    }
+
+    /// Complete filters with the index of their editor row.
+    fn filter_rows(&self, cx: &App) -> Vec<(usize, Filter)> {
         self.filters
             .iter()
-            .filter_map(|f| {
+            .enumerate()
+            .filter_map(|(i, f)| {
                 let column = f.column.read(cx).selected_value()?.clone();
                 let op_label = *f.op.read(cx).selected_value()?;
                 let op = FilterOp::ALL.into_iter().find(|o| o.label() == op_label)?;
@@ -315,9 +358,22 @@ impl TableTab {
                 if op.needs_value() && value.is_empty() {
                     return None;
                 }
-                Some(Filter { column, op, value })
+                Some((i, Filter { column, op, value }))
             })
             .collect()
+    }
+
+    /// A chip's ×: drop that filter and show the rows again.
+    fn remove_filter(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.reload_unless_dirty(window, cx, |t| {
+            if row < t.filters.len() {
+                t.filters.remove(row);
+            }
+            if t.filters.is_empty() {
+                t.show_filters = false;
+            }
+            t.page = 0;
+        });
     }
 
     /// For user-triggered reloads (paging, filters…): a reload replaces the
@@ -351,11 +407,7 @@ impl TableTab {
                 .fixed
                 .iter()
                 .cloned()
-                .chain(if self.show_filters {
-                    self.filter_values(cx)
-                } else {
-                    vec![]
-                })
+                .chain(self.filter_values(cx))
                 .collect(),
             order,
             limit: self.page_size,
@@ -365,6 +417,7 @@ impl TableTab {
 
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let q = self.current_query(cx);
+        self.applied = self.filter_rows(cx);
         self.table.update(cx, |t, cx| {
             t.delegate_mut().loading = true;
             cx.notify();
@@ -492,18 +545,24 @@ impl TableTab {
         self.total = total;
         self.elapsed = data.elapsed_ms;
         let table_cols = self.structure.as_ref().map(|s| s.columns.clone());
-        let fk_cols: Vec<String> = self
+        // (column, referenced table) for every foreign-key column.
+        let fk_refs: Vec<(String, String)> = self
             .structure
             .iter()
             .flat_map(|s| &s.foreign_keys)
-            .flat_map(|f| f.columns.clone())
+            .flat_map(|f| f.columns.iter().map(|c| (c.clone(), f.ref_table.clone())))
             .collect();
         self.table.update(cx, |t, cx| {
             let g = t.delegate_mut();
             g.set_result(&data);
             g.pk = g.columns.iter().map(|c| pk_names.contains(c)).collect();
-            g.links = g.columns.iter().map(|c| fk_cols.contains(c)).collect();
+            g.links = g
+                .columns
+                .iter()
+                .map(|c| fk_refs.iter().any(|(f, _)| f == c))
+                .collect();
             g.set_choices(table_cols.as_deref().unwrap_or_default());
+            g.set_types(table_cols.as_deref().unwrap_or_default(), &fk_refs);
             g.editable = vec![true; g.columns.len()];
             t.refresh(cx);
             cx.notify();
@@ -703,13 +762,11 @@ impl TableTab {
         self.reload(cx);
     }
 
+    /// ⌘F: show or hide the filter editor. Hiding keeps the filters (they
+    /// stay as chips); a chip's × removes one.
     pub fn toggle_filter(&mut self, _: &ToggleFilter, window: &mut Window, cx: &mut Context<Self>) {
         if self.show_filters {
-            // Hiding clears the filters, which reloads the rows.
-            self.reload_unless_dirty(window, cx, |t| {
-                t.show_filters = false;
-                t.page = 0;
-            });
+            self.show_filters = false;
         } else {
             self.show_filters = true;
             if self.filters.is_empty() {
@@ -1074,22 +1131,25 @@ impl TableTab {
     }
 
     fn render_filters(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = tokens(cx);
         v_flex()
-            .gap_1()
-            .p_2()
+            .gap(dp(6.))
+            .px(dp(12.))
+            .py(dp(8.))
+            .bg(t.sidebar)
             .border_b_1()
-            .border_color(cx.theme().border)
+            .border_color(t.border)
             .children(self.filters.iter().enumerate().map(|(i, f)| {
                 h_flex()
-                    .gap_1()
+                    .gap(dp(6.))
                     .child(
                         div()
-                            .w(px(200.))
+                            .w(dp(200.))
                             .child(Select::new(&f.column).cursor_pointer().small()),
                     )
                     .child(
                         div()
-                            .w(px(130.))
+                            .w(dp(130.))
                             .child(Select::new(&f.op).cursor_pointer().small()),
                     )
                     .child(
@@ -1100,108 +1160,334 @@ impl TableTab {
                     .child(
                         Button::new(("rm-filter", i))
                             .cursor_pointer()
-                            .icon(IconName::Minus)
+                            .icon(IconName::X)
                             .ghost()
                             .small()
+                            .tooltip("Remove this filter")
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.reload_unless_dirty(window, cx, |t| {
-                                    t.filters.remove(i);
-                                    t.page = 0;
-                                });
+                                this.remove_filter(i, window, cx);
                             })),
                     )
-                    .when(i == self.filters.len() - 1, |row| {
-                        row.child(
-                            Button::new("add-filter")
-                                .cursor_pointer()
-                                .icon(IconName::Plus)
-                                .ghost()
-                                .small()
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.add_filter(window, cx);
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("apply-filter")
-                                .cursor_pointer()
-                                .label("Apply")
-                                .primary()
-                                .small()
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.reload_unless_dirty(window, cx, |t| t.page = 0);
-                                })),
-                        )
-                    })
+            }))
+            .child(
+                h_flex()
+                    .gap(dp(6.))
+                    .child(
+                        Button::new("add-filter")
+                            .cursor_pointer()
+                            .icon(IconName::Plus)
+                            .label("Add condition")
+                            .ghost()
+                            .small()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.add_filter(window, cx);
+                                cx.notify();
+                            })),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("apply-filter")
+                            .cursor_pointer()
+                            .label("Apply")
+                            .primary()
+                            .small()
+                            .tooltip("Apply (↵ in a value)")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.reload_unless_dirty(window, cx, |t| t.page = 0);
+                            })),
+                    ),
+            )
+    }
+
+    /// A segmented control item (Data / Structure / DDL).
+    fn segment(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        active: bool,
+        cx: &mut Context<Self>,
+        on: impl Fn(&mut Self) + 'static,
+    ) -> impl IntoElement {
+        let t = tokens(cx);
+        div()
+            .id(id)
+            .h(dp(24.))
+            .px(dp(10.))
+            .flex()
+            .items_center()
+            .rounded(dp(5.))
+            .cursor_pointer()
+            .text_size(dp(12.))
+            .font_weight(FontWeight::MEDIUM)
+            .map(|d| {
+                if active {
+                    d.bg(t.hover).text_color(t.text)
+                } else {
+                    d.text_color(t.text_secondary)
+                        .hover(|d| d.text_color(t.text))
+                }
+            })
+            .child(label)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                on(this);
+                cx.notify();
             }))
     }
 
-    fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let grid = self.table.read(cx).delegate();
-        let pending = grid.change_count();
-        let shown = grid.base_rows;
-        let pages = self
-            .total
-            .map(|t| (t as usize).div_ceil(self.page_size).max(1));
-        let info = match self.total {
-            Some(t) => format!("{shown} of {t} rows · {} ms", self.elapsed),
-            None => format!("{shown} rows · {} ms", self.elapsed),
+    /// A filter chip: column, operator (mono), value coloured by type.
+    fn chip(
+        &self,
+        id: (&'static str, usize),
+        filter: &Filter,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let t = tokens(cx);
+        let mono = cx.theme().mono_font_family.clone();
+        let value = if !filter.op.needs_value() {
+            String::new()
+        } else if filter.value.parse::<f64>().is_ok() {
+            filter.value.clone()
+        } else {
+            format!("'{}'", filter.value)
         };
-        let page = self.page;
+        let value_color = if filter.value.parse::<f64>().is_ok() {
+            t.number
+        } else {
+            t.success
+        };
         h_flex()
-            .h(rems(2.25))
-            .px_2()
-            .gap_1()
-            .border_t_1()
-            .border_color(theme.border)
-            .bg(theme.title_bar)
+            .id(id)
+            .flex_none()
+            .h(dp(26.))
+            .pl(dp(10.))
+            .pr(dp(4.))
+            .gap(dp(6.))
+            .rounded(dp(7.))
+            .bg(t.accent.opacity(0.10))
+            .border_1()
+            .border_color(t.accent.opacity(0.35))
+            .text_size(dp(12.))
+            .child(div().text_color(t.text).child(filter.column.clone()))
             .child(
-                Button::new("view-data")
-                    .cursor_pointer()
-                    .label("Data")
-                    .small()
-                    .ghost()
-                    .selected(!self.show_structure)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_structure = false;
-                        cx.notify();
-                    })),
+                div()
+                    .font_family(mono.clone())
+                    .text_color(t.text_muted)
+                    .child(filter.op.label()),
             )
-            .child(
-                Button::new("view-structure")
-                    .cursor_pointer()
-                    .label("Structure")
-                    .small()
-                    .ghost()
-                    .selected(self.show_structure)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_structure = true;
-                        cx.notify();
-                    })),
-            )
-            .child(div().w(px(8.)))
-            .when(!self.show_structure, |f| {
-                f.child(
-                    Button::new("toggle-detail")
-                        .cursor_pointer()
-                        .icon(IconName::PanelRight)
-                        .ghost()
-                        .small()
-                        .selected(self.show_detail)
-                        .tooltip("Row detail (⌘⇧I)")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.show_detail = !this.show_detail;
-                            cx.notify();
-                        })),
+            .when(!value.is_empty(), |d| {
+                d.child(
+                    div()
+                        .max_w(dp(160.))
+                        .truncate()
+                        .font_family(mono)
+                        .text_color(value_color)
+                        .child(value),
                 )
             })
-            .when(!self.show_structure, |f| {
-                f.child(
+    }
+
+    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = tokens(cx);
+        let data = !self.show_structure;
+        let ddl = self.show_structure && self.struct_section == 3;
+        let structure = self.show_structure && !ddl;
+        let grid = self.table.read(cx).delegate();
+        let shown = grid.base_rows;
+        let page = self.page;
+        let pages = self
+            .total
+            .map(|n| (n as usize).div_ceil(self.page_size).max(1));
+        let first = page * self.page_size;
+        let range = match (shown, self.total) {
+            (0, Some(n)) => format!("0 of {n}"),
+            (0, None) => "0 rows".to_string(),
+            (_, Some(n)) => format!("{}–{} of {n}", first + 1, first + shown),
+            (_, None) => format!("{}–{}", first + 1, first + shown),
+        };
+        let page_size = self.page_size;
+        let me = cx.entity().downgrade();
+        let mut chips: Vec<gpui::AnyElement> = Vec::new();
+        if data {
+            for (i, f) in self.fixed.iter().enumerate() {
+                chips.push(
+                    self.chip(("fixed-chip", i), f, cx)
+                        .child(
+                            Button::new(("clear-fixed", i))
+                                .cursor_pointer()
+                                .debug_selector(|| "clear-fixed".into())
+                                .icon(IconName::X)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Show all rows")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.reload_unless_dirty(window, cx, |t| {
+                                        t.fixed.clear();
+                                        t.page = 0;
+                                    });
+                                })),
+                        )
+                        .into_any_element(),
+                );
+            }
+            for (k, (row, f)) in self.applied.iter().enumerate() {
+                let row = *row;
+                chips.push(
+                    self.chip(("filter-chip", k), f, cx)
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if !this.show_filters {
+                                this.toggle_filter(&ToggleFilter, window, cx);
+                            }
+                        }))
+                        .child(
+                            Button::new(("rm-chip", k))
+                                .cursor_pointer()
+                                .icon(IconName::X)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Remove this filter")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.remove_filter(row, window, cx);
+                                })),
+                        )
+                        .into_any_element(),
+                );
+            }
+        }
+        h_flex()
+            .h(dp(48.))
+            .flex_none()
+            .px(dp(12.))
+            .gap(dp(8.))
+            .bg(t.canvas)
+            .border_b_1()
+            .border_color(t.border)
+            .child(
+                h_flex()
+                    .flex_none()
+                    .p(dp(3.))
+                    .gap(dp(2.))
+                    .rounded(dp(7.))
+                    .bg(t.surface)
+                    .border_1()
+                    .border_color(t.border)
+                    .child(self.segment("view-data", "Data", data, cx, |t| {
+                        t.show_structure = false;
+                    }))
+                    .child(
+                        self.segment("view-structure", "Structure", structure, cx, |t| {
+                            t.show_structure = true;
+                            if t.struct_section == 3 {
+                                t.struct_section = 0;
+                            }
+                        }),
+                    )
+                    .child(self.segment("view-ddl", "DDL", ddl, cx, |t| {
+                        t.show_structure = true;
+                        t.struct_section = 3;
+                    })),
+            )
+            .child(
+                h_flex()
+                    .id("chips")
+                    .flex_1()
+                    .min_w_0()
+                    .gap(dp(6.))
+                    .overflow_x_scroll()
+                    .children(chips)
+                    .when(data, |d| {
+                        d.child(
+                            Button::new("filter")
+                                .cursor_pointer()
+                                .icon(IconName::Plus)
+                                .label("Filter")
+                                .ghost()
+                                .small()
+                                .selected(self.show_filters)
+                                .tooltip("Filter (⌘F)")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_filter(&ToggleFilter, window, cx)
+                                })),
+                        )
+                    }),
+            )
+            .when(data, |d| {
+                d.child(
+                    h_flex()
+                        .flex_none()
+                        .gap(dp(2.))
+                        .child(
+                            Button::new("page-size")
+                                .cursor_pointer()
+                                .label(range)
+                                .ghost()
+                                .small()
+                                .tooltip("Rows per page")
+                                .dropdown_menu(move |menu, _, _| {
+                                    PAGE_SIZES.iter().fold(menu, |menu, &n| {
+                                        let me = me.clone();
+                                        menu.item(
+                                            PopupMenuItem::new(format!("{n} rows per page"))
+                                                .checked(n == page_size)
+                                                .on_click(move |_, window, cx| {
+                                                    me.update(cx, |this, cx| {
+                                                        this.reload_unless_dirty(window, cx, |t| {
+                                                            t.page_size = n;
+                                                            t.page = 0;
+                                                        })
+                                                    })
+                                                    .ok();
+                                                }),
+                                        )
+                                    })
+                                }),
+                        )
+                        .child(
+                            Button::new("prev-page")
+                                .cursor_pointer()
+                                .icon(IconName::ChevronLeft)
+                                .outline()
+                                .small()
+                                .tooltip("Previous page")
+                                .disabled_when(page == 0)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.reload_unless_dirty(window, cx, |t| {
+                                        t.page = t.page.saturating_sub(1)
+                                    });
+                                })),
+                        )
+                        .child(
+                            Button::new("next-page")
+                                .cursor_pointer()
+                                .icon(IconName::ChevronRight)
+                                .outline()
+                                .small()
+                                .tooltip("Next page")
+                                .disabled_when(pages.is_some_and(|p| page + 1 >= p))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.reload_unless_dirty(window, cx, |t| t.page += 1);
+                                })),
+                        ),
+                )
+            })
+            .child(
+                Button::new("refresh")
+                    .cursor_pointer()
+                    .icon(IconName::RefreshCw)
+                    .label("Refresh")
+                    .outline()
+                    .small()
+                    .tooltip("Refresh (⌘R)")
+                    .on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx))),
+            )
+            .when(data, |d| {
+                d.child(
                     Button::new("add-row")
                         .cursor_pointer()
                         .icon(IconName::Plus)
-                        .ghost()
+                        .label("Row")
+                        .outline()
                         .small()
                         .tooltip("Add row (⌘I)")
                         .on_click(
@@ -1209,125 +1495,119 @@ impl TableTab {
                         ),
                 )
                 .child(
-                    Button::new("del-row")
+                    Button::new("export")
                         .cursor_pointer()
-                        .icon(IconName::Minus)
-                        .ghost()
+                        .label("Export")
+                        .outline()
                         .small()
-                        .tooltip("Delete row (⌘⌫)")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.delete_rows(&DeleteRows, window, cx)
-                        })),
+                        .tooltip("Export (⌘⇧E)")
+                        .on_click(|_, window, cx| window.dispatch_action(Box::new(ExportData), cx)),
                 )
                 .child(
-                    Button::new("filter")
+                    Button::new("toggle-detail")
                         .cursor_pointer()
-                        .icon(IconName::ListFilter)
+                        .icon(IconName::PanelRight)
                         .ghost()
                         .small()
-                        .selected(self.show_filters)
-                        .tooltip("Filter (⌘F)")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.toggle_filter(&ToggleFilter, window, cx)
+                        .selected(self.show_detail)
+                        .tooltip("Row details (⌘⇧I)")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_detail = !this.show_detail;
+                            cx.notify();
                         })),
                 )
             })
-            .when(pending > 0, |f| {
-                f.child(div().w(px(8.)))
-                    .child(
-                        Button::new("discard")
-                            .cursor_pointer()
-                            .label("Discard")
-                            .small()
-                            .ghost()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.discard(&Discard, window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new("preview")
-                            .cursor_pointer()
-                            .label("Preview SQL")
-                            .small()
-                            .ghost()
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.preview_sql(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("commit")
-                            .cursor_pointer()
-                            .label(format!("Commit {pending}"))
-                            .small()
-                            .primary()
-                            .tooltip("Commit (⌘S)")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.commit(&Commit, window, cx)),
-                            ),
-                    )
-            })
-            .child(div().flex_1())
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(info),
-            )
-            .child(div().w(px(8.)))
-            .child(
-                Button::new("prev-page")
-                    .cursor_pointer()
-                    .icon(IconName::ChevronLeft)
-                    .ghost()
-                    .small()
-                    .disabled_when(page == 0)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.reload_unless_dirty(window, cx, |t| t.page = t.page.saturating_sub(1));
-                    })),
-            )
-            .child(div().text_xs().child(format!(
-                "{} / {}",
-                page + 1,
-                pages.map(|p| p.to_string()).unwrap_or("?".into())
-            )))
-            .child(
-                Button::new("next-page")
-                    .cursor_pointer()
-                    .icon(IconName::ChevronRight)
-                    .ghost()
-                    .small()
-                    .disabled_when(pages.is_some_and(|p| page + 1 >= p))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.reload_unless_dirty(window, cx, |t| t.page += 1);
-                    })),
-            )
-            .child(
-                Button::new("page-size")
-                    .cursor_pointer()
-                    .label(format!("{} / page", self.page_size))
-                    .ghost()
-                    .small()
-                    .tooltip("Change page size")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.reload_unless_dirty(window, cx, |t| {
-                            let i = PAGE_SIZES
-                                .iter()
-                                .position(|s| *s == t.page_size)
-                                .unwrap_or(0);
-                            t.page_size = PAGE_SIZES[(i + 1) % PAGE_SIZES.len()];
-                            t.page = 0;
-                        });
-                    })),
-            )
-            .child(
-                Button::new("refresh")
-                    .cursor_pointer()
-                    .icon(IconName::RefreshCw)
-                    .ghost()
-                    .small()
-                    .tooltip("Refresh (⌘R)")
-                    .on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx))),
-            )
+    }
+
+    /// While edits are staged: what's pending, Preview SQL, Discard, Commit.
+    /// It floats in a strip below the grid, so it never covers a row.
+    fn render_pending(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let (edited, new, deleted) = self.table.read(cx).delegate().change_summary();
+        let total = edited + new + deleted;
+        if total == 0 || self.show_structure {
+            return None;
+        }
+        let t = tokens(cx);
+        let mut parts = vec![];
+        if edited > 0 {
+            parts.push(format!("{edited} edited"));
+        }
+        if new > 0 {
+            parts.push(format!("{new} new"));
+        }
+        if deleted > 0 {
+            parts.push(format!("{deleted} deleted"));
+        }
+        Some(
+            h_flex()
+                .flex_none()
+                .h(dp(70.))
+                .justify_center()
+                .child(
+                    h_flex()
+                        .h(dp(46.))
+                        .pl(dp(16.))
+                        .pr(dp(6.))
+                        .gap(dp(10.))
+                        .rounded(dp(12.))
+                        .bg(t.raised)
+                        .border_1()
+                        .border_color(t.border)
+                        .shadow_lg()
+                        .text_size(dp(13.))
+                        .child(div().size(dp(8.)).rounded_full().bg(t.warning))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(if total == 1 {
+                                    "1 pending change".to_string()
+                                } else {
+                                    format!("{total} pending changes")
+                                }),
+                        )
+                        .child(
+                            div()
+                                .text_size(dp(12.))
+                                .text_color(t.text_muted)
+                                .child(parts.join(" · ")),
+                        )
+                        .child(div().w(dp(8.)))
+                        .child(
+                            Button::new("preview")
+                                .cursor_pointer()
+                                .label("Preview SQL")
+                                .ghost()
+                                .small()
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.preview_sql(window, cx)),
+                                ),
+                        )
+                        .child(
+                            Button::new("discard")
+                                .cursor_pointer()
+                                .label("Discard")
+                                .ghost()
+                                .small()
+                                .tooltip("Discard (⌘⇧⌫)")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.discard(&Discard, window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("commit")
+                                .cursor_pointer()
+                                .label("Commit")
+                                .primary()
+                                .small()
+                                .loading(self.committing)
+                                .tooltip("Commit (⌘S)")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.commit(&Commit, window, cx)
+                                })),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 }
 
@@ -1476,28 +1756,29 @@ impl Render for TableTab {
             let idx_count = self.structure.as_ref().map_or(0, |s| s.indexes.rows.len());
             v_flex()
                 .size_full()
-                .child(
-                    TabBar::new("structure-sections")
-                        .underline()
-                        .small()
-                        .selected_index(section)
-                        .child(Tab::new().cursor_pointer().label("Columns"))
-                        .child(
-                            Tab::new()
-                                .cursor_pointer()
-                                .label(format!("Indexes ({idx_count})")),
-                        )
-                        .child(
-                            Tab::new()
-                                .cursor_pointer()
-                                .label(format!("Foreign Keys ({fk_count})")),
-                        )
-                        .child(Tab::new().cursor_pointer().label("SQL"))
-                        .on_click(cx.listener(|this, ix: &usize, _, cx| {
-                            this.struct_section = *ix;
-                            cx.notify();
-                        })),
-                )
+                .when(section < 3, |d| {
+                    d.child(
+                        TabBar::new("structure-sections")
+                            .underline()
+                            .small()
+                            .selected_index(section)
+                            .child(Tab::new().cursor_pointer().label("Columns"))
+                            .child(
+                                Tab::new()
+                                    .cursor_pointer()
+                                    .label(format!("Indexes ({idx_count})")),
+                            )
+                            .child(
+                                Tab::new()
+                                    .cursor_pointer()
+                                    .label(format!("Foreign Keys ({fk_count})")),
+                            )
+                            .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                                this.struct_section = *ix;
+                                cx.notify();
+                            })),
+                    )
+                })
                 .children(
                     self.structure
                         .iter()
@@ -1538,66 +1819,35 @@ impl Render for TableTab {
                 grid.into_any_element()
             }
         };
+        let t = tokens(cx);
+        let pending = self.render_pending(cx);
         v_flex()
             .size_full()
+            .bg(t.canvas)
             .key_context("TableTab")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &CopyCell, window, cx| this.copy_cell(window, cx)))
             .on_action(cx.listener(|this, _: &SetNull, window, cx| this.set_null(window, cx)))
-            .when(!self.fixed.is_empty() && !self.show_structure, |d| {
-                let text = self
-                    .fixed
-                    .iter()
-                    .map(|f| format!("{} {} {}", f.column, f.op.label(), f.value))
-                    .collect::<Vec<_>>()
-                    .join(" AND ");
-                d.child(
-                    h_flex()
-                        .gap_1()
-                        .px_2()
-                        .py_1()
-                        .border_b_1()
-                        .border_color(cx.theme().border)
-                        .text_xs()
-                        .child(
-                            h_flex()
-                                .gap_1()
-                                .pl_2()
-                                .rounded_md()
-                                .bg(cx.theme().accent)
-                                .child(format!("Referenced row: {text}"))
-                                .child(
-                                    Button::new("clear-fixed")
-                                        .cursor_pointer()
-                                        .debug_selector(|| "clear-fixed".into())
-                                        .icon(IconName::Close)
-                                        .ghost()
-                                        .xsmall()
-                                        .tooltip("Show all rows")
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.reload_unless_dirty(window, cx, |t| {
-                                                t.fixed.clear();
-                                                t.page = 0;
-                                            });
-                                        })),
-                                ),
-                        ),
-                )
-            })
+            .child(self.render_toolbar(cx))
             .when(self.show_filters && !self.show_structure, |d| {
                 d.child(self.render_filters(cx))
             })
             .when_some(self.error.clone(), |d, e| {
                 d.child(
-                    div()
-                        .p_2()
-                        .text_sm()
-                        .bg(cx.theme().danger.opacity(0.12))
-                        .text_color(cx.theme().danger)
-                        .child(e),
+                    h_flex()
+                        .gap(dp(8.))
+                        .px(dp(12.))
+                        .py(dp(8.))
+                        .bg(t.danger.opacity(0.10))
+                        .border_b_1()
+                        .border_color(t.danger.opacity(0.3))
+                        .text_size(dp(12.))
+                        .text_color(t.danger)
+                        .child(Icon::new(IconName::CircleX).small())
+                        .child(div().flex_1().child(e)),
                 )
             })
             .child(div().flex_1().min_h_0().child(body))
-            .child(self.render_footer(cx))
+            .children(pending)
     }
 }

@@ -701,6 +701,7 @@ impl QueryTab {
                             g.editable = editable;
                             g.pk = pk;
                             g.set_choices(&cols);
+                            g.set_types(&cols, &[]);
                             cx.notify();
                         });
                         this.target = Some(EditTarget { obj, columns: cols });

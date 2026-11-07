@@ -15,12 +15,17 @@
 
 ## Browsing and editing data
 
-- **Table view:** a spreadsheet grid with paging, sorting and a filter bar
-  (⌘F). Several filters combine with AND.
-- **Staged editing:** edits are colored (yellow edited, green new, red
-  deleted) and nothing is written until you commit (⌘S). *Preview SQL*
-  shows exactly what will run. Commits are one transaction where the
-  database supports it.
+- **Table view:** a spreadsheet grid with paging, sorting (click a column
+  header: ascending, descending, off) and filters (⌘F). Several filters
+  combine with AND; each applied filter shows as a chip in the toolbar, and
+  its × removes it. Columns show their type under the name, primary keys a
+  key, foreign keys "→ table"; numbers are right-aligned, enum values are
+  coloured pills, and NULL / DEFAULT are pills so they never look empty.
+- **Staged editing:** edits are tinted (amber edited, green new, red
+  deleted) and nothing is written until you commit (⌘S). A bar below the
+  grid counts them, with *Preview SQL* (exactly what will run), Discard
+  (⌘⇧⌫) and Commit. Commits are one transaction where the database
+  supports it.
 - **Inline cell editing:** Enter or typing starts editing, Tab / ⇧Tab move
   between cells, Esc cancels. Multi-line values open a larger editor.
   Enum columns (PostgreSQL and MySQL) open a dropdown of their values,

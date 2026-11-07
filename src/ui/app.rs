@@ -1344,6 +1344,61 @@ mod tests {
     /// value, arrows move (NULL is last), Enter picks, Esc cancels.
     /// Needs the Postgres container (TABULA_IT=1).
     #[gpui::test]
+    fn filters_stay_as_chips_until_removed(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-filter-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        futures::executor::block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute("create table t (id integer primary key, a text); insert into t (a) values ('x'), ('y'), ('z')")
+                .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("t").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let i = s.object_index("t").unwrap();
+            s.open_object(i, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        let rows = |cx: &mut VisualTestContext| tab.read_with(cx, |t, cx| t.loaded_rows(cx));
+        wait_until(&mut cx, "rows", |cx| rows(cx) == 3);
+
+        // ⌘F opens the editor with one condition on the first column (id =).
+        tab.update_in(&mut cx, |t, w, cx| {
+            t.toggle_filter(&ToggleFilter, w, cx);
+            t.set_filter_value_for_test(0, "2", w, cx);
+        });
+        wait_until(&mut cx, "filtered rows", |cx| rows(cx) == 1);
+        assert_eq!(tab.read_with(&cx, |t, _| t.chips_for_test()), 1);
+
+        // Hiding the editor keeps the filter.
+        tab.update_in(&mut cx, |t, w, cx| t.toggle_filter(&ToggleFilter, w, cx));
+        cx.run_until_parked();
+        assert_eq!(rows(&mut cx), 1);
+        assert_eq!(tab.read_with(&cx, |t, _| t.chips_for_test()), 1);
+
+        // The chip's × removes it and shows every row again.
+        tab.update_in(&mut cx, |t, w, cx| t.remove_filter_for_test(0, w, cx));
+        wait_until(&mut cx, "all rows", |cx| rows(cx) == 3);
+        assert_eq!(tab.read_with(&cx, |t, _| t.chips_for_test()), 0);
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[gpui::test]
     fn enum_cells_edit_with_a_dropdown(cx: &mut TestAppContext) {
         if std::env::var("TABULA_IT").is_err() {
             return;

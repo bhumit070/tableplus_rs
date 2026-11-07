@@ -43,7 +43,7 @@ flowchart TB
 | `Home` | `ui/home.rs` | Start screen: saved connections (connect, edit, duplicate, delete) and TablePlus import. |
 | `ConnForm` | `ui/conn_form.rs` | New / edit connection dialog, with Test and SSH settings. |
 | `Session` | `ui/session.rs` | One open connection: sidebar, tab strip, database switching, backup / restore, create / drop database, sidebar menus. |
-| `TableTab` | `ui/table_tab.rs` | A table, view, collection or Redis key space: filter bar, editable grid, pager, Structure view, CSV import, foreign-key jumps. |
+| `TableTab` | `ui/table_tab.rs` | A table, view, collection or Redis key space: toolbar (Data / Structure / DDL, filter chips, pager, Refresh, + Row, Export), filter editor, editable grid, pending-changes bar, Structure view, CSV import, foreign-key jumps. |
 | `QueryTab` | `ui/query_tab.rs` | Editor, run / stop, one result tab per statement, editable results, EXPLAIN tree, history and saved-query hooks. |
 | `Grid` | `ui/grid.rs` | The `TableDelegate` behind every data grid: fetched rows plus staged edits, deletions and new rows. |
 | `TableEditor` | `ui/table_editor.rs` | New Table / Edit Columns dialog. |

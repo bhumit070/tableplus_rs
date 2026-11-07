@@ -87,7 +87,7 @@ time: **More info → Run anyway**.
 - **Import from TablePlus:** password-protected `.tableplusconnection` exports,
   including their database passwords, or TablePlus's own connection list on
   this Mac.
-- **Table view:** spreadsheet-style editing. Changes are staged (yellow edited,
+- **Table view:** spreadsheet-style editing. Changes are staged (amber edited,
   green new, red deleted) until you commit, and *Preview SQL* shows what will
   run. Also filters, paging, sorting, and a **row detail panel** (⌘⇧I) with
   JSON pretty-printed.
@@ -140,7 +140,7 @@ On Windows/Linux, use Ctrl in place of ⌘. Shortcuts work wherever focus is.
 | ⌘S | Commit staged changes |
 | ⌘⇧⌫ | Discard staged changes |
 | ⌘R | Refresh table (or the sidebar) |
-| ⌘F | Toggle the filter bar (outside text fields) |
+| ⌘F | Show / hide the filter editor (outside text fields); filters stay applied as chips |
 | ⌘I / ⌘⌫ | Add row / delete row (⌘⌫ outside text fields) |
 | Enter / typing | Edit the selected cell (typing replaces the value) |
 | Tab / ⇧Tab | While editing: save and edit the next / previous cell |

@@ -40,9 +40,7 @@ pub struct Tokens {
     pub surface: Hsla,
     pub raised: Hsla,
     pub hover: Hsla,
-    pub zebra: Hsla,
     pub border: Hsla,
-    pub border_subtle: Hsla,
     pub text: Hsla,
     pub text_secondary: Hsla,
     pub text_muted: Hsla,
@@ -73,9 +71,7 @@ impl Tokens {
             surface: c("bg/surface"),
             raised: c("bg/raised"),
             hover: c("bg/hover"),
-            zebra: c("bg/zebra"),
             border: c("border/default"),
-            border_subtle: c("border/subtle"),
             text: c("text/primary"),
             text_secondary: c("text/secondary"),
             text_muted: c("text/muted"),
@@ -187,15 +183,6 @@ pub fn env_pill(tag: EnvTag, cx: &App) -> Div {
     pill(env_short(tag), env_color(tag, cx))
 }
 
-/// A keyboard shortcut hint after a label ("⌘P"), faint 11px.
-pub fn shortcut(text: impl Into<SharedString>, cx: &App) -> Div {
-    div()
-        .flex_none()
-        .text_size(dp(11.))
-        .text_color(tokens(cx).text_faint)
-        .child(text.into())
-}
-
 /// A key cap ("esc", "↵"): bordered, 11px.
 pub fn kbd(text: impl Into<SharedString>, cx: &App) -> Div {
     let t = tokens(cx);
@@ -246,6 +233,27 @@ pub fn safe_mode_badge(cfg: &ConnectionConfig, cx: &App) -> (String, Hsla, Optio
         label.to_string()
     };
     (label, color, icon)
+}
+
+/// Enum pill colours (design.md, Review questions #10): never the state
+/// colours (amber edited, red deleted, green new), so a value can't pass for
+/// a staged change. A value always gets the same colour.
+pub fn enum_color(value: &str, cx: &App) -> Hsla {
+    let t = tokens(cx);
+    let dark = cx.theme().mode.is_dark();
+    let hex = |d: u32, l: u32| -> Hsla { gpui::rgb(if dark { d } else { l }).into() };
+    let palette = [
+        t.info,
+        t.keyword,
+        t.number,
+        hex(0xF07AC0, 0xC2408F),
+        hex(0x94A3B8, 0x64748B),
+    ];
+    // FNV-1a: stable across runs and platforms.
+    let hash = value.bytes().fold(0x811c9dc5u32, |h, b| {
+        (h ^ b as u32).wrapping_mul(0x01000193)
+    });
+    palette[hash as usize % palette.len()]
 }
 
 /// Where saved passwords live on this platform.
