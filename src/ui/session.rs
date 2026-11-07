@@ -21,12 +21,13 @@ use gpui_kit_assets::IconName;
 
 use super::Shared;
 use super::completion::Schema;
+use super::history_view::{HistoryView, Tab as HistoryTab};
 use super::picker::{OnPick, PickItem, Picker};
 use super::query_tab::QueryTab;
 use super::table_tab::{TableTab, TableTabEvent};
 use super::theme::{caps, dp, kbd, tokens};
 use crate::db::{ConnectionConfig, DbObject, Driver, Filter, ObjectKind};
-use crate::{history, runtime};
+use crate::runtime;
 use anyhow::{Result, anyhow};
 use dirs::{download_dir, home_dir};
 use gpui::{Action, ClipboardItem, PathPromptOptions, transparent_black};
@@ -523,215 +524,28 @@ impl Session {
         );
     }
 
-    /// ⌘Y: past queries on this connection, newest first; picking one opens
-    /// it in a new query tab.
+    /// ⌘Y: past queries on this connection (screen 15, History tab).
     pub fn open_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let conn_id = self.shared.cfg.id.clone();
-        let task = runtime::spawn(async move { history::recent(&conn_id, 1000).await });
-        cx.spawn_in(window, async move |this, cx| {
-            let entries = task.await;
-            this.update_in(cx, |s, window, cx| match entries {
-                Ok(entries) => s.show_history(entries, window, cx),
-                Err(e) => window.push_notification(
-                    Notification::error(format!("Couldn't read query history: {e:#}")),
-                    cx,
-                ),
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    fn show_history(
-        &mut self,
-        entries: Vec<history::Entry>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if entries.is_empty() {
-            window.push_notification("No query history yet for this connection", cx);
-            return;
-        }
-        let now = history::now();
-        let mut items: Vec<PickItem> = entries
-            .iter()
-            .enumerate()
-            .map(|(i, e)| {
-                let one_line = e.sql.split_whitespace().collect::<Vec<_>>().join(" ");
-                let mut detail = format!("{} · {}", history::ago(e.ran_at, now), e.database);
-                match (&e.error, e.rows) {
-                    (Some(_), _) => detail.push_str(" · failed"),
-                    (None, Some(n)) => detail.push_str(&format!(" · {n} rows")),
-                    _ => {}
-                }
-                PickItem {
-                    detail: Some(detail),
-                    ..PickItem::new(i.to_string(), one_line)
-                }
-            })
-            .collect();
-        items.push(PickItem::new("clear", "Clear history for this connection…"));
         let me = cx.entity().downgrade();
-        let on_pick: OnPick = Rc::new(move |id, window, cx| {
-            if id == "clear" {
-                let me = me.clone();
-                window.defer(cx, move |window, cx| {
-                    me.update(cx, |s, cx| s.confirm_clear_history(window, cx))
-                        .ok();
-                });
-                return;
-            }
-            let Some(sql) = id.parse::<usize>().ok().and_then(|i| entries.get(i)) else {
-                return;
-            };
-            let sql = sql.sql.clone();
-            me.update(cx, |s, cx| s.open_query(sql, window, cx)).ok();
-        });
-        Picker::open(
-            "Query History",
-            "Search past queries…",
-            IconName::Undo2,
-            items,
-            on_pick,
+        HistoryView::open(
+            me,
+            self.shared.cfg.id.clone(),
+            HistoryTab::History,
             window,
             cx,
         );
     }
 
-    /// ⌘⇧O: saved queries for this connection; picking one opens it.
+    /// ⌘⇧O: saved queries (the same dialog, Saved tab).
     pub fn open_saved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let list = match crate::saved::for_connection(&self.shared.cfg.id) {
-            Ok(l) => l,
-            Err(e) => {
-                window.push_notification(
-                    Notification::error(format!("{e:#}")).title("Saved queries"),
-                    cx,
-                );
-                return;
-            }
-        };
-        if list.is_empty() {
-            window.push_notification("No saved queries yet: save one with ⌘⇧S", cx);
-            return;
-        }
-        let item = |q: &crate::saved::SavedQuery| {
-            let first = q.sql.split_whitespace().collect::<Vec<_>>().join(" ");
-            let scope = if q.conn_id.is_none() {
-                " · all connections"
-            } else {
-                ""
-            };
-            PickItem {
-                detail: Some(format!(
-                    "{}{scope}",
-                    first.chars().take(60).collect::<String>()
-                )),
-                ..PickItem::new(q.id.clone(), q.name.clone())
-            }
-        };
-        let mut items: Vec<PickItem> = list.iter().map(item).collect();
-        items.push(PickItem::new("delete", "Delete a saved query…"));
         let me = cx.entity().downgrade();
-        let on_pick: OnPick = Rc::new(move |id, window, cx| {
-            let me = me.clone();
-            if id == "delete" {
-                window.defer(cx, move |window, cx| {
-                    me.update(cx, |s, cx| s.pick_saved_to_delete(window, cx))
-                        .ok();
-                });
-                return;
-            }
-            if let Some(q) = list.iter().find(|q| q.id == id).cloned() {
-                me.update(cx, |s, cx| {
-                    s.open_query(q.sql.clone(), window, cx);
-                    if let Some(tab) = s.active_query() {
-                        tab.update(cx, |t, _| t.set_saved(q));
-                    }
-                })
-                .ok();
-            }
-        });
-        Picker::open(
-            "Saved Queries",
-            "Search saved queries…",
-            IconName::Star,
-            items,
-            on_pick,
+        HistoryView::open(
+            me,
+            self.shared.cfg.id.clone(),
+            HistoryTab::Saved,
             window,
             cx,
         );
-    }
-
-    fn pick_saved_to_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let list = match crate::saved::for_connection(&self.shared.cfg.id) {
-            Ok(l) => l,
-            Err(e) => {
-                window.push_notification(Notification::error(format!("{e:#}")), cx);
-                return;
-            }
-        };
-        let items = list
-            .iter()
-            .map(|q| PickItem::new(q.id.clone(), q.name.clone()))
-            .collect();
-        let on_pick: OnPick = Rc::new(move |id, window, cx| {
-            let name = list
-                .iter()
-                .find(|q| q.id == id)
-                .map(|q| q.name.clone())
-                .unwrap_or_default();
-            window.defer(cx, move |window, cx| {
-                window.open_alert_dialog(cx, move |d, _, _| {
-                    let id = id.clone();
-                    d.title("Delete saved query?")
-                        .description(format!("“{name}” will be removed."))
-                        .show_cancel(true)
-                        .on_ok(move |_, window, cx| {
-                            match crate::saved::delete(&id) {
-                                Ok(()) => window.push_notification("Deleted", cx),
-                                Err(e) => window
-                                    .push_notification(Notification::error(format!("{e:#}")), cx),
-                            }
-                            true
-                        })
-                });
-            });
-        });
-        Picker::open(
-            "Delete Saved Query",
-            "Choose the query to delete…",
-            IconName::Delete,
-            items,
-            on_pick,
-            window,
-            cx,
-        );
-    }
-
-    fn confirm_clear_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let conn_id = self.shared.cfg.id.clone();
-        let name = self.shared.cfg.display_name();
-        window.open_alert_dialog(cx, move |d, _, _| {
-            let conn_id = conn_id.clone();
-            d.title("Clear query history?")
-                .description(format!("Deletes every saved query run on {name}."))
-                .on_ok(move |_, window, cx| {
-                    let conn_id = conn_id.clone();
-                    let task = runtime::spawn(async move { history::clear(&conn_id).await });
-                    window
-                        .spawn(cx, async move |cx| {
-                            let res = task.await;
-                            cx.update(|window, cx| match res {
-                                Ok(()) => window.push_notification("Query history cleared", cx),
-                                Err(e) => window
-                                    .push_notification(Notification::error(format!("{e:#}")), cx),
-                            })
-                            .ok();
-                        })
-                        .detach();
-                    true
-                })
-        });
     }
 
     pub fn active_table(&self) -> Option<Entity<TableTab>> {
@@ -770,7 +584,7 @@ impl Session {
         }
     }
 
-    fn open_query(&mut self, initial: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_query(&mut self, initial: String, window: &mut Window, cx: &mut Context<Self>) {
         self.queries_opened += 1;
         let shared = self.shared.clone();
         let n = self.queries_opened;

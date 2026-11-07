@@ -45,6 +45,7 @@ also starts with a `//!` comment saying the same in more detail.
 | --- | ---: | --- |
 | `mod.rs` | ~430 | Actions, key bindings, `Shared` (one open connection), `guarded` (safe-mode prompts), `prompt_text`, colors. |
 | `app.rs` | ~1,800 | `AppView`: window root, connection rail, connecting (incl. SSH host-key prompts), session save / restore, global shortcut routing, theme and zoom. Also the UI tests. |
+| `history_view.rs` | ~640 | Query history and saved queries in one dialog: tabs, search, status filter, preview, open / insert / save / delete. |
 | `home.rs` | ~800 | Connections home: cards grouped Open now / Saved, search (`/`), environment filter, import, new / edit / duplicate / delete. |
 | `conn_form.rs` | ~960 | New / edit connection form: engine tiles, connection URL, environment, safe mode, SSH section, inline Test connection. |
 | `session.rs` | ~1,890 | One open connection: sidebar tree, database / schema switching, tabs, history / saved-query pickers, backup / restore, create / drop database, sidebar menus. |

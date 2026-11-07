@@ -328,6 +328,20 @@ fn screenshots() {
     s.in_window(|w, cx| query.update(cx, |q, cx| q.explain(false, w, cx)));
     s.wait("plan", |cx| !query.read(cx).running());
     s.snap("14-explain");
+    let conn_id = s.cx.update(|cx| session.read(cx).cfg().id.clone());
+    let weak = session.downgrade();
+    let history = s.in_window(|w, cx| {
+        crate::ui::history_view::HistoryView::open(
+            weak,
+            conn_id,
+            crate::ui::history_view::Tab::History,
+            w,
+            cx,
+        )
+    });
+    s.wait("history", |cx| history.read(cx).loaded());
+    s.snap("15-history");
+    s.in_window(|w, cx| w.close_dialog(cx));
 
     // Home with saved connections (not written anywhere); the open demo
     // database is one of them, so "Open now" shows too.

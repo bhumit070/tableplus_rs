@@ -7,6 +7,7 @@ pub mod conn_form;
 pub mod copy;
 pub mod dialog;
 pub mod grid;
+pub mod history_view;
 pub mod home;
 pub mod picker;
 pub mod processes;

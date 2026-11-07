@@ -699,7 +699,7 @@ impl QueryTab {
                         r.rows.len() as i64
                     }
                 }),
-                error: res.as_ref().err().map(|e| format!("{e:#}")),
+                error: res.as_ref().err().map(error_text),
             };
             drop(c);
             // History is a convenience: never fail or delay the run over it.
@@ -759,6 +759,15 @@ impl QueryTab {
     }
 
     /// ⌘⇧S: updates this tab's saved query, or asks for a name.
+    /// Inserts `text` at the editor's cursor and focuses the editor.
+    pub fn insert_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let text = text.to_string();
+        self.editor.update(cx, |e, cx| {
+            e.insert(text, window, cx);
+            e.focus(window, cx);
+        });
+    }
+
     pub fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let sql = self.editor.read(cx).value().to_string();
         if sql.trim().is_empty() {

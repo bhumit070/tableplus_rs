@@ -89,8 +89,10 @@
 - **Stop** (⌘.) cancels the running statement on the server
   (`pg_cancel_backend` / `KILL QUERY`), not just in the app.
 - **Editable results:** a single-table `SELECT` can be edited like a table.
-- **SQL formatter** (⌘⇧F), **query history** (⌘Y), **saved queries**
-  (⌘⇧S / ⌘⇧O) for one connection or all of them.
+- **SQL formatter** (⌘⇧F). **Query history** (⌘Y) and **saved queries**
+  (⌘⇧S to save, ⌘⇧O to browse; for one connection or all of them) share one
+  dialog: search, an all / ok / failed filter, and a preview with Open in
+  new tab, Insert at cursor and Save as… (Delete for saved ones).
 - **EXPLAIN** (⌘E) as a plan tree (or the raw output). Each step's bar is
   its *own* cost or time as a share of the plan (red for the biggest); row
   estimates that are off by more than 10× are amber. One plain-language tip

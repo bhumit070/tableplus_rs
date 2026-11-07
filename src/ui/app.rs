@@ -2187,6 +2187,23 @@ mod tests {
             "select 'apple' as fruit"
         );
         assert!(!cx.update(|w, cx| w.has_active_dialog(cx)));
+
+        // Insert at cursor puts a past query into the open tab instead.
+        cx.simulate_keystrokes("cmd-down enter");
+        cx.simulate_keystrokes("cmd-y");
+        wait_until(&mut cx, "history again", |cx| {
+            cx.update(|w, cx| w.has_active_dialog(cx))
+        });
+        cx.simulate_input("banana");
+        cx.run_until_parked();
+        let b = cx.debug_bounds("history-insert").expect("insert button");
+        cx.simulate_click(b.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(session.read_with(&cx, |s, _| s.tab_count()), tabs + 1);
+        assert_eq!(
+            reopened.read_with(&cx, |q, cx| q.text(cx)),
+            "select 'apple' as fruit\nselect 'banana' as fruit"
+        );
         let _ = std::fs::remove_file(file);
     }
 
