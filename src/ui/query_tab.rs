@@ -32,7 +32,7 @@ use super::row_panel;
 use super::theme::{dp, kbd, tokens};
 use super::{DisabledWhen as _, QueryHistory, RunQuery, Shared, SwitchDatabase};
 use crate::db::explain::{self, PlanNode};
-use crate::db::split::split_statements;
+use crate::db::split::{split_statements, statement_at};
 use crate::db::target::with_limit;
 use crate::db::{BatchFailed, Cancel, ColumnInfo, DbObject, Driver, ObjectKind, QueryResult};
 use crate::{history, runtime};
@@ -245,10 +245,27 @@ impl QueryTab {
         editor.update(cx, |e, cx| e.focus(window, cx));
     }
 
+    /// ⌘↵: the selection, or else the statement the cursor is in (each
+    /// statement gets a result tab, so running one gives one).
     pub fn run(&mut self, _: &RunQuery, window: &mut Window, cx: &mut Context<Self>) {
-        if self.running {
-            return;
-        }
+        let driver = self.shared.cfg.driver;
+        let e = self.editor.read(cx);
+        let sel = e.selected_value();
+        let text = if !sel.trim().is_empty() {
+            sel.to_string()
+        } else if matches!(driver, Driver::Postgres | Driver::MySql | Driver::Sqlite) {
+            let all = e.value().to_string();
+            statement_at(&all, e.cursor(), driver == Driver::MySql).unwrap_or(all)
+        } else {
+            // Redis and MongoDB: the editor as written.
+            e.value().to_string()
+        };
+        self.run_text(text, window, cx);
+    }
+
+    /// ⌘⇧↵: everything in the editor (or the selection), one tab per
+    /// statement.
+    pub fn run_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let e = self.editor.read(cx);
         let sel = e.selected_value();
         let text = if sel.trim().is_empty() {
@@ -256,6 +273,13 @@ impl QueryTab {
         } else {
             sel.to_string()
         };
+        self.run_text(text, window, cx);
+    }
+
+    fn run_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.running {
+            return;
+        }
         if text.trim().is_empty() {
             return;
         }
@@ -883,6 +907,27 @@ impl QueryTab {
     }
 
     /// ⌘. / Stop: cancels the running batch.
+    /// A result tab's ×: drops that result (the error tab is the one past
+    /// the results). Not while its edits are staged.
+    fn close_result(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if i == self.active && self.blocked_by_edits(window, cx) {
+            return;
+        }
+        if i < self.results.len() {
+            self.results.remove(i);
+        } else {
+            self.error = None;
+            self.error_stmt = None;
+            self.mark_failed(None, cx);
+        }
+        let shown = self.results.len() + self.error.is_some() as usize;
+        if self.active > i || self.active >= shown {
+            self.active = self.active.saturating_sub(1);
+        }
+        self.show_active(cx);
+        cx.notify();
+    }
+
     /// Marks the tab busy and keeps the loading chip's clock ticking.
     fn start_running(&mut self, cx: &mut Context<Self>) {
         self.running = true;
@@ -1026,6 +1071,11 @@ impl QueryTab {
             .ok();
         })
         .detach();
+    }
+
+    #[cfg(test)]
+    pub fn result_count(&self) -> usize {
+        self.results.len()
     }
 
     /// Puts `text` in the editor and runs it, as ⌘↵ would.
@@ -1278,6 +1328,21 @@ impl QueryTab {
                         .text_color(t.text_faint)
                         .child(meta),
                 )
+                .child(
+                    div()
+                        .id(("close-result", i))
+                        .debug_selector(move || format!("close-result-{i}"))
+                        .flex_none()
+                        .p(dp(2.))
+                        .rounded(dp(4.))
+                        .text_color(t.text_faint)
+                        .hover(|s| s.bg(t.hover).text_color(t.text))
+                        .child(Icon::new(IconName::X).xsmall())
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.close_result(i, window, cx);
+                        })),
+                )
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if i == this.active || this.blocked_by_edits(window, cx) {
                         return;
@@ -1454,7 +1519,9 @@ impl QueryTab {
                 grid.into_any_element()
             }
         };
-        let has_tabs = self.plan.is_none() && (!self.results.is_empty() || self.error.is_some());
+        // One result needs no tabs; two or more (or an error after some) do.
+        let shown = self.results.len() + self.error.is_some() as usize;
+        let has_tabs = self.plan.is_none() && shown > 1;
         let read_only = self
             .edit_note
             .clone()
@@ -1703,8 +1770,17 @@ impl Render for QueryTab {
                     .small()
                     .loading(self.running)
                     .disabled_when(self.running)
-                    .tooltip("Run the selection, or everything")
+                    .tooltip("Run the statement at the cursor, or the selection")
                     .on_click(cx.listener(|this, _, window, cx| this.run(&RunQuery, window, cx))),
+            )
+            .child(
+                Button::new("run-all")
+                    .cursor_pointer()
+                    .child(hinted("Run all", "⌘⇧↵"))
+                    .ghost()
+                    .small()
+                    .disabled_when(self.running)
+                    .on_click(cx.listener(|this, _, window, cx| this.run_all(window, cx))),
             )
             .child(
                 Button::new("stop")

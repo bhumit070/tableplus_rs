@@ -110,9 +110,25 @@ fn is_only_comments(s: &str) -> bool {
     })
 }
 
+/// The statement the cursor at byte `offset` is in, for ⌘↵: each statement
+/// owns the text from its start up to where the next one starts, so a
+/// cursor just after its `;` (or on the blank lines below) still runs it.
+pub fn statement_at(sql: &str, offset: usize, backslash_escapes: bool) -> Option<String> {
+    let stmts = split_statements(sql, backslash_escapes);
+    let mut from = 0;
+    let mut starts = Vec::with_capacity(stmts.len());
+    for s in &stmts {
+        let at = sql[from..].find(s.as_str())? + from;
+        starts.push(at);
+        from = at + s.len();
+    }
+    let i = starts.iter().rposition(|&st| st <= offset).unwrap_or(0);
+    stmts.get(i).cloned()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::split_statements;
+    use super::{split_statements, statement_at};
 
     #[test]
     fn splits_respecting_quotes_and_dollar_bodies() {
@@ -152,5 +168,30 @@ mod tests {
             split_statements(r"select name'x\'; select 2", false).len(),
             2
         );
+    }
+
+    #[test]
+    fn statement_under_the_cursor() {
+        let sql = "select 1;\n\nselect 'a;b'\nfrom t;  \n-- note\nselect 3";
+        let at = |needle: &str| sql.find(needle).unwrap();
+        assert_eq!(statement_at(sql, 0, false).as_deref(), Some("select 1"));
+        // Just after the `;`, and on the blank line below: still the first.
+        assert_eq!(
+            statement_at(sql, at(";") + 1, false).as_deref(),
+            Some("select 1")
+        );
+        assert_eq!(
+            statement_at(sql, at("\n\n") + 1, false).as_deref(),
+            Some("select 1")
+        );
+        assert_eq!(
+            statement_at(sql, at("from"), false).as_deref(),
+            Some("select 'a;b'\nfrom t")
+        );
+        assert_eq!(
+            statement_at(sql, sql.len(), false).as_deref(),
+            Some("-- note\nselect 3")
+        );
+        assert_eq!(statement_at("", 0, false), None);
     }
 }

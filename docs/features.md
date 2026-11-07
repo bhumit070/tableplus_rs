@@ -87,8 +87,9 @@
 - Syntax highlighting, and **autocomplete** for tables, columns (including
   aliases), keywords and functions. Redis and MongoDB get command and
   method names.
-- ⌘↵ runs the selection, or the whole editor. **One result tab per
-  statement**, each with a status dot (green rows, amber rows affected, red
+- ⌘↵ runs the statement the cursor is in (or the selection); ⌘⇧↵ runs
+  everything. **One result tab per statement** when there's more than one
+  (a tab's × closes it), each with a status dot (green rows, amber rows affected, red
   error) and rows · time. When a statement fails, the ones before it keep
   their results, the error gets its own tab, and the statement is
   underlined in the editor.

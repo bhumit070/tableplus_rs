@@ -621,9 +621,12 @@ mod tests {
     #[test]
     fn lists_every_binding_with_menu_names() {
         let list = shortcuts();
-        let run = list.iter().find(|s| s.name == "Run").expect("run listed");
+        let run = list
+            .iter()
+            .find(|s| s.name == "Run Statement")
+            .expect("run listed");
         assert_eq!(run.scope, None, "listed once, as global");
-        assert_eq!(list.iter().filter(|s| s.name == "Run").count(), 1);
+        assert_eq!(list.iter().filter(|s| s.name == "Run Statement").count(), 1);
         assert!(list.iter().any(|s| s.name == "Export"));
         assert!(
             run.keys.contains('⌘') || run.keys.contains("Ctrl"),

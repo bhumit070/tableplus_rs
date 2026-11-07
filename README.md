@@ -134,7 +134,8 @@ On Windows/Linux, use Ctrl in place of ⌘. Shortcuts work wherever focus is.
 | ⌘P | Go to a table, view or command |
 | ⌘T / ⌘W | New query tab / close tab |
 | ⌘⇧] / ⌘⇧[ | Next / previous tab |
-| ⌘↵ | Run selection, or the whole editor |
+| ⌘↵ | Run the statement at the cursor (or the selection) |
+| ⌘⇧↵ | Run everything in the editor |
 | ⌘. | Stop the running query |
 | ⌘E | Explain the query |
 | ⌘⇧F | Format SQL |

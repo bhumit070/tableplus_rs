@@ -28,7 +28,8 @@ command is also in the menu bar.
 
 | Shortcut | Action |
 | --- | --- |
-| ⌘↵ | Run the selection, or the whole editor |
+| ⌘↵ | Run the statement at the cursor, or the selection |
+| ⌘⇧↵ | Run everything in the editor (one result tab per statement) |
 | ⌘. | Stop the running query |
 | ⌘E | Explain the query |
 | ⌘⇧F | Format SQL |

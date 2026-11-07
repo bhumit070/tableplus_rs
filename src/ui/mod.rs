@@ -54,6 +54,7 @@ actions!(
     tabula,
     [
         RunQuery,
+        RunAll,
         CancelQuery,
         QueryHistory,
         ExportData,
@@ -254,6 +255,8 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         // Beats the editor's own ⌘↵, which would insert a newline.
         KeyBinding::new(sec!("enter"), RunQuery, Some("QueryTab > Input")),
         KeyBinding::new(sec!("enter"), RunQuery, None),
+        KeyBinding::new(sec!("shift-enter"), RunAll, Some("QueryTab > Input")),
+        KeyBinding::new(sec!("shift-enter"), RunAll, None),
         KeyBinding::new(sec!("."), CancelQuery, None),
         KeyBinding::new(sec!("y"), QueryHistory, None),
         KeyBinding::new(sec!("shift-e"), ExportData, None),

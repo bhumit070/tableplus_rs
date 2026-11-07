@@ -33,8 +33,8 @@ use super::{
     Connection4, Connection5, Connection6, Connection7, Connection8, Connection9, DeleteRows,
     Discard, DropDatabase, ExplainQuery, ExportData, FormatSql, GoHome, GoTo, NewDatabase,
     NewQuery, NextTab, OpenConnection, OpenSettings, PrevTab, QueryHistory, Refresh,
-    RestoreDatabase, RunQuery, SaveQuery, SavedQueries, Shared, ShowProcesses, SwitchDatabase,
-    ToggleFilter, ToggleRowDetail, ToggleTheme, tag_color,
+    RestoreDatabase, RunAll, RunQuery, SaveQuery, SavedQueries, Shared, ShowProcesses,
+    SwitchDatabase, ToggleFilter, ToggleRowDetail, ToggleTheme, tag_color,
 };
 use crate::db::ssh::UnknownHostKey;
 use crate::db::{Connection, ConnectionConfig};
@@ -979,6 +979,13 @@ pub fn register_actions(cx: &mut App) {
             }
         })
     });
+    cx.on_action(|_: &RunAll, cx| {
+        with_session(cx, |s, w, cx| {
+            if let Some(q) = s.active_query() {
+                q.update(cx, |q, cx| q.run_all(w, cx));
+            }
+        })
+    });
 
     cx.on_action(|_: &QueryHistory, cx| with_session(cx, |s, w, cx| s.open_history(w, cx)));
     cx.on_action(|_: &ExplainQuery, cx| {
@@ -1914,6 +1921,45 @@ mod tests {
         for f in files {
             let _ = remove_file(f);
         }
+    }
+
+    /// ⌘↵ runs the statement under the cursor (one result, no tab bar);
+    /// ⌘⇧↵ runs them all; a result tab's × closes it.
+    #[gpui::test]
+    fn run_statement_run_all_close_tab(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = temp_dir().join(format!("tabula-ui-runone-{}.db", cfg.id));
+        write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        session.update_in(&mut cx, |s, w, cx| s.new_query_for_test(w, cx));
+        cx.run_until_parked();
+        cx.simulate_input("select 1 as a;\nselect 2 as b;");
+        let q = session.read_with(&cx, |s, _| s.active_query().unwrap());
+        let idle = |cx: &mut VisualTestContext| q.read_with(cx, |q, _| !q.running());
+
+        // Cursor on the first line: only that statement runs.
+        cx.simulate_keystrokes("cmd-up cmd-enter");
+        wait_until(&mut cx, "first", idle);
+        assert_eq!(q.read_with(&cx, |q, _| q.result_count()), 1);
+        assert!(cx.debug_bounds("result-tab-0").is_none(), "no tabs for one");
+
+        cx.simulate_keystrokes("cmd-shift-enter");
+        wait_until(&mut cx, "all", idle);
+        assert_eq!(q.read_with(&cx, |q, _| q.result_count()), 2);
+        cx.run_until_parked();
+        let b = cx.debug_bounds("close-result-0").expect("close button");
+        cx.simulate_click(b.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(q.read_with(&cx, |q, _| q.result_count()), 1);
+        assert_eq!(q.read_with(&cx, |q, cx| q.cell(0, 0, cx)), Some("2".into()));
+        let _ = remove_file(file);
     }
 
     /// A failed connection keeps its reason on the home card until the next
