@@ -63,6 +63,10 @@ Key cross-cutting mechanics:
   (builds with no warnings, `cargo test` passes, screenshots checked for UI
   changes), so every commit works on its own and nothing is left broken
   between them. Don't batch unrelated changes into one commit.
+- **Descriptive names.** Name variables, closures and parameters for what
+  they hold (`table_name`, `on_pick`, `selected_row`), not `a`, `b`, `x`,
+  `t2`, so the code reads and debugs easily. Single letters are fine only
+  for tiny conventional scopes (`|i|` as an index in a short closure).
 - Keep docs in step with behaviour changes: `README.md`, `docs/` (features, shortcuts, architecture, modules, development).
 
 ## gpui / gpui-component gotchas
