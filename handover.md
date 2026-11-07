@@ -121,6 +121,20 @@ Done since (local, not pushed):
 All of the above was pushed to `main` at the user's request at the end of
 that session.
 
+Since that push (local, **not pushed**, ask first):
+
+| Commit | What |
+| --- | --- |
+| `27c61b6` | 10 Filters: 17 operators per column type (`FilterKind`), ranges and lists, match all / any, WHERE preview with Copy |
+| `a220e67` | 16 Process list: Live every 2 s, Active / Idle in tx / All, detail strip with "Blocked by PID", kill with confirmation |
+| `02e6e1f` | 09 Row menu: Copy as / Copy all rows as submenus, Row Details, Filter by This Value, Open Referenced Row |
+| `7f11294` | 06 Database switcher: Recent section and Create database |
+| `6fdb5b7` | 18 New table: Blank / Timestamps / Copy of templates, type menu, live DDL |
+| `089786f` | 13 CSV import mapping dialog (`ui/csv_import_view.rs`) with local validation |
+| `b7f1585` | 22 Query errors suggest the column / table you meant (`db/suggest.rs`) |
+| `96e9e3b` | Row panel tabs Fields / JSON / References |
+| `e753b71` | 22 Connection lost banner: auto retry with back-off, Retry now, "Reconnecting…" in the status bar, edits kept |
+
 Screenshots now also cover 05-palette, 17-open-connection, 24-welcome-back,
 24-passwords and 24-1…24-5 onboarding steps, and 02-query-results, 04-edit-connection,
 14-explain, 15-history, 21-settings-shortcuts, 22-loading, 22-no-matches.
@@ -154,23 +168,14 @@ Key new files: `src/ui/theme.rs` (tokens, `dp`, pills, `kbd`, `caps`,
    result tabs with status dots, read-only reason badge, EXPLAIN tree with
    exclusive-cost bars (design answer #21), merged History / Saved dialog.
    Status bar: add Ln / Col.
-7. New features: full ⌘P palette with scope chips (a basic picker exists),
-   filter popover (10) with per-type operators (answer #18), in-place
-   Structure editing (08), CSV column mapping (13), Redis typed editors and
-   TTL (19), MongoDB document cards and pager (20), process list restyle (16),
-   open-connection picker restyle (17), new-table dialog (18), row menu with
-   Copy as submenu and preview (09), row panel tabs Fields / JSON /
-   References.
-7. Remaining new features: filter popover (10), in-place Structure editing
-   (08), CSV column mapping (13), Redis typed editors and TTL (19), MongoDB
-   document cards (20), process list restyle (16), new-table dialog (18),
-   row menu Copy as submenu (09), row panel tabs. The palette's scope chips
-   and ⌘↵ / ⌥↵ actions (05), and the database switcher's Recent section and
-   sizes (06), are also still open.
-8. States (22): done except the **connection lost** banner (countdown,
-   Retry, dimmed read-only grid, edits kept) and the query error
-   **suggestion** ("Did you mean total?" with a one-click fix, SQLSTATE,
-   line/column).
+7. New features still open: in-place Structure editing (08), Redis typed
+   editors and TTL (19), MongoDB document cards and pager (20), the
+   palette's scope chips and ⌘↵ / ⌥↵ actions (05), database sizes in the
+   switcher (06). "Rows referencing this" in the row panel needs inbound
+   foreign keys; the process grid has no per-type cell colours yet.
+8. States (22): done. Gap: the connection-lost state doesn't dim the
+   grid (gpui's `opacity` and an absolute wash both fail to cover
+   `DataTable` rows); the banner and status bar carry it instead.
 
 Smaller leftovers: array chip editor and binary save/load (cell editors #11,
 #13); sidebar approximate row counts and Saved queries / Functions sections;
