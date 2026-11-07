@@ -485,6 +485,109 @@ Screen 01 with every dark token swapped for its light twin, and nothing else
 changed. **If a colour in code isn't a token, light mode will break.** ⌘⇧L
 toggles (existing).
 
+### 24 · Onboarding (first run and welcome back)
+
+**Problem today:** nothing introduces the app, and macOS asks for Keychain
+access before the user has done anything. The prompt comes from session
+restore: at launch `AppView` calls `restore_state` (`src/ui/app.rs:71`), which
+connects last session's connections, and `connect` reads their passwords with
+`store::load_secrets` (`src/ui/home.rs:137`). A system dialog with no context
+is the first thing a new or returning user sees.
+
+**Rules**
+
+1. **No keychain access until the user asks for something that needs it**:
+   saving a password, connecting to a saved connection with a password, or
+   importing connections with passwords. Never at launch, never during the
+   first two onboarding steps.
+2. **Explain before asking.** The first time Tabula is about to touch the
+   keychain, show the "Passwords" step (24.4) first; the system prompt comes
+   only after the user presses Continue.
+3. **Launch never connects on its own.** With "Reopen last session" on,
+   launch shows the Welcome back card (24.6) and connects only when the user
+   presses Reopen (or ↵).
+4. **Every step can be skipped**, and nothing in onboarding is required to
+   use the app. "Skip setup" lands on Connections home (03) with defaults
+   (System theme, 13px).
+5. **Onboarding runs once.** New setting `onboarded: bool` (default `false`
+   in `settings.json`). It's set when the user finishes or skips. Existing
+   installs with saved connections are treated as onboarded and see only
+   24.6.
+
+**Flow**
+
+```
+first launch ─► 24.1 Welcome ─► 24.2 Look & feel ─► 24.3 Connections ─┬─► sample database ─► 24.5 You're set
+                    │                                                   ├─► new connection ─► 24.4 Passwords* ─► 04 form ─► 24.5
+                    └─ "Coming from TablePlus?" ────────────────────────┴─► import ─► 24.4 Passwords* ─► review ─► 24.5
+later launches  ─► 24.6 Welcome back (only if there's a session to reopen) ─► 03 / workspace
+* only the first time a password is involved; skipped for SQLite and the sample database
+```
+
+**Screens**
+
+| # | Screen | Content | Actions |
+| --- | --- | --- | --- |
+| 24.1 | Welcome | Logo, "Welcome to Tabula", one-line pitch, three feature cards (Fast and native · Safe by default · Every database), a privacy line | **Get started**; "Coming from TablePlus? Import your connections" (jumps to 24.3 with Import pre-selected); Skip setup |
+| 24.2 | Look & feel | Theme cards System / Dark / Light, each with a mini window preview (System shows half dark, half light); text size Compact 12 / Default 13 / Large 15 with a live preview row | Back · Continue. Changes apply live, so the next screens already use them |
+| 24.3 | Connections | Four choices as large cards: **Import from TablePlus** (file or this Mac), **New connection**, **Open a SQLite file**, **Try the sample database** | Picking one continues; "I'll do this later" goes to 24.5 |
+| 24.4 | Passwords | Why the keychain: passwords are stored only there (service "tabula", one item per connection), never in files or logs. An illustration of the macOS dialog with **Always Allow** highlighted. What happens if you choose Don't Allow | **Continue**, then the macOS prompt appears; "Don't save passwords" (Tabula asks for the password at each connect and stores nothing) |
+| 24.5 | You're set | Short checklist of what was set up, plus the four shortcuts worth knowing (⌘K databases, ⌘P go to anything, ⌘↵ run, ⌘S commit) | **Open Tabula** |
+| 24.6 | Welcome back | On Connections home: a card "Pick up where you left off?" listing last session's connections (env pills) and tab count | **Reopen** (↵), Not now, and an "Always reopen without asking" checkbox that restores the old automatic behaviour |
+
+Board **24.4b** shows the three keychain outcomes side by side: Allowed
+(auto-continues after 1.2 s), Not allowed / unavailable (with "How to fix"
+steps, Try again, Continue anyway), and the password prompt used at connect
+when passwords aren't saved (a "Remember in Keychain" checkbox, off by
+default).
+
+**Reopen setting:** `restore_sessions: bool` becomes a three-way
+`restore_mode`: Ask (default) / Always / Never. Old values map true → Ask and
+false → Never, so nobody who had it on gets the automatic keychain prompt
+back without opting in.
+
+**What Continue does on 24.4:** it performs a harmless read of the "tabula"
+keychain service right away, so the macOS dialog appears while the
+explanation is still on screen, then shows the 24.4b outcome. On Linux the
+same step explains Secret Service (GNOME Keyring / KWallet). On Windows
+(Credential Manager, no prompt) the step is skipped.
+
+**Keychain states (24.4)**
+
+- **Allowed:** a green check "Passwords will be saved in macOS Keychain",
+  then continue.
+- **Denied, or the keychain is locked / missing** (no Secret Service on
+  Linux): amber note "Tabula can't use the keychain, so passwords won't be
+  saved. You'll be asked when you connect." plus "How to fix" (open Keychain
+  Access → find the "tabula" items → Access Control → allow Tabula), and
+  Continue anyway. Connections without passwords keep working, which matches
+  how `connect` already behaves.
+- **macOS asks again after every update:** the app isn't signed with a
+  stable identity yet (README: "Not notarized"), and macOS ties "Always Allow"
+  to the code signature, so each new build looks like a different app.
+  Onboarding can't fix that; signing every release with the same Developer
+  ID does. Until then, 24.4 adds "macOS may ask again after updates."
+
+**Copy rules:** say what Tabula stores and where, and never "we" (there's no
+server). The privacy line on 24.1 is "No account, no tracking. Your
+connections and passwords stay on this Mac." (Tabula has no telemetry or
+update check; database traffic goes only to the servers you connect to.)
+
+**Sample database (new):** a small bundled SQLite file (customers, orders,
+products, about 2,000 rows) copied to the config folder on first use. It
+needs no password and no network, so it shows the grid, staged edits and the
+query editor in the first minute. It's listed on 03 like any connection and
+can be deleted.
+
+**Implementation notes:** first-run check in `AppView::new`
+(`!settings.onboarded && no saved connections`). Onboarding is a full-window
+view in place of `Home`. `restore_state` becomes "show 24.6"; the reconnect
+moves to its Reopen button. `store::load_secrets` and `save_secrets` go
+through one gate that shows 24.4 the first time (remember
+`keychain_explained: bool` in settings). Screens: Penpot boards
+`24 · Onboarding 1–6` and `24 · Onboarding 4b — Keychain outcomes`, each
+with a spec sheet.
+
 ## Cell editors
 
 Enter or typing starts editing (typing replaces the value). Tab / ⇧Tab saves
