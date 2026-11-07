@@ -2,6 +2,7 @@ pub mod app;
 pub mod cell_edit;
 pub mod cell_value;
 pub mod completion;
+pub mod confirm;
 pub mod conn_form;
 pub mod copy;
 pub mod grid;
@@ -131,25 +132,10 @@ pub fn guarded(
         Gate::Block(why) => {
             window.push_notification(gpui_component::notification::Notification::warning(why), cx)
         }
+        // Snoozed for a while ("Confirm writes" only).
+        Gate::Confirm if confirm::snoozed(cfg, cx) => return true,
         Gate::Confirm => {
-            let target = if cfg.tag == crate::db::EnvTag::Production {
-                "PRODUCTION".to_string()
-            } else {
-                cfg.display_name()
-            };
-            let title = format!("{what} on {target}?");
-            let detail: gpui::SharedString = detail.chars().take(800).collect::<String>().into();
-            let go = std::rc::Rc::new(go);
-            window.open_alert_dialog(cx, move |d, _, _| {
-                let go = go.clone();
-                d.title(title.clone())
-                    .description(detail.clone())
-                    .show_cancel(true)
-                    .on_ok(move |_, window, cx| {
-                        go(window, cx);
-                        true
-                    })
-            });
+            confirm::ConfirmWrite::open(cfg, what, detail, window, cx, std::rc::Rc::new(go))
         }
     }
     false

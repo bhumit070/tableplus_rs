@@ -102,7 +102,12 @@
 - **Safe mode** per connection: automatic (asks before writes on
   *production*), off, confirm writes, confirm every query, or **read-only**.
   Read-only is also enforced by the database session, not only by the app.
-  See [Safety and security](architecture/safety.md).
+  The title bar always shows the effective mode. The confirmation names the
+  environment in its colour, lists the exact SQL with what it changes
+  ("1 updated · 1 deleted"), and its button says where ("Commit to prod",
+  red for production or DROP / TRUNCATE). On production ↵ cancels and only
+  ⌘↵ confirms. *Confirm writes* can be snoozed for 10 minutes per
+  connection (in memory only). See [Safety and security](architecture/safety.md).
 
 ## Settings (⌘,)
 

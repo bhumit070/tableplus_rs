@@ -426,11 +426,17 @@ fn pick_fk_match<H: CellEditHost>(host: &mut H, window: &mut Window, cx: &mut Co
 /// Why the open text editor can't be saved, if it can't.
 fn edit_error<H: CellEditHost>(host: &H, cx: &App) -> Option<String> {
     let g = host.grid().read(cx).delegate();
-    let (_, c, CellEditor::Text(input)) = g.editing.as_ref()? else {
+    let (_, _, CellEditor::Text(input)) = g.editing.as_ref()? else {
         return None;
     };
-    let ty = g.types.get(*c).cloned().unwrap_or_default();
-    check(&ty, &input.read(cx).value()).error
+    let (r, c) = g.editing.as_ref().map(|(r, c, _)| (*r, *c))?;
+    let text = input.read(cx).value();
+    // Left empty on a NULL / DEFAULT cell: nothing changes (see finish_edit).
+    if text.is_empty() && matches!(g.value(r, c), Some(None)) {
+        return None;
+    }
+    let ty = g.types.get(c).cloned().unwrap_or_default();
+    check(&ty, &text).error
 }
 
 /// ↵ / Tab: save, unless the value is invalid (the editor stays open and

@@ -629,7 +629,14 @@ impl Grid {
             CellEditor::Text(input) => input.clone(),
         };
         let ty = self.types.get(col_ix).cloned().unwrap_or_default();
-        let checked = check(&ty, &input.read(cx).value());
+        let text = input.read(cx).value();
+        let row_ix = self.editing.as_ref().map_or(0, |(r, _, _)| *r);
+        // Empty on a NULL / DEFAULT cell keeps it as it is: nothing to flag.
+        let checked = if text.is_empty() && matches!(self.value(row_ix, col_ix), Some(None)) {
+            crate::ui::cell_value::Check::default()
+        } else {
+            check(&ty, &text)
+        };
         let uuid = ty.eq_ignore_ascii_case("uuid");
         let note = checked
             .error

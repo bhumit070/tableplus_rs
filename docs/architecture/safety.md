@@ -19,7 +19,10 @@ form:
 - `gate_query(cfg, text)` is used for editor text;
 - `gate_write(cfg)` is used for grid commits, CSV import, truncate and drop.
 
-Each returns `Run`, `Confirm` or `Block(reason)`.
+Each returns `Run`, `Confirm` or `Block(reason)`. `ui::guarded` acts on
+it: `Confirm` opens `ui/confirm.rs` (environment banner, the exact SQL,
+a summary of what changes) unless *Confirm writes* is snoozed for that
+connection (ten minutes, kept in memory only, never saved).
 
 ### Does this text write?
 

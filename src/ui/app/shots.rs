@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{AnyWindowHandle, HeadlessAppContext, Window, px, size};
-use gpui_component::{Root, Theme, ThemeMode};
+use gpui_component::{Root, Theme, ThemeMode, WindowExt as _};
 
 use super::*;
 use crate::db::{ConnectionConfig, Driver};
@@ -61,6 +61,8 @@ impl Shots {
     }
 
     fn settle(&mut self) {
+        // Let entrance animations (dialogs) finish.
+        self.cx.advance_clock(Duration::from_secs(1));
         for _ in 0..5 {
             self.cx.run_until_parked();
             std::thread::sleep(Duration::from_millis(30));
@@ -205,6 +207,26 @@ fn screenshots() {
         })
     });
     s.snap("01-table-staged");
+
+    // The safe-mode confirmation, as on a production connection.
+    let mut prod = s.cx.update(|cx| session.read(cx).cfg().clone());
+    prod.tag = crate::db::EnvTag::Production;
+    prod.name = "acme-production".into();
+    s.in_window(|w, cx| {
+        crate::ui::confirm::ConfirmWrite::open(
+            &prod,
+            "Commit",
+            "UPDATE orders SET status = 'refunded' WHERE id = 10393;\n\
+             DELETE FROM orders WHERE id = 10386;\n\
+             INSERT INTO orders (customer_id, status, total, currency)\n  VALUES (2, 'pending', 89.00, 'USD');"
+                .into(),
+            w,
+            cx,
+            std::rc::Rc::new(|_, _| {}),
+        )
+    });
+    s.snap("11-confirm");
+    s.in_window(|w, cx| w.close_dialog(cx));
 
     // Cell editors on customers: a too-long value, then the boolean dropdown.
     s.in_window(|w, cx| {

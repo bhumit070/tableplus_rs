@@ -1606,6 +1606,99 @@ mod tests {
         let _ = std::fs::remove_file(file);
     }
 
+    /// Safe mode: on production ↵ cancels the confirmation and ⌘↵ commits;
+    /// "Confirm writes" can be snoozed for the connection.
+    #[gpui::test]
+    fn commit_confirmation(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        cfg.tag = crate::db::EnvTag::Production;
+        let file = std::env::temp_dir().join(format!("tabula-ui-confirm-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        let read_a = move || {
+            let setup = setup.clone();
+            futures::executor::block_on(crate::runtime::spawn(async move {
+                let c = crate::db::Connection::connect(&setup).await?;
+                let r = c.execute("select a from t").await?;
+                c.close().await;
+                Ok(r[0].rows[0][0].clone())
+            }))
+            .unwrap()
+        };
+        let setup = cfg.clone();
+        futures::executor::block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute(
+                "create table t (id integer primary key, a text); insert into t (a) values ('x')",
+            )
+            .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("t").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let i = s.object_index("t").unwrap();
+            s.open_object(i, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "rows", |cx| {
+            tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 1)
+        });
+        let dialog = |cx: &mut VisualTestContext| cx.update(|w, cx| w.has_active_dialog(cx));
+
+        tab.update_in(&mut cx, |t, _, cx| t.stage_cell(0, 1, "y", cx));
+        cx.simulate_keystrokes("cmd-s");
+        cx.run_until_parked();
+        assert!(dialog(&mut cx), "production asks first");
+        // ↵ cancels on production.
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(!dialog(&mut cx));
+        assert_eq!(read_a(), Some("x".into()), "nothing written");
+
+        // ⌘↵ commits.
+        cx.simulate_keystrokes("cmd-s");
+        cx.run_until_parked();
+        assert!(dialog(&mut cx));
+        cx.simulate_keystrokes("cmd-enter");
+        wait_until(&mut cx, "commit", |_| read_a().as_deref() == Some("y"));
+        assert!(!dialog(&mut cx));
+
+        // Snoozing: the next commit doesn't ask.
+        wait_until(&mut cx, "reload", |cx| {
+            tab.read_with(cx, |t, cx| t.cell(0, 1, cx).as_deref() == Some("y"))
+        });
+        tab.update_in(&mut cx, |t, _, cx| t.stage_cell(0, 1, "z", cx));
+        cx.simulate_keystrokes("cmd-s");
+        cx.run_until_parked();
+        let b = cx.debug_bounds("snooze").expect("snooze offered");
+        cx.simulate_click(b.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        cx.simulate_keystrokes("cmd-enter");
+        wait_until(&mut cx, "commit z", |_| read_a().as_deref() == Some("z"));
+        wait_until(&mut cx, "reload z", |cx| {
+            tab.read_with(cx, |t, cx| t.cell(0, 1, cx).as_deref() == Some("z"))
+        });
+        tab.update_in(&mut cx, |t, _, cx| t.stage_cell(0, 1, "w", cx));
+        cx.simulate_keystrokes("cmd-s");
+        cx.run_until_parked();
+        assert!(!dialog(&mut cx), "snoozed");
+        wait_until(&mut cx, "commit w", |_| read_a().as_deref() == Some("w"));
+        let _ = std::fs::remove_file(file);
+    }
+
     #[gpui::test]
     fn filters_stay_as_chips_until_removed(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
