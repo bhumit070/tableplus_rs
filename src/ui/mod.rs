@@ -26,11 +26,16 @@ use gpui::{App, Hsla, KeyBinding};
 use tokio::sync::RwLock;
 
 use crate::db::{Connection, ConnectionConfig};
+use gpui::{Styled, Window, actions, px};
+use gpui_component::{
+    Disableable, dialog::DialogFooter, input::ShowCompletions, notification::Notification,
+    select::SearchableVec, v_flex,
+};
 
 /// Web-style cursors on disabled controls: gpui-component keeps the arrow,
 /// we show "not allowed" (and the hand, set where each control is built,
 /// while enabled).
-pub trait DisabledWhen: gpui_component::Disableable + gpui::Styled + Sized {
+pub trait DisabledWhen: Disableable + Styled + Sized {
     fn disabled_when(self, disabled: bool) -> Self {
         let this = self.disabled(disabled);
         if disabled {
@@ -41,9 +46,9 @@ pub trait DisabledWhen: gpui_component::Disableable + gpui::Styled + Sized {
     }
 }
 
-impl<T: gpui_component::Disableable + gpui::Styled> DisabledWhen for T {}
+impl<T: Disableable + Styled> DisabledWhen for T {}
 
-gpui::actions!(
+actions!(
     tabula,
     [
         RunQuery,
@@ -122,17 +127,15 @@ pub fn guarded(
     cfg: &ConnectionConfig,
     what: &str,
     detail: String,
-    window: &mut gpui::Window,
-    cx: &mut gpui::App,
-    go: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+    go: impl Fn(&mut Window, &mut App) + 'static,
 ) -> bool {
     use crate::db::safety::Gate;
     use gpui_component::WindowExt as _;
     match gate {
         Gate::Run => return true,
-        Gate::Block(why) => {
-            window.push_notification(gpui_component::notification::Notification::warning(why), cx)
-        }
+        Gate::Block(why) => window.push_notification(Notification::warning(why), cx),
         // Snoozed for a while ("Confirm writes" only).
         Gate::Confirm if confirm::snoozed(cfg, cx) => return true,
         Gate::Confirm => {
@@ -148,9 +151,9 @@ pub fn prompt_text(
     title: &str,
     description: &str,
     initial: &str,
-    window: &mut gpui::Window,
-    cx: &mut gpui::App,
-    on_ok: impl Fn(String, &mut gpui::Window, &mut gpui::App) -> bool + 'static,
+    window: &mut Window,
+    cx: &mut App,
+    on_ok: impl Fn(String, &mut Window, &mut App) -> bool + 'static,
 ) {
     use gpui::{AppContext as _, ParentElement as _, Styled as _};
     use gpui_component::WindowExt as _;
@@ -172,7 +175,7 @@ pub fn prompt_text(
         }
         let submit = {
             let (input, on_ok) = (input.clone(), on_ok.clone());
-            move |window: &mut gpui::Window, cx: &mut gpui::App| -> bool {
+            move |window: &mut Window, cx: &mut App| -> bool {
                 let v = input.read(cx).value().trim().to_string();
                 !v.is_empty() && on_ok(v, window, cx)
             }
@@ -181,9 +184,9 @@ pub fn prompt_text(
         let (s1, s2) = (submit.clone(), submit);
         dialog
             .title(title.clone())
-            .w(gpui::px(420.))
+            .w(px(420.))
             .child(
-                gpui_component::v_flex()
+                v_flex()
                     .gap_2()
                     .when(!description.is_empty(), |d| d.child(description.clone()))
                     .child(Input::new(&input)),
@@ -191,7 +194,7 @@ pub fn prompt_text(
             // Enter in the field.
             .on_ok(move |_, window, cx| s1(window, cx))
             .footer(
-                gpui_component::dialog::DialogFooter::new()
+                DialogFooter::new()
                     .child(
                         Button::new("prompt-cancel")
                             .cursor_pointer()
@@ -217,10 +220,10 @@ pub fn prompt_text(
 
 /// Items for a searchable dropdown. A plain `Vec` also works as a dropdown
 /// list, but its search does nothing (GitHub #12); `SearchableVec` filters.
-pub type SearchList = gpui_component::select::SearchableVec<String>;
+pub type SearchList = SearchableVec<String>;
 
 pub fn search_list(items: Vec<String>) -> SearchList {
-    gpui_component::select::SearchableVec::new(items)
+    SearchableVec::new(items)
 }
 
 /// The connection's environment colour (design.md, Environment tags).
@@ -320,11 +323,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-tab", PrevCell, Some("CellEditor > CellChoices")),
         // Copy stays local to the grid so ⌘C in text fields copies text.
         KeyBinding::new(sec!("c"), CopyCell, Some("TableTab")),
-        KeyBinding::new(
-            "ctrl-space",
-            gpui_component::input::ShowCompletions,
-            Some("Input"),
-        ),
+        KeyBinding::new("ctrl-space", ShowCompletions, Some("Input")),
     ]
 }
 
@@ -333,6 +332,7 @@ mod tests {
     use gpui::{Action, KeyBinding, KeyContext, Keymap, Keystroke};
 
     use super::*;
+    use gpui::TestAppContext;
 
     /// The action a keystroke resolves to, given the focused element's
     /// context path (outermost first). `extra` bindings are registered first,
@@ -450,7 +450,7 @@ mod tests {
 
     /// GitHub #12: dropdown search must actually filter.
     #[gpui::test]
-    fn dropdown_search_filters(cx: &mut gpui::TestAppContext) {
+    fn dropdown_search_filters(cx: &mut TestAppContext) {
         use gpui_component::searchable_list::SearchableListDelegate as _;
         let cx = cx.add_empty_window();
         cx.update(|window, cx| {

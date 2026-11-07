@@ -16,7 +16,12 @@ mod ui;
 
 use gpui::{App, Bounds, Menu, MenuItem, WindowBounds, WindowOptions, prelude::*, px, size};
 use gpui_component::{Root, Theme, TitleBar};
+use gpui_platform;
 
+use gpui::{TitlebarOptions, point};
+use gpui_component::init;
+use gpui_kit_assets::AllAssets;
+use gpui_platform::application;
 use ui::app::AppView;
 
 /// The menu bar: every command, with its shortcut shown, so features
@@ -99,41 +104,39 @@ fn menus() -> Vec<Menu> {
 }
 
 fn main() {
-    gpui_platform::application()
-        .with_assets(gpui_kit_assets::AllAssets)
-        .run(|cx: &mut App| {
-            gpui_component::init(cx);
-            ui::theme::init(cx);
-            Theme::sync_system_appearance(None, cx);
-            settings::init(cx);
-            cx.bind_keys(ui::key_bindings());
-            cx.on_action(|_: &ui::Quit, cx| cx.quit());
-            ui::app::register_actions(cx);
-            cx.on_action(|_: &ui::ZoomIn, cx| ui::app::zoom(1., cx));
-            cx.on_action(|_: &ui::ZoomOut, cx| ui::app::zoom(-1., cx));
-            cx.set_menus(menus());
+    application().with_assets(AllAssets).run(|cx: &mut App| {
+        init(cx);
+        ui::theme::init(cx);
+        Theme::sync_system_appearance(None, cx);
+        settings::init(cx);
+        cx.bind_keys(ui::key_bindings());
+        cx.on_action(|_: &ui::Quit, cx| cx.quit());
+        ui::app::register_actions(cx);
+        cx.on_action(|_: &ui::ZoomIn, cx| ui::app::zoom(1., cx));
+        cx.on_action(|_: &ui::ZoomOut, cx| ui::app::zoom(-1., cx));
+        cx.set_menus(menus());
 
-            let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    // Linux desktops match this to tabula.desktop for the icon.
-                    app_id: Some("tabula".into()),
-                    // Centred in the 44px title bar.
-                    titlebar: Some(gpui::TitlebarOptions {
-                        traffic_light_position: Some(gpui::point(px(16.), px(16.))),
-                        ..TitleBar::title_bar_options()
-                    }),
-                    ..TitleBar::window_options()
-                },
-                |window, cx| {
-                    // The X11 backend only applies the app id (WM_CLASS) here.
-                    window.set_app_id("tabula");
-                    let view = cx.new(|cx| AppView::new(window, cx));
-                    cx.new(|cx| Root::new(view, window, cx))
-                },
-            )
-            .expect("open window");
-            cx.activate(true);
-        });
+        let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                // Linux desktops match this to tabula.desktop for the icon.
+                app_id: Some("tabula".into()),
+                // Centred in the 44px title bar.
+                titlebar: Some(TitlebarOptions {
+                    traffic_light_position: Some(point(px(16.), px(16.))),
+                    ..TitleBar::title_bar_options()
+                }),
+                ..TitleBar::window_options()
+            },
+            |window, cx| {
+                // The X11 backend only applies the app id (WM_CLASS) here.
+                window.set_app_id("tabula");
+                let view = cx.new(|cx| AppView::new(window, cx));
+                cx.new(|cx| Root::new(view, window, cx))
+            },
+        )
+        .expect("open window");
+        cx.activate(true);
+    });
 }

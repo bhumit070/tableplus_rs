@@ -22,7 +22,10 @@ use std::time::Instant;
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
+use anyhow::{Error, anyhow, bail};
 pub use cancel::Cancel;
+use tokio::{select, time::timeout};
+use uuid::Uuid;
 
 /// Background reads (sidebar, table pages, structure) give up after this;
 /// editor queries may run longer, and are stopped with Cancel instead.
@@ -31,7 +34,7 @@ const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 impl Connection {
     /// Adds what the user needs to know to a failure: the connection was
     /// lost, or the SSH tunnel it ran through has closed.
-    fn explain(&self, e: anyhow::Error) -> anyhow::Error {
+    fn explain(&self, e: Error) -> Error {
         let e = sql::explain_lost(e);
         match self._tunnel.as_ref().and_then(|t| t.broken().map(|why| (t, why))) {
             Some((t, why)) => e.context(format!(
@@ -47,8 +50,8 @@ impl Connection {
         what: &str,
         f: impl std::future::Future<Output = Result<T>>,
     ) -> Result<T> {
-        match tokio::time::timeout(READ_TIMEOUT, f).await {
-            Err(_) => Err(self.explain(anyhow::anyhow!(
+        match timeout(READ_TIMEOUT, f).await {
+            Err(_) => Err(self.explain(anyhow!(
                 "{what}: the server didn't answer within {} s. It may be down, or busy.",
                 READ_TIMEOUT.as_secs()
             ))),
@@ -219,7 +222,7 @@ impl SafeMode {
 impl ConnectionConfig {
     pub fn new(driver: Driver) -> Self {
         Self {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: Uuid::new_v4().to_string(),
             name: String::new(),
             driver,
             tag: EnvTag::Local,
@@ -626,9 +629,9 @@ impl Connection {
             }
         };
         // SQL batches watch `cancel` themselves, to clean up the connection.
-        tokio::select! {
+        select! {
             r = run => r.map_err(|e| self.explain(e)),
-            _ = cancel.cancelled() => Err(anyhow::anyhow!(cancel.message())),
+            _ = cancel.cancelled() => Err(anyhow!(cancel.message())),
         }
     }
 
@@ -668,7 +671,7 @@ impl Connection {
             match &self.inner {
                 Conn::Sql(c) => c.processes().await,
                 Conn::Redis(c) => c.processes().await,
-                Conn::Mongo(_) => anyhow::bail!("not available for MongoDB yet"),
+                Conn::Mongo(_) => bail!("not available for MongoDB yet"),
             }
         })
         .await
@@ -679,14 +682,14 @@ impl Connection {
         match &self.inner {
             Conn::Sql(c) => c.kill(id, whole).await,
             Conn::Redis(c) => c.kill(id).await,
-            Conn::Mongo(_) => anyhow::bail!("not available for MongoDB yet"),
+            Conn::Mongo(_) => bail!("not available for MongoDB yet"),
         }
     }
 
     pub async fn drop_object(&self, obj: &DbObject) -> Result<()> {
         match &self.inner {
             Conn::Sql(c) => c.drop_object(obj).await,
-            Conn::Redis(_) => anyhow::bail!("not supported for Redis"),
+            Conn::Redis(_) => bail!("not supported for Redis"),
             Conn::Mongo(c) => c.drop_object(obj).await,
         }
     }
@@ -694,7 +697,7 @@ impl Connection {
     fn sql(&self) -> Result<&sql::SqlConn> {
         match &self.inner {
             Conn::Sql(c) => Ok(c),
-            _ => anyhow::bail!("available for SQL databases only"),
+            _ => bail!("available for SQL databases only"),
         }
     }
 
@@ -722,7 +725,7 @@ impl Connection {
     pub async fn truncate(&self, obj: &DbObject) -> Result<()> {
         match &self.inner {
             Conn::Sql(c) => c.truncate(obj).await,
-            Conn::Redis(_) => anyhow::bail!("not supported for Redis"),
+            Conn::Redis(_) => bail!("not supported for Redis"),
             Conn::Mongo(c) => c.truncate(obj).await,
         }
     }

@@ -10,6 +10,7 @@ use anyhow::{Context as _, Result, bail};
 use tokio::process::Command;
 
 use super::{ConnectionConfig, Driver};
+use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
@@ -103,7 +104,7 @@ struct MyOptions(PathBuf);
 
 impl MyOptions {
     fn new(t: &Target) -> Result<MyOptions> {
-        let p = std::env::temp_dir().join(format!("tabula-my-{}.cnf", uuid::Uuid::new_v4()));
+        let p = std::env::temp_dir().join(format!("tabula-my-{}.cnf", Uuid::new_v4()));
         let esc = t.cfg.password.replace('\\', "\\\\").replace('"', "\\\"");
         let body = format!("[client]\npassword=\"{esc}\"\n");
         #[cfg(unix)]
@@ -221,7 +222,7 @@ pub async fn dump(t: &Target, scope: Scope, file: &Path) -> Result<()> {
             }
             // Into a temp file first: a failed backup mustn't cost the
             // previous one at the same path.
-            let tmp = file.with_extension(format!("tmp-{}", uuid::Uuid::new_v4().simple()));
+            let tmp = file.with_extension(format!("tmp-{}", Uuid::new_v4().simple()));
             let c = super::Connection::connect(&t.cfg).await?;
             let lit = format!("'{}'", tmp.to_string_lossy().replace('\'', "''"));
             let res = c

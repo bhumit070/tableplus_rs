@@ -27,6 +27,11 @@ use super::table_tab::{TableTab, TableTabEvent};
 use super::theme::{caps, dp, kbd, tokens};
 use crate::db::{ConnectionConfig, DbObject, Driver, Filter, ObjectKind};
 use crate::{history, runtime};
+use anyhow::{Result, anyhow};
+use dirs::{download_dir, home_dir};
+use gpui::{Action, ClipboardItem, PathPromptOptions, transparent_black};
+use gpui_component::menu::PopupMenu;
+use tokio::{sync::RwLock, sync::RwLockWriteGuard, time::timeout};
 
 enum TabItem {
     Table(Entity<TableTab>),
@@ -945,11 +950,7 @@ impl Session {
         self.tabs.iter().any(|t| t.is_dirty(cx))
     }
 
-    fn object_menu(
-        session: WeakEntity<Session>,
-        obj: DbObject,
-        menu: gpui_component::menu::PopupMenu,
-    ) -> gpui_component::menu::PopupMenu {
+    fn object_menu(session: WeakEntity<Session>, obj: DbObject, menu: PopupMenu) -> PopupMenu {
         let item = |label: &'static str, f: Rc<dyn Fn(&mut Session, &DbObject, &mut Window, &mut Context<Session>)>| {
             let s = session.clone();
             let obj = obj.clone();
@@ -970,7 +971,7 @@ impl Session {
         .item(item(
             "Copy Name",
             Rc::new(|_, o, w, cx| {
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(o.name.clone()));
+                cx.write_to_clipboard(ClipboardItem::new_string(o.name.clone()));
                 w.push_notification("Copied", cx);
             }),
         ))
@@ -1060,9 +1061,7 @@ impl Session {
             let ext = if sqlite { "sqlite" } else { "sql" };
             let date = chrono_like_date();
             let name = format!("{}-{date}.{ext}", target.database);
-            let dir = dirs::download_dir()
-                .or_else(dirs::home_dir)
-                .unwrap_or_default();
+            let dir = download_dir().or_else(home_dir).unwrap_or_default();
             let path = cx.prompt_for_new_path(&dir, Some(&name));
             let target = target.clone();
             window
@@ -1137,7 +1136,7 @@ impl Session {
             window.push_notification("The connection is busy; try again in a moment", cx);
             return;
         };
-        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
@@ -1212,9 +1211,9 @@ impl Session {
         cx: &mut Context<Self>,
         on_ok: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
         op: impl FnOnce(
-            std::sync::Arc<tokio::sync::RwLock<crate::db::Connection>>,
+            std::sync::Arc<RwLock<crate::db::Connection>>,
         ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = anyhow::Result<Option<String>>> + Send>,
+            Box<dyn std::future::Future<Output = Result<Option<String>>> + Send>,
         >,
     ) {
         let task = runtime::spawn(op(self.shared.conn.clone()));
@@ -1826,7 +1825,7 @@ impl Session {
                                 .pb(px(1.))
                                 .text_color(t.text)
                         } else {
-                            d.border_color(gpui::transparent_black())
+                            d.border_color(transparent_black())
                                 .text_color(t.text_secondary)
                                 .hover(|d| d.bg(t.hover.opacity(0.6)))
                         }
@@ -1995,7 +1994,7 @@ impl Render for Session {
 }
 
 /// Commands offered by ⌘P: label, shortcut, action.
-fn goto_commands() -> [(&'static str, &'static str, fn() -> Box<dyn gpui::Action>); 10] {
+fn goto_commands() -> [(&'static str, &'static str, fn() -> Box<dyn Action>); 10] {
     use super::*;
     [
         ("New query", "⌘T", || Box::new(NewQuery)),
@@ -2146,12 +2145,12 @@ mod tests {
 /// database / schema). Waiting indefinitely behind a long query would also
 /// stall every other read queued after us, so give up after a few seconds.
 async fn exclusive(
-    conn: &std::sync::Arc<tokio::sync::RwLock<crate::db::Connection>>,
-) -> anyhow::Result<tokio::sync::RwLockWriteGuard<'_, crate::db::Connection>> {
-    tokio::time::timeout(std::time::Duration::from_secs(3), conn.write())
+    conn: &std::sync::Arc<RwLock<crate::db::Connection>>,
+) -> Result<RwLockWriteGuard<'_, crate::db::Connection>> {
+    timeout(std::time::Duration::from_secs(3), conn.write())
         .await
         .map_err(|_| {
-            anyhow::anyhow!(
+            anyhow!(
                 "Something is still running on this connection (a query?). Stop it with ⌘. and try again."
             )
         })

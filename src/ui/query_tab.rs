@@ -28,6 +28,8 @@ use super::row_panel;
 use super::{RunQuery, Shared};
 use crate::db::{Cancel, ColumnInfo, DbObject, Driver, ObjectKind, QueryResult};
 use crate::{history, runtime};
+use gpui::{AnyElement, FontWeight};
+use uuid::Uuid;
 
 pub struct QueryTab {
     shared: Rc<Shared>,
@@ -333,7 +335,7 @@ impl QueryTab {
         &self,
         plan: &crate::db::explain::PlanNode,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    ) -> AnyElement {
         let theme = cx.theme().clone();
         let nodes = plan.flatten();
         let max = nodes
@@ -408,7 +410,7 @@ impl QueryTab {
                                             .child(
                                                 div()
                                                     .text_sm()
-                                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                    .font_weight(FontWeight::SEMIBOLD)
                                                     .child(n.label.clone()),
                                             )
                                             .child(
@@ -545,7 +547,7 @@ impl QueryTab {
                         return false;
                     }
                     let q = crate::saved::SavedQuery {
-                        id: uuid::Uuid::new_v4().to_string(),
+                        id: Uuid::new_v4().to_string(),
                         name: n,
                         sql: sql.clone(),
                         conn_id: (!all).then(|| conn_id.clone()),

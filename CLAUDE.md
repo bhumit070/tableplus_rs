@@ -54,6 +54,7 @@ Key cross-cutting mechanics:
 
 ## Conventions
 
+- Import everything with `use` at the top of the file (or of its `mod tests` for test-only items) and refer to it by its short name. Don't write crate paths inline, even though Rust 2018+ allows it: `use gpui_platform::application;` then `application()`, not `gpui_platform::application()`; `use serde_json::Value;` then `Value::Null`. A bare `use gpui_platform;` doesn't count — import the items. On name clashes, alias the import (`use sqlx::Error as SqlxError;`, `use tokio::spawn as tokio_spawn;`). Exceptions: attribute macros like `#[tokio::test]` / `#[gpui::test]` (importing `test` would shadow the built-in `#[test]`) and `anyhow::Ok` (it would shadow `Ok`).
 - Return `anyhow::Result` with context; don't `unwrap` anything depending on input, files, network or a server.
 - Code that may run inside another update of the same entity (shortcut handlers, dialog callbacks, settings notifications) must defer with `window.defer` / `cx.defer`, or gpui panics ("already being updated").
 - Secrets stay in the keychain — never in JSON files, logs or command lines. `*.tableplusconnection` files contain real passwords: never read or commit them.

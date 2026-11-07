@@ -6,6 +6,7 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
 use super::{Driver, QueryResult};
+use serde_json::from_str;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlanNode {
@@ -81,7 +82,7 @@ pub fn parse(driver: Driver, r: &QueryResult) -> Result<PlanNode> {
     match driver {
         Driver::Postgres => {
             let text: String = (0..r.rows.len()).map(|i| cell(i, 0)).collect();
-            let v: Value = serde_json::from_str(&text).context("reading the JSON plan")?;
+            let v: Value = from_str(&text).context("reading the JSON plan")?;
             let plan = v
                 .get(0)
                 .and_then(|p| p.get("Plan"))

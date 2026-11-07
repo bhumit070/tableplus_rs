@@ -11,6 +11,11 @@ use super::{
     Change, ColumnInfo, ConnectionConfig, DbObject, FilterOp, ObjectKind, QueryResult, Structure,
     TableQuery,
 };
+use anyhow::Error;
+use redis::{
+    AsyncConnectionConfig, Client, ErrorKind, RedisError, aio::ConnectionManagerConfig, cmd, pipe,
+};
+use serde_json::{Map, Value as SerdeJsonValue};
 
 /// SCAN stops after this many keys so huge keyspaces stay responsive.
 const SCAN_CAP: usize = 10_000;
@@ -43,15 +48,14 @@ async fn open(cfg: &ConnectionConfig, db: &str) -> Result<ConnectionManager> {
     let db = if db.is_empty() { "0" } else { db };
     let url = format!("{scheme}://{auth}{}:{}/{db}", cfg.host, cfg.port);
     let at = format!("{}:{}", cfg.host, cfg.port);
-    let fail =
-        |e: redis::RedisError| anyhow::Error::new(e).context(format!("couldn't connect to {at}"));
+    let fail = |e: RedisError| Error::new(e).context(format!("couldn't connect to {at}"));
     // RESP3 returns hashes as maps; servers older than Redis 6 only speak
     // RESP2 and reject the HELLO handshake.
-    let mut client = redis::Client::open(format!("{url}?protocol=resp3"))?;
+    let mut client = Client::open(format!("{url}?protocol=resp3"))?;
     // One plain connection first, so a down server or bad password fails
     // fast with its own reason (the manager retries quietly for minutes).
     let probe_cfg = || {
-        redis::AsyncConnectionConfig::new()
+        AsyncConnectionConfig::new()
             .set_connection_timeout(std::time::Duration::from_secs(15))
             .set_response_timeout(std::time::Duration::from_secs(15))
     };
@@ -59,18 +63,17 @@ async fn open(cfg: &ConnectionConfig, db: &str) -> Result<ConnectionManager> {
         .get_multiplexed_async_connection_with_config(&probe_cfg())
         .await
     {
-        let old_server =
-            e.kind() == redis::ErrorKind::ResponseError || e.to_string().contains("HELLO");
+        let old_server = e.kind() == ErrorKind::ResponseError || e.to_string().contains("HELLO");
         if !old_server {
             return Err(fail(e));
         }
-        client = redis::Client::open(url)?;
+        client = Client::open(url)?;
         client
             .get_multiplexed_async_connection_with_config(&probe_cfg())
             .await
             .map_err(fail)?;
     }
-    let config = redis::aio::ConnectionManagerConfig::new()
+    let config = ConnectionManagerConfig::new()
         .set_connection_timeout(std::time::Duration::from_secs(15))
         // Nothing waits forever on a server that stopped answering.
         .set_response_timeout(std::time::Duration::from_secs(30))
@@ -115,29 +118,29 @@ pub fn render(v: &Value) -> Option<String> {
         Value::Double(d) => d.to_string(),
         Value::Boolean(b) => b.to_string(),
         Value::Array(items) | Value::Set(items) => {
-            let parts: Vec<serde_json::Value> = items
+            let parts: Vec<SerdeJsonValue> = items
                 .iter()
                 .map(|i| {
                     render(i)
-                        .map(serde_json::Value::String)
-                        .unwrap_or(serde_json::Value::Null)
+                        .map(SerdeJsonValue::String)
+                        .unwrap_or(SerdeJsonValue::Null)
                 })
                 .collect();
-            serde_json::Value::Array(parts).to_string()
+            SerdeJsonValue::Array(parts).to_string()
         }
         Value::Map(pairs) => {
-            let obj: serde_json::Map<String, serde_json::Value> = pairs
+            let obj: Map<String, SerdeJsonValue> = pairs
                 .iter()
                 .map(|(k, v)| {
                     (
                         render(k).unwrap_or_default(),
                         render(v)
-                            .map(serde_json::Value::String)
-                            .unwrap_or(serde_json::Value::Null),
+                            .map(SerdeJsonValue::String)
+                            .unwrap_or(SerdeJsonValue::Null),
                     )
                 })
                 .collect();
-            serde_json::Value::Object(obj).to_string()
+            SerdeJsonValue::Object(obj).to_string()
         }
         other => format!("{other:?}"),
     })
@@ -199,7 +202,7 @@ impl RedisConn {
             cfg.database.clone()
         };
         let mut con = open(cfg, &db).await?;
-        redis::cmd("PING").query_async::<String>(&mut con).await?;
+        cmd("PING").query_async::<String>(&mut con).await?;
         Ok(Self {
             cfg: cfg.clone(),
             con,
@@ -214,11 +217,8 @@ impl RedisConn {
     /// CLIENT LIST as rows (our own client left out), first column = id.
     pub async fn processes(&self) -> Result<QueryResult> {
         let mut con = self.con.clone();
-        let me: i64 = redis::cmd("CLIENT").arg("ID").query_async(&mut con).await?;
-        let list: String = redis::cmd("CLIENT")
-            .arg("LIST")
-            .query_async(&mut con)
-            .await?;
+        let me: i64 = cmd("CLIENT").arg("ID").query_async(&mut con).await?;
+        let list: String = cmd("CLIENT").arg("LIST").query_async(&mut con).await?;
         let cols = ["id", "addr", "name", "db", "age", "idle", "cmd"];
         let rows = list
             .lines()
@@ -242,21 +242,21 @@ impl RedisConn {
     /// CLIENT KILL ID: disconnects the client (Redis can't stop just a command).
     pub async fn kill(&self, id: &str) -> Result<()> {
         let mut con = self.con.clone();
-        let n: i64 = redis::cmd("CLIENT")
+        let n: i64 = cmd("CLIENT")
             .arg("KILL")
             .arg("ID")
             .arg(id)
             .query_async(&mut con)
             .await?;
         if n == 0 {
-            anyhow::bail!("no such client");
+            bail!("no such client");
         }
         Ok(())
     }
 
     pub async fn databases(&self) -> Result<Vec<String>> {
         let mut con = self.con.clone();
-        let n = redis::cmd("CONFIG")
+        let n = cmd("CONFIG")
             .arg("GET")
             .arg("databases")
             .query_async::<Vec<String>>(&mut con)
@@ -281,7 +281,7 @@ impl RedisConn {
         let mut prefixes = std::collections::BTreeSet::new();
         let (mut cursor, mut seen) = (0u64, 0usize);
         loop {
-            let (next, batch): (u64, Vec<String>) = redis::cmd("SCAN")
+            let (next, batch): (u64, Vec<String>) = cmd("SCAN")
                 .arg(cursor)
                 .arg("COUNT")
                 .arg(1000)
@@ -351,7 +351,7 @@ impl RedisConn {
         let mut keys: Vec<String> = Vec::new();
         let mut cursor: u64 = 0;
         loop {
-            let (next, batch): (u64, Vec<String>) = redis::cmd("SCAN")
+            let (next, batch): (u64, Vec<String>) = cmd("SCAN")
                 .arg(cursor)
                 .arg("MATCH")
                 .arg(&pattern)
@@ -375,7 +375,7 @@ impl RedisConn {
         let total = keys.len() as u64;
         let page: Vec<String> = keys.into_iter().skip(q.offset).take(q.limit).collect();
 
-        let mut pipe = redis::pipe();
+        let mut pipe = pipe();
         for k in &page {
             pipe.cmd("TYPE").arg(k).cmd("TTL").arg(k);
         }
@@ -389,7 +389,7 @@ impl RedisConn {
         for (i, k) in page.iter().enumerate() {
             let ty = render(&meta[i * 2]).unwrap_or_default();
             let ttl = render(&meta[i * 2 + 1]);
-            let mut c = redis::cmd(match ty.as_str() {
+            let mut c = cmd(match ty.as_str() {
                 "string" => "GET",
                 "list" => "LRANGE",
                 "set" => "SMEMBERS",
@@ -411,9 +411,7 @@ impl RedisConn {
             let v: Value = match c.query_async(&mut con).await {
                 Ok(v) => v,
                 // The key changed type or vanished between SCAN and here.
-                Err(e)
-                    if e.kind() == redis::ErrorKind::TypeError || e.code() == Some("WRONGTYPE") =>
-                {
+                Err(e) if e.kind() == ErrorKind::TypeError || e.code() == Some("WRONGTYPE") => {
                     Value::Nil
                 }
                 Err(e) => return Err(e.into()),
@@ -452,7 +450,7 @@ impl RedisConn {
                 );
             }
             let start = Instant::now();
-            let mut c = redis::cmd(name);
+            let mut c = cmd(name);
             for a in args {
                 c.arg(a);
             }
@@ -496,7 +494,7 @@ impl RedisConn {
                 .and_then(|(_, v)| v.clone())
                 .unwrap_or_default()
         };
-        let mut pipe = redis::pipe();
+        let mut pipe = pipe();
         pipe.atomic();
         // Position of each NX command in the reply, and its key: a 0 / nil
         // there means the name was taken between our check and EXEC.
@@ -508,7 +506,7 @@ impl RedisConn {
             if k.is_empty() {
                 bail!("keys can't be empty");
             }
-            let exists: bool = redis::cmd("EXISTS").arg(k).query_async(con).await?;
+            let exists: bool = cmd("EXISTS").arg(k).query_async(con).await?;
             if exists || !claimed.insert(k.to_string()) {
                 bail!("key {k:?} already exists; nothing was changed");
             }
@@ -524,8 +522,7 @@ impl RedisConn {
                     for (col, v) in set {
                         match col.as_str() {
                             "value" => {
-                                let ty: String =
-                                    redis::cmd("TYPE").arg(&k).query_async(&mut con).await?;
+                                let ty: String = cmd("TYPE").arg(&k).query_async(&mut con).await?;
                                 if ty != "string" {
                                     bail!(
                                         "editing {ty} values in the grid is not supported yet; use the query editor"

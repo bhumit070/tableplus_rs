@@ -13,6 +13,10 @@ use super::{
     Change, ColumnInfo, ConnectionConfig, DbObject, FilterOp, ObjectKind, QueryResult, Structure,
     TableQuery,
 };
+use anyhow::Error;
+use json5::from_str;
+use mongodb::options::ClientOptions;
+use serde_json::Value;
 
 pub struct MongoConn {
     client: Client,
@@ -78,7 +82,7 @@ fn desugar(s: &str) -> String {
 }
 
 fn parse_json5(s: &str) -> Result<Bson> {
-    let v: serde_json::Value = json5::from_str(&desugar(s)).map_err(|e| anyhow!("{e}"))?;
+    let v: Value = from_str(&desugar(s)).map_err(|e| anyhow!("{e}"))?;
     Bson::try_from(v).map_err(|e| anyhow!("{e}"))
 }
 
@@ -128,8 +132,7 @@ fn parse_args(s: &str) -> Result<Vec<Bson>> {
     if s.is_empty() {
         return Ok(vec![]);
     }
-    let v: serde_json::Value =
-        json5::from_str(&format!("[{}]", desugar(s))).map_err(|e| anyhow!("{e}"))?;
+    let v: Value = from_str(&format!("[{}]", desugar(s))).map_err(|e| anyhow!("{e}"))?;
     match Bson::try_from(v).map_err(|e| anyhow!("{e}"))? {
         Bson::Array(a) => Ok(a),
         _ => unreachable!(),
@@ -191,9 +194,9 @@ impl MongoConn {
                 cfg.host, cfg.port
             )
         };
-        let mut opts = mongodb::options::ClientOptions::parse(&uri)
+        let mut opts = ClientOptions::parse(&uri)
             .await
-            .map_err(|e| anyhow::Error::new(e).context("reading the MongoDB address"))?;
+            .map_err(|e| Error::new(e).context("reading the MongoDB address"))?;
         // Fail in seconds, not the driver's default 30 s, unless the URI says otherwise.
         opts.server_selection_timeout
             .get_or_insert(std::time::Duration::from_secs(8));
@@ -210,7 +213,7 @@ impl MongoConn {
             .database("admin")
             .run_command(doc! {"ping": 1})
             .await
-            .map_err(|e| anyhow::Error::new(e).context(format!("couldn't connect to {at}")))?;
+            .map_err(|e| Error::new(e).context(format!("couldn't connect to {at}")))?;
         let name = if !cfg.database.is_empty() {
             cfg.database.clone()
         } else {

@@ -4,7 +4,9 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use anyhow::bail;
 use serde::{Deserialize, Serialize};
+use serde_json::to_string_pretty;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedQuery {
@@ -24,7 +26,7 @@ fn path() -> PathBuf {
 fn load_from(p: &std::path::Path) -> Result<Vec<SavedQuery>> {
     match crate::store::read_json(p, "saved queries") {
         (list, None) => Ok(list),
-        (_, Some(warning)) => anyhow::bail!(warning),
+        (_, Some(warning)) => bail!(warning),
     }
 }
 
@@ -60,16 +62,17 @@ pub fn delete(id: &str) -> Result<()> {
 }
 
 fn save_to(p: &std::path::Path, list: &[SavedQuery]) -> Result<()> {
-    crate::store::write_atomic(p, &serde_json::to_string_pretty(list)?)
+    crate::store::write_atomic(p, &to_string_pretty(list)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     #[test]
     fn upsert_replaces_by_id_and_filters_by_connection() {
-        let p = std::env::temp_dir().join(format!("tabula-saved-{}.json", uuid::Uuid::new_v4()));
+        let p = std::env::temp_dir().join(format!("tabula-saved-{}.json", Uuid::new_v4()));
         let q = |id: &str, name: &str, conn: Option<&str>| SavedQuery {
             id: id.into(),
             name: name.into(),

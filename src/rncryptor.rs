@@ -5,9 +5,13 @@
 //!         | IV(16) | AES-256-CBC/PKCS7 ciphertext | HMAC-SHA256(32) over
 //!         everything before it. Keys: PBKDF2-HMAC-SHA1, 10 000 rounds.
 
+use aes::Aes256;
+use anyhow::anyhow;
 use anyhow::{Result, bail};
+use cbc::Decryptor;
 use cbc::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
 use hmac::{Hmac, KeyInit, Mac};
+use pbkdf2::pbkdf2_hmac;
 use sha1::Sha1;
 use sha2::Sha256;
 
@@ -21,7 +25,7 @@ pub fn is_encrypted(data: &[u8]) -> bool {
 
 fn key(password: &str, salt: &[u8]) -> [u8; 32] {
     let mut k = [0u8; 32];
-    pbkdf2::pbkdf2_hmac::<Sha1>(password.as_bytes(), salt, ROUNDS, &mut k);
+    pbkdf2_hmac::<Sha1>(password.as_bytes(), salt, ROUNDS, &mut k);
     k
 }
 
@@ -37,22 +41,23 @@ pub fn decrypt(data: &[u8], password: &str) -> Result<Vec<u8>> {
     }
     let enc_key = key(password, &data[2..10]);
     let iv = &data[18..34];
-    cbc::Decryptor::<aes::Aes256>::new_from_slices(&enc_key, iv)
-        .map_err(|e| anyhow::anyhow!("{e}"))?
+    Decryptor::<Aes256>::new_from_slices(&enc_key, iv)
+        .map_err(|e| anyhow!("{e}"))?
         .decrypt_padded_vec::<Pkcs7>(&body[HEADER..])
-        .map_err(|_| anyhow::anyhow!("couldn't decrypt the file"))
+        .map_err(|_| anyhow!("couldn't decrypt the file"))
 }
 
 /// Encrypts per the same spec (fixed salts/IV), for tests only.
 #[cfg(test)]
 pub fn encrypt(plain: &[u8], password: &str) -> Vec<u8> {
+    use cbc::Encryptor;
     use cbc::cipher::BlockModeEncrypt;
     let (esalt, hsalt, iv) = ([1u8; 8], [2u8; 8], [3u8; 16]);
     let mut out = vec![3, 1];
     out.extend_from_slice(&esalt);
     out.extend_from_slice(&hsalt);
     out.extend_from_slice(&iv);
-    let ct = cbc::Encryptor::<aes::Aes256>::new_from_slices(&key(password, &esalt), &iv)
+    let ct = Encryptor::<Aes256>::new_from_slices(&key(password, &esalt), &iv)
         .unwrap()
         .encrypt_padded_vec::<Pkcs7>(plain);
     out.extend_from_slice(&ct);

@@ -21,6 +21,8 @@ use crate::db::ddl::{self, ColChange, ColDef};
 use crate::db::{ColumnInfo, DbObject, Driver};
 use crate::runtime;
 use crate::ui::DisabledWhen as _;
+use anyhow::Result;
+use gpui::EntityId;
 
 struct Row {
     /// The column as it is now; `None` for a new one.
@@ -49,7 +51,7 @@ pub struct TableEditor {
 }
 
 impl TableEditor {
-    fn row_mut(&mut self, key: gpui::EntityId) -> Option<&mut Row> {
+    fn row_mut(&mut self, key: EntityId) -> Option<&mut Row> {
         self.rows.iter_mut().find(|r| r.name.entity_id() == key)
     }
 }
@@ -209,7 +211,7 @@ impl TableEditor {
     }
 
     /// The statements Apply would run.
-    fn statements(&self, cx: &App) -> anyhow::Result<Vec<String>> {
+    fn statements(&self, cx: &App) -> Result<Vec<String>> {
         let driver = self.shared.cfg.driver;
         let schema = self.schema.as_deref();
         let defs = self.defs(cx);

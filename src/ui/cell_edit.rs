@@ -29,6 +29,9 @@ use super::{
     CancelCellEdit, ChoiceDown, ChoicePick, ChoiceUp, EditCell, NextCell, OpenCellEditor, PrevCell,
     SetNull,
 };
+use gpui_component::notification::Notification;
+use gpui_kit_assets::IconName as GpuiKitAssetsIconName;
+use serde_json::{Value, from_str, to_string_pretty};
 
 /// A view that hosts an editable grid.
 pub trait CellEditHost: Sized + 'static {
@@ -460,10 +463,7 @@ fn leave_edit<H: CellEditHost>(host: &mut H, window: &mut Window, cx: &mut Conte
         None => finish_edit(host, window, cx),
         Some(e) => {
             cancel_edit(host, window, cx);
-            window.push_notification(
-                gpui_component::notification::Notification::warning(format!("Not saved: {e}")),
-                cx,
-            );
+            window.push_notification(Notification::warning(format!("Not saved: {e}")), cx);
         }
     }
 }
@@ -649,8 +649,8 @@ impl CellDialog {
 
     fn format(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.editor.read(cx).value().to_string();
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
-            && let Ok(pretty) = serde_json::to_string_pretty(&v)
+        if let Ok(v) = from_str::<Value>(&text)
+            && let Ok(pretty) = to_string_pretty(&v)
         {
             self.editor
                 .update(cx, |e, cx| e.replace_all(pretty, window, cx));
@@ -686,7 +686,7 @@ impl Render for CellDialog {
                         d.child(
                             Button::new("format-json")
                                 .cursor_pointer()
-                                .icon(gpui_kit_assets::IconName::Braces)
+                                .icon(GpuiKitAssetsIconName::Braces)
                                 .label("Format")
                                 .ghost()
                                 .small()

@@ -3,6 +3,9 @@
 //! Only what can be told without the server; the server has the last word
 //! on Commit.
 
+use chrono::{Local, NaiveDate, NaiveTime};
+use serde_json::{Value, from_str};
+
 /// What the editor shows under the cell.
 #[derive(Debug, Default, PartialEq)]
 pub struct Check {
@@ -118,8 +121,8 @@ pub fn temporal(ty: &str) -> Option<Temporal> {
 }
 
 /// "2026-11-06" at the start of `text`, if it's a real date.
-pub fn date_part(text: &str) -> Option<chrono::NaiveDate> {
-    chrono::NaiveDate::parse_from_str(text.trim().get(..10)?, "%Y-%m-%d").ok()
+pub fn date_part(text: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(text.trim().get(..10)?, "%Y-%m-%d").ok()
 }
 
 /// "09:41", "09:41:00", "09:41:00.123", optionally followed by a zone
@@ -139,7 +142,7 @@ fn time_ok(t: &str) -> bool {
             && zone.len() <= 6);
     let clock_ok = ["%H:%M:%S%.f", "%H:%M:%S", "%H:%M"]
         .iter()
-        .any(|f| chrono::NaiveTime::parse_from_str(clock, f).is_ok());
+        .any(|f| NaiveTime::parse_from_str(clock, f).is_ok());
     clock_ok && zone_ok
 }
 
@@ -164,7 +167,7 @@ fn temporal_ok(kind: Temporal, text: &str) -> bool {
 
 /// `text` with its date replaced by `date`, keeping the time of day (or
 /// midnight when there was none, for date-and-time columns).
-pub fn with_date(text: &str, date: chrono::NaiveDate, kind: Temporal) -> String {
+pub fn with_date(text: &str, date: NaiveDate, kind: Temporal) -> String {
     let d = date.format("%Y-%m-%d").to_string();
     match kind {
         Temporal::Date => d,
@@ -178,7 +181,7 @@ pub fn with_date(text: &str, date: chrono::NaiveDate, kind: Temporal) -> String 
 
 /// The current local date / time in a column's format.
 pub fn now_for(kind: Temporal) -> String {
-    let now = chrono::Local::now().naive_local();
+    let now = Local::now().naive_local();
     match kind {
         Temporal::Date => now.format("%Y-%m-%d").to_string(),
         Temporal::Time => now.format("%H:%M:%S").to_string(),
@@ -274,7 +277,7 @@ pub fn check(ty: &str, text: &str) -> Check {
             if trimmed.is_empty() {
                 return needs_value();
             }
-            match serde_json::from_str::<serde_json::Value>(trimmed) {
+            match from_str::<Value>(trimmed) {
                 Ok(_) => Check::default(),
                 Err(e) => Check {
                     error: Some(format!("Invalid JSON: {e}")),
@@ -329,6 +332,7 @@ pub fn check(ty: &str, text: &str) -> Check {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::NaiveDate;
 
     fn err(ty: &str, text: &str) -> Option<String> {
         check(ty, text).error
@@ -405,7 +409,7 @@ mod tests {
 
     #[test]
     fn picking_a_date_keeps_the_time() {
-        let d = chrono::NaiveDate::from_ymd_opt(2026, 11, 15).unwrap();
+        let d = NaiveDate::from_ymd_opt(2026, 11, 15).unwrap();
         assert_eq!(
             with_date("2026-11-06 09:41:00+00", d, Temporal::DateTime),
             "2026-11-15 09:41:00+00"

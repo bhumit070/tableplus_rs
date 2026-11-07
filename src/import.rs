@@ -13,6 +13,9 @@ use sha2::{Digest, Sha256};
 use crate::db::ssh::{SshAuth, SshConfig};
 use crate::db::{ConnectionConfig, Driver, EnvTag};
 use crate::rncryptor;
+use dirs::data_dir;
+use plist::Value as PlistValue;
+use serde_json::{from_slice, to_value};
 
 #[derive(Debug, Default)]
 pub struct ImportReport {
@@ -30,7 +33,7 @@ pub struct ImportReport {
 }
 
 pub fn tableplus_store() -> PathBuf {
-    dirs::data_dir()
+    data_dir()
         .unwrap_or_default()
         .join("com.tinyapp.TablePlus")
         .join("Data")
@@ -147,12 +150,12 @@ fn convert(d: &Map<String, Value>) -> std::result::Result<(ConnectionConfig, boo
 
 /// Normalizes JSON or plist (a list of connections, or one) to JSON objects.
 fn entries(plain: &[u8]) -> Result<Vec<Map<String, Value>>> {
-    let value: Value = match serde_json::from_slice(plain) {
+    let value: Value = match from_slice(plain) {
         Ok(v) => v,
         Err(_) => {
-            let p = plist::Value::from_reader(std::io::Cursor::new(plain))
+            let p = PlistValue::from_reader(std::io::Cursor::new(plain))
                 .context("not a TablePlus connection file")?;
-            serde_json::to_value(p)?
+            to_value(p)?
         }
     };
     let list = match value {
@@ -285,7 +288,9 @@ impl ImportReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plist::{Dictionary, Value as PlistValue};
     use serde_json::json;
+    use serde_json::to_string;
 
     fn conn(drv: &str, extra: Value) -> Value {
         let mut base = json!({
@@ -346,7 +351,7 @@ mod tests {
         };
         assert!(r.summary().contains("1 with passwords saved"));
         // Passwords never reach connections.json.
-        let json = serde_json::to_string(&r.added).unwrap();
+        let json = to_string(&r.added).unwrap();
         assert!(!json.contains("s3cret") && !json.contains("tunnel-pw"));
     }
 
@@ -385,14 +390,14 @@ mod tests {
 
     #[test]
     fn reads_plist_store_layout() {
-        let mut d = plist::Dictionary::new();
+        let mut d = Dictionary::new();
         d.insert("ID".into(), "A1".into());
         d.insert("Driver".into(), "PostgreSQL".into());
         d.insert("DatabaseHost".into(), "h".into());
         d.insert("DatabasePort".into(), "5432".into());
         d.insert("isOverSSH".into(), false.into());
         let mut bytes = Vec::new();
-        plist::Value::Array(vec![d.into()])
+        PlistValue::Array(vec![d.into()])
             .to_writer_binary(&mut bytes)
             .unwrap();
         let r = parse(&bytes, None, &[]).unwrap();

@@ -5,6 +5,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::db::ObjectKind;
+use anyhow::Result;
+use serde_json::to_string_pretty;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct State {
@@ -46,13 +48,14 @@ pub fn load() -> (State, Option<String>) {
     crate::store::read_json(&path(), "the last session")
 }
 
-pub fn save(s: &State) -> anyhow::Result<()> {
-    crate::store::write_atomic(&path(), &serde_json::to_string_pretty(s)?)
+pub fn save(s: &State) -> Result<()> {
+    crate::store::write_atomic(&path(), &to_string_pretty(s)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{from_str, to_string};
 
     #[test]
     fn round_trips() {
@@ -74,7 +77,7 @@ mod tests {
             }],
             active: Some("c1".into()),
         };
-        let json = serde_json::to_string(&s).unwrap();
-        assert_eq!(serde_json::from_str::<State>(&json).unwrap(), s);
+        let json = to_string(&s).unwrap();
+        assert_eq!(from_str::<State>(&json).unwrap(), s);
     }
 }

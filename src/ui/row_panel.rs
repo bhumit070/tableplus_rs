@@ -11,6 +11,8 @@ use gpui_component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_f
 use gpui_kit_assets::IconName;
 
 use super::cell_edit::{self, CellEditHost, EditStart};
+use gpui::FontWeight;
+use serde_json::{Value, from_str, to_string_pretty};
 
 /// `v` re-indented, when it's a JSON object or array.
 pub fn pretty_json(v: &str) -> Option<String> {
@@ -18,8 +20,8 @@ pub fn pretty_json(v: &str) -> Option<String> {
     if !(t.starts_with('{') || t.starts_with('[')) {
         return None;
     }
-    let parsed: serde_json::Value = serde_json::from_str(v).ok()?;
-    serde_json::to_string_pretty(&parsed).ok()
+    let parsed: Value = from_str(v).ok()?;
+    to_string_pretty(&parsed).ok()
 }
 
 /// The row shown: the selected row, or the selected cell's row.
@@ -68,7 +70,7 @@ pub fn render<H: CellEditHost>(
                             .child(
                                 div()
                                     .text_xs()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .child(name),
                             )
                             .when_some(ty, |d, t| {

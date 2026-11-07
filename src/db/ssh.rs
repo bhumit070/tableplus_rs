@@ -12,11 +12,23 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
+use anyhow::{Error, anyhow};
+use dirs::home_dir;
 use russh::client;
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey};
+use russh::{
+    Error as RusshError, Signer, keys::Error as KeysError, keys::PublicKeyOrCertificate,
+    keys::agent::AgentIdentity, keys::agent::client::AgentClient,
+    keys::known_hosts::check_known_hosts_path, keys::known_hosts::learn_known_hosts_path,
+    keys::load_secret_key,
+};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
+use tokio::{
+    io::AsyncRead, io::AsyncWrite, io::copy_bidirectional, spawn, sync::Mutex as TokioMutex,
+    task::JoinHandle, time::sleep, time::timeout,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SshAuth {
@@ -66,12 +78,7 @@ impl std::error::Error for UnknownHostKey {}
 impl UnknownHostKey {
     /// Remembers the key, so later connections accept it.
     pub fn trust(&self) -> Result<()> {
-        russh::keys::known_hosts::learn_known_hosts_path(
-            &self.host,
-            self.port,
-            &self.key,
-            own_known_hosts(),
-        )?;
+        learn_known_hosts_path(&self.host, self.port, &self.key, own_known_hosts())?;
         Ok(())
     }
 }
@@ -94,13 +101,13 @@ struct Client {
 }
 
 impl client::Handler for Client {
-    type Error = russh::Error;
+    type Error = RusshError;
 
     async fn check_server_key(
         &mut self,
-        key: &russh::keys::PublicKeyOrCertificate,
+        key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        let russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } = key else {
+        let PublicKeyOrCertificate::PublicKey { key, .. } = key else {
             // Certificate host keys would need a trusted CA list.
             *self.problem.lock().unwrap_or_else(|e| e.into_inner()) = Some(KeyProblem::Changed(
                 "the server presented a host certificate, which isn't supported".into(),
@@ -109,7 +116,7 @@ impl client::Handler for Client {
         };
         let mut files = vec![own_known_hosts()];
         if !cfg!(test)
-            && let Some(home) = dirs::home_dir()
+            && let Some(home) = home_dir()
         {
             files.insert(0, home.join(".ssh").join("known_hosts"));
         }
@@ -117,12 +124,10 @@ impl client::Handler for Client {
             if !file.exists() {
                 continue;
             }
-            match russh::keys::known_hosts::check_known_hosts_path(
-                &self.host, self.port, key, &file,
-            ) {
+            match check_known_hosts_path(&self.host, self.port, key, &file) {
                 Ok(true) => return Ok(true),
                 Ok(false) => {}
-                Err(russh::keys::Error::KeyChanged { line }) => {
+                Err(KeysError::KeyChanged { line }) => {
                     *self.problem.lock().unwrap_or_else(|e| e.into_inner()) =
                         Some(KeyProblem::Changed(format!(
                             "the SSH host key for {}:{} has CHANGED (it doesn't match line {line} \
@@ -153,7 +158,7 @@ impl client::Handler for Client {
 pub struct Tunnel {
     pub port: u16,
     pub host: String,
-    task: tokio::task::JoinHandle<()>,
+    task: JoinHandle<()>,
     /// Why the last attempt to reopen a dropped session failed, if it did.
     reopen_error: Arc<Mutex<Option<String>>>,
 }
@@ -187,15 +192,15 @@ async fn session(ssh: &SshConfig) -> Result<client::Handle<Client>> {
         problem: problem.clone(),
     };
     let connect = client::connect(config, (ssh.host.as_str(), port), handler);
-    let mut session = match tokio::time::timeout(Duration::from_secs(15), connect).await {
+    let mut session = match timeout(Duration::from_secs(15), connect).await {
         Err(_) => bail!("SSH: timed out connecting to {}:{port}", ssh.host),
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
             return Err(
                 match problem.lock().unwrap_or_else(|e| e.into_inner()).take() {
-                    Some(KeyProblem::Unknown(u)) => anyhow::Error::new(u),
-                    Some(KeyProblem::Changed(msg)) => anyhow::anyhow!("SSH: {msg}"),
-                    None => anyhow::Error::new(e)
+                    Some(KeyProblem::Unknown(u)) => Error::new(u),
+                    Some(KeyProblem::Changed(msg)) => anyhow!("SSH: {msg}"),
+                    None => Error::new(e)
                         .context(format!("SSH: couldn't connect to {}:{port}", ssh.host)),
                 },
             );
@@ -203,9 +208,9 @@ async fn session(ssh: &SshConfig) -> Result<client::Handle<Client>> {
     };
     // An agent waiting for a hardware-key touch, or a stalled server,
     // mustn't hang the connect forever.
-    tokio::time::timeout(Duration::from_secs(60), authenticate(&mut session, ssh))
+    timeout(Duration::from_secs(60), authenticate(&mut session, ssh))
         .await
-        .map_err(|_| anyhow::anyhow!("SSH: login to {} didn't finish within 60 s", ssh.host))??;
+        .map_err(|_| anyhow!("SSH: login to {} didn't finish within 60 s", ssh.host))??;
     Ok(session)
 }
 
@@ -216,7 +221,7 @@ impl Drop for Tunnel {
 }
 
 fn expand_home(p: &str) -> PathBuf {
-    match (p.strip_prefix("~/"), dirs::home_dir()) {
+    match (p.strip_prefix("~/"), home_dir()) {
         (Some(rest), Some(home)) => home.join(rest),
         _ => PathBuf::from(p),
     }
@@ -236,13 +241,13 @@ impl Tunnel {
         let local_port = listener.local_addr()?.port();
         // The live session; replaced when it drops (laptop sleep, network
         // change, server restart) by the next connection that needs it.
-        let current = Arc::new(tokio::sync::Mutex::new(Arc::new(first)));
+        let current = Arc::new(TokioMutex::new(Arc::new(first)));
         let reopen_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let errors = reopen_error.clone();
         let host = ssh.host.clone();
         let ssh = ssh.clone();
         let target = target_host.to_string();
-        let task = tokio::spawn(async move {
+        let task = spawn(async move {
             // Owned here, so aborting the task also stops every forward.
             let mut forwards = JoinSet::new();
             loop {
@@ -252,7 +257,7 @@ impl Tunnel {
                     // rather than ending the tunnel for good.
                     Err(e) => {
                         eprintln!("SSH tunnel: accept failed: {e}");
-                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        sleep(Duration::from_millis(200)).await;
                         continue;
                     }
                 };
@@ -287,7 +292,7 @@ impl Tunnel {
                     match channel {
                         Ok(channel) => {
                             let mut stream = channel.into_stream();
-                            let _ = tokio::io::copy_bidirectional(&mut socket, &mut stream).await;
+                            let _ = copy_bidirectional(&mut socket, &mut stream).await;
                         }
                         // Closing the socket makes the driver fail; the log
                         // says it was the tunnel (the driver can't know).
@@ -313,7 +318,7 @@ impl Tunnel {
 /// the OpenSSH agent's pipe, else Pageant.
 #[cfg(unix)]
 async fn agent_login(session: &mut client::Handle<Client>, user: &str) -> Result<bool> {
-    let agent = russh::keys::agent::client::AgentClient::connect_env()
+    let agent = AgentClient::connect_env()
         .await
         .context("SSH: couldn't reach ssh-agent (is SSH_AUTH_SOCK set?)")?;
     try_agent_keys(session, user, agent).await
@@ -342,16 +347,16 @@ async fn agent_login(_: &mut client::Handle<Client>, _: &str) -> Result<bool> {
 async fn try_agent_keys<S>(
     session: &mut client::Handle<Client>,
     user: &str,
-    mut agent: russh::keys::agent::client::AgentClient<S>,
+    mut agent: AgentClient<S>,
 ) -> Result<bool>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-    russh::keys::agent::client::AgentClient<S>: russh::Signer,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    AgentClient<S>: Signer,
 {
     let ids = agent.request_identities().await?;
     let hash = session.best_supported_rsa_hash().await?.flatten();
     for id in ids {
-        let russh::keys::agent::AgentIdentity::PublicKey { key, .. } = id else {
+        let AgentIdentity::PublicKey { key, .. } = id else {
             continue;
         };
         if let Ok(r) = session
@@ -374,7 +379,7 @@ async fn authenticate(session: &mut client::Handle<Client>, ssh: &SshConfig) -> 
             .success(),
         SshAuth::Key => {
             let paths: Vec<PathBuf> = if ssh.key_path.trim().is_empty() {
-                let home = dirs::home_dir().unwrap_or_default().join(".ssh");
+                let home = home_dir().unwrap_or_default().join(".ssh");
                 ["id_ed25519", "id_ecdsa", "id_rsa"]
                     .iter()
                     .map(|f| home.join(f))
@@ -393,7 +398,7 @@ async fn authenticate(session: &mut client::Handle<Client>, ssh: &SshConfig) -> 
             let mut ok = false;
             let mut load_err = None;
             for path in paths {
-                let key = match russh::keys::load_secret_key(&path, passphrase)
+                let key = match load_secret_key(&path, passphrase)
                     .with_context(|| format!("SSH: couldn't read key {}", path.display()))
                 {
                     Ok(k) => k,
@@ -437,7 +442,9 @@ pub(crate) mod test_server {
     use russh::Channel;
     use russh::keys::{Algorithm, PrivateKey};
     use russh::server::{self, Auth, ChannelOpenHandle, Msg, Session};
+    use russh::{Disconnect, Error, keys::PublicKey, server::Handle, server::VerifiedPublicKey};
     use tokio::net::{TcpListener, TcpStream};
+    use tokio::{io::copy_bidirectional, spawn};
 
     pub const USER: &str = "tunnel";
     pub const PASSWORD: &str = "secret";
@@ -445,11 +452,11 @@ pub(crate) mod test_server {
     #[derive(Clone)]
     struct Server {
         /// Accepted for public-key login, if set.
-        client_key: Option<russh::keys::PublicKey>,
+        client_key: Option<PublicKey>,
     }
 
     impl server::Handler for Server {
-        type Error = russh::Error;
+        type Error = Error;
 
         async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
             Ok(if user == USER && password == PASSWORD {
@@ -462,7 +469,7 @@ pub(crate) mod test_server {
         async fn auth_publickey(
             &mut self,
             user: &str,
-            key: russh::server::VerifiedPublicKey<'_>,
+            key: VerifiedPublicKey<'_>,
         ) -> Result<Auth, Self::Error> {
             let ok = user == USER && self.client_key.as_ref() == Some(key.public_key);
             Ok(if ok { Auth::Accept } else { Auth::reject() })
@@ -480,10 +487,10 @@ pub(crate) mod test_server {
         ) -> Result<(), Self::Error> {
             let target = format!("{host}:{port}");
             reply.accept().await;
-            tokio::spawn(async move {
+            spawn(async move {
                 if let Ok(mut tcp) = TcpStream::connect(target).await {
                     let mut stream = channel.into_stream();
-                    let _ = tokio::io::copy_bidirectional(&mut tcp, &mut stream).await;
+                    let _ = copy_bidirectional(&mut tcp, &mut stream).await;
                 }
             });
             Ok(())
@@ -491,27 +498,25 @@ pub(crate) mod test_server {
     }
 
     /// Running client sessions; disconnecting them drops those clients.
-    pub type Sessions = Arc<std::sync::Mutex<Vec<russh::server::Handle>>>;
+    pub type Sessions = Arc<std::sync::Mutex<Vec<Handle>>>;
 
     /// Ends every session, as a server restart would.
     pub async fn drop_all(sessions: &Sessions) {
         let all: Vec<_> = sessions.lock().unwrap().drain(..).collect();
         for h in all {
             let _ = h
-                .disconnect(russh::Disconnect::ByApplication, "bye".into(), "en".into())
+                .disconnect(Disconnect::ByApplication, "bye".into(), "en".into())
                 .await;
         }
     }
 
     /// Starts the server on a free port; returns (port, host key).
-    pub async fn start(client_key: Option<russh::keys::PublicKey>) -> (u16, PrivateKey) {
+    pub async fn start(client_key: Option<PublicKey>) -> (u16, PrivateKey) {
         let (port, key, _) = start_tracked(client_key).await;
         (port, key)
     }
 
-    pub async fn start_tracked(
-        client_key: Option<russh::keys::PublicKey>,
-    ) -> (u16, PrivateKey, Sessions) {
+    pub async fn start_tracked(client_key: Option<PublicKey>) -> (u16, PrivateKey, Sessions) {
         let sessions: Sessions = Default::default();
         let tracked = sessions.clone();
         let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
@@ -522,11 +527,11 @@ pub(crate) mod test_server {
         });
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        tokio::spawn(async move {
+        spawn(async move {
             while let Ok((socket, _)) = listener.accept().await {
                 let (config, client_key) = (config.clone(), client_key.clone());
                 let tracked = tracked.clone();
-                tokio::spawn(async move {
+                spawn(async move {
                     let handler = Server { client_key };
                     if let Ok(s) = server::run_stream(config, socket, handler).await {
                         tracked.lock().unwrap().push(s.handle());
@@ -543,6 +548,8 @@ pub(crate) mod test_server {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::{io::copy, net::TcpStream, spawn, time::sleep, time::timeout};
+    use uuid::Uuid;
 
     fn cfg(port: u16, password: &str) -> SshConfig {
         SshConfig {
@@ -563,11 +570,11 @@ mod tests {
         // An echo server stands in for the database.
         let echo = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let echo_port = echo.local_addr().unwrap().port();
-        tokio::spawn(async move {
+        spawn(async move {
             while let Ok((mut s, _)) = echo.accept().await {
-                tokio::spawn(async move {
+                spawn(async move {
                     let (mut r, mut w) = s.split();
-                    let _ = tokio::io::copy(&mut r, &mut w).await;
+                    let _ = copy(&mut r, &mut w).await;
                 });
             }
         });
@@ -597,9 +604,7 @@ mod tests {
         .await
         .unwrap();
         for msg in [&b"hello"[..], b"second connection"] {
-            let mut c = tokio::net::TcpStream::connect(("127.0.0.1", t.port))
-                .await
-                .unwrap();
+            let mut c = TcpStream::connect(("127.0.0.1", t.port)).await.unwrap();
             c.write_all(msg).await.unwrap();
             let mut buf = vec![0; msg.len()];
             c.read_exact(&mut buf).await.unwrap();
@@ -607,11 +612,9 @@ mod tests {
         }
         let port = t.port;
         drop(t);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
         assert!(
-            tokio::net::TcpStream::connect(("127.0.0.1", port))
-                .await
-                .is_err(),
+            TcpStream::connect(("127.0.0.1", port)).await.is_err(),
             "closed with the connection"
         );
     }
@@ -622,7 +625,7 @@ mod tests {
         use russh::keys::{Algorithm, PrivateKey};
         let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
         let (ssh_port, _) = test_server::start(Some(key.public_key().clone())).await;
-        let file = std::env::temp_dir().join(format!("tabula-ssh-key-{}", uuid::Uuid::new_v4()));
+        let file = std::env::temp_dir().join(format!("tabula-ssh-key-{}", Uuid::new_v4()));
         let locked = key.encrypt(&mut rand::rng(), "pass phrase").unwrap();
         std::fs::write(
             &file,
@@ -649,11 +652,11 @@ mod tests {
         let (ssh_port, _, sessions) = test_server::start_tracked(None).await;
         let echo = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let echo_port = echo.local_addr().unwrap().port();
-        tokio::spawn(async move {
+        spawn(async move {
             while let Ok((mut s, _)) = echo.accept().await {
-                tokio::spawn(async move {
+                spawn(async move {
                     let (mut r, mut w) = s.split();
-                    let _ = tokio::io::copy(&mut r, &mut w).await;
+                    let _ = copy(&mut r, &mut w).await;
                 });
             }
         });
@@ -663,12 +666,10 @@ mod tests {
         }
         let t = Tunnel::open(&c, "127.0.0.1", echo_port).await.unwrap();
         let roundtrip = |port: u16| async move {
-            let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
-                .await
-                .unwrap();
+            let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
             s.write_all(b"ping").await.unwrap();
             let mut buf = [0u8; 4];
-            tokio::time::timeout(Duration::from_secs(5), s.read_exact(&mut buf))
+            timeout(Duration::from_secs(5), s.read_exact(&mut buf))
                 .await
                 .is_ok_and(|r| r.is_ok())
                 && &buf == b"ping"
@@ -676,7 +677,7 @@ mod tests {
         assert!(roundtrip(t.port).await);
         // The server drops every session.
         test_server::drop_all(&sessions).await;
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        sleep(Duration::from_millis(300)).await;
         assert!(roundtrip(t.port).await, "reopened");
         assert!(t.broken().is_none());
     }

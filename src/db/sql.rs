@@ -12,7 +12,7 @@ use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow, My
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgSslMode};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow};
 use sqlx::{
-    AssertSqlSafe, Column, Connection as _, Either, Executor, Row, SqlSafeStr, Statement, TypeInfo,
+    AssertSqlSafe, Column, Connection, Either, Executor, Row, SqlSafeStr, Statement, TypeInfo,
     ValueRef,
 };
 
@@ -22,6 +22,11 @@ use super::{
     Change, ColumnInfo, ConnectionConfig, DbObject, Driver, FilterOp, ForeignKey, ObjectKind,
     QueryResult, Structure, TableQuery, sql_literal,
 };
+use anyhow::{Error, anyhow};
+use redis::RedisError;
+use serde_json::from_str;
+use sqlx::{Error as SqlxError, MySqlConnection, PgConnection, query, raw_sql};
+use tokio::{select, time::timeout};
 
 enum Pool {
     Pg(PgPool),
@@ -59,14 +64,14 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Opens (and closes) one connection, so failures carry the server's own
 /// reason — refused, bad password, unknown database, TLS — with the address.
-async fn probe<C: sqlx::Connection>(
+async fn probe<C: Connection>(
     cfg: &ConnectionConfig,
-    connect: impl std::future::Future<Output = std::result::Result<C, sqlx::Error>>,
+    connect: impl std::future::Future<Output = std::result::Result<C, SqlxError>>,
 ) -> Result<()> {
     let at = format!("{}:{}", cfg.host, cfg.port);
-    match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
+    match timeout(CONNECT_TIMEOUT, connect).await {
         Err(_) => bail!("no answer from {at} within {} s", CONNECT_TIMEOUT.as_secs()),
-        Ok(Err(e)) => Err(anyhow::Error::new(e).context(format!("couldn't connect to {at}"))),
+        Ok(Err(e)) => Err(Error::new(e).context(format!("couldn't connect to {at}"))),
         Ok(Ok(c)) => {
             let _ = c.close().await;
             Ok(())
@@ -76,13 +81,13 @@ async fn probe<C: sqlx::Connection>(
 
 /// A pool that can't get a connection says only "pool timed out": say
 /// what that means for the user.
-pub(super) fn explain_lost(e: anyhow::Error) -> anyhow::Error {
-    let lost = e.downcast_ref::<sqlx::Error>().is_some_and(|e| {
+pub(super) fn explain_lost(e: Error) -> Error {
+    let lost = e.downcast_ref::<SqlxError>().is_some_and(|e| {
         matches!(
             e,
-            sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed | sqlx::Error::Io(_)
+            SqlxError::PoolTimedOut | SqlxError::PoolClosed | SqlxError::Io(_)
         )
-    }) || e.downcast_ref::<redis::RedisError>().is_some_and(|e| {
+    }) || e.downcast_ref::<RedisError>().is_some_and(|e| {
         e.is_timeout() || e.is_io_error() || e.is_connection_dropped() || e.is_connection_refusal()
     });
     if lost {
@@ -368,7 +373,7 @@ fn lite_row(row: &SqliteRow) -> Vec<Option<String>> {
 macro_rules! run_raw {
     ($pool:expr, $sql:expr, $decode:ident) => {{
         let sql: String = $sql;
-        let mut stream = sqlx::raw_sql(AssertSqlSafe(sql.clone())).fetch_many($pool);
+        let mut stream = raw_sql(AssertSqlSafe(sql.clone())).fetch_many($pool);
         let mut res = QueryResult {
             statement: sql.clone(),
             ..Default::default()
@@ -459,7 +464,7 @@ macro_rules! run_batch {
         // (query for its id, cancel statement with `{}` for the id).
         let server: Option<(&str, &str)> = $server;
         if let Some((id_sql, kill)) = server {
-            let id = async { Ok::<_, anyhow::Error>(run_raw!(&mut *conn, id_sql.to_string(), $decode)) }
+            let id = async { Ok::<_, Error>(run_raw!(&mut *conn, id_sql.to_string(), $decode)) }
                 .await
                 .ok()
                 .and_then(|r| r.rows.first()?.first()?.as_deref()?.parse::<u64>().ok());
@@ -467,7 +472,7 @@ macro_rules! run_batch {
                 let (pool, sql) = ($pool.clone(), kill.replace("{}", &id.to_string()));
                 cancel.on_server_cancel(Box::new(move || {
                     Box::pin(async move {
-                        sqlx::raw_sql(AssertSqlSafe(sql))
+                        raw_sql(AssertSqlSafe(sql))
                             .execute(&pool)
                             .await
                             .map(|_| ())
@@ -478,23 +483,23 @@ macro_rules! run_batch {
         }
         let mut effects = SessionEffects::default();
         let mut out = Vec::new();
-        let mut failed: Option<(usize, anyhow::Error)> = None;
+        let mut failed: Option<(usize, Error)> = None;
         for (i, stmt) in stmts.into_iter().enumerate() {
             effects.observe(&stmt);
             let start = Instant::now();
             let res: Result<QueryResult> = if cancel.is_cancelled() {
-                Err(anyhow::anyhow!(CANCELLED))
+                Err(anyhow!(CANCELLED))
             } else {
-                tokio::select! {
+                select! {
                     r = async { Ok(run_raw!(&mut *conn, stmt, $decode)) } => r,
-                    _ = cancel.cancelled() => Err(anyhow::anyhow!(CANCELLED)),
+                    _ = cancel.cancelled() => Err(anyhow!(CANCELLED)),
                 }
             };
             // The server-side cancel makes the statement fail with its own
             // error, or (MySQL SLEEP) return early as if done: either way
             // it was cancelled.
             let res = if cancel.is_cancelled() {
-                Err(anyhow::anyhow!(CANCELLED))
+                Err(anyhow!(CANCELLED))
             } else {
                 res
             };
@@ -516,7 +521,7 @@ macro_rules! run_batch {
             drop(conn.detach());
         } else {
             if rolled_back {
-                let _ = sqlx::raw_sql("rollback").execute(&mut *conn).await;
+                let _ = raw_sql("rollback").execute(&mut *conn).await;
             }
             if effects.dirty || rolled_back || failed.is_some() {
                 let _ = conn.detach().close().await;
@@ -530,7 +535,7 @@ macro_rules! run_batch {
                 String::new()
             };
             if cancel.is_cancelled() {
-                let e = anyhow::anyhow!(cancel.message());
+                let e = anyhow!(cancel.message());
                 if n == 1 && !rolled_back {
                     return Err(e);
                 }
@@ -550,7 +555,7 @@ macro_rules! run_tx {
     ($pool:expr, $stmts:expr) => {{
         let mut tx = $pool.begin().await?;
         for (sql, params, expect_one) in $stmts {
-            let mut q = sqlx::query(AssertSqlSafe(sql.clone()));
+            let mut q = query(AssertSqlSafe(sql.clone()));
             for p in params {
                 q = q.bind(p);
             }
@@ -626,7 +631,7 @@ impl SqlConn {
                     pool = pool.after_connect(move |conn, _| {
                         let sql = sql.clone();
                         Box::pin(async move {
-                            sqlx::raw_sql(AssertSqlSafe(sql))
+                            raw_sql(AssertSqlSafe(sql))
                                 .execute(&mut *conn)
                                 .await
                                 .map(|_| ())
@@ -635,7 +640,7 @@ impl SqlConn {
                 }
                 // One direct connection first: the pool would retry quietly
                 // and only report "pool timed out", hiding the real cause.
-                probe(cfg, sqlx::PgConnection::connect_with(&o)).await?;
+                probe(cfg, PgConnection::connect_with(&o)).await?;
                 Pool::Pg(pool.connect_with(o).await?)
             }
             Driver::MySql => {
@@ -654,14 +659,14 @@ impl SqlConn {
                 if read_only {
                     pool = pool.after_connect(|conn, _| {
                         Box::pin(async move {
-                            sqlx::raw_sql("set session transaction read only")
+                            raw_sql("set session transaction read only")
                                 .execute(&mut *conn)
                                 .await
                                 .map(|_| ())
                         })
                     });
                 }
-                probe(cfg, sqlx::MySqlConnection::connect_with(&o)).await?;
+                probe(cfg, MySqlConnection::connect_with(&o)).await?;
                 Pool::My(pool.connect_with(o).await?)
             }
             Driver::Sqlite => {
@@ -963,7 +968,7 @@ impl SqlConn {
                 // Postgres lists the labels in a sixth column; MySQL spells
                 // them out in the column type.
                 enum_values: match r.get(5).cloned().flatten() {
-                    Some(json) => serde_json::from_str(&json).unwrap_or_default(),
+                    Some(json) => from_str(&json).unwrap_or_default(),
                     None => mysql_enum(r[1].as_deref().unwrap_or_default()),
                 },
             })
@@ -971,7 +976,7 @@ impl SqlConn {
         // Extras: when one can't be read (permissions, old servers…) the
         // rest still shows, with a note saying what's missing.
         let mut warnings = vec![];
-        let mut part = |what: &str, e: anyhow::Error| warnings.push(format!("{what}: {e:#}"));
+        let mut part = |what: &str, e: Error| warnings.push(format!("{what}: {e:#}"));
         let indexes = self.raw(idx_sql).await.unwrap_or_else(|e| {
             part("Indexes", e);
             Default::default()

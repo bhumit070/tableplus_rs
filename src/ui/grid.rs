@@ -23,6 +23,10 @@ use super::cell_value::{Temporal, check, date_part, now_for, temporal, with_date
 use super::theme::{Tokens, dp, enum_color, tokens};
 use super::{CellDown, CellDownMore, CellUp, CellUpMore};
 use crate::db::{Change, ColumnInfo, QueryResult};
+use chrono::{Local, NaiveDate};
+use gpui::{Div, MouseButton, MouseDownEvent, Stateful, anchored, deferred};
+use gpui_component::input::InputState;
+use uuid::Uuid;
 
 /// A data table with the design's 32px rows and 40px two-line header,
 /// scaled with the interface size.
@@ -163,7 +167,7 @@ fn truthy(v: &str) -> Option<bool> {
 }
 
 /// A NULL / DEFAULT marker: never an empty-looking cell.
-fn marker(text: &'static str, fg: Hsla, bg: Hsla) -> gpui::Div {
+fn marker(text: &'static str, fg: Hsla, bg: Hsla) -> Div {
     div()
         .flex_none()
         .px(dp(5.))
@@ -179,7 +183,7 @@ fn marker(text: &'static str, fg: Hsla, bg: Hsla) -> gpui::Div {
 }
 
 /// The pill an enum value is shown as: a coloured dot and the value.
-pub fn enum_pill(value: &str, cx: &App) -> gpui::Div {
+pub fn enum_pill(value: &str, cx: &App) -> Div {
     let color = enum_color(value, cx);
     // Natural width: enum columns are sized to their longest value.
     h_flex()
@@ -197,7 +201,7 @@ pub fn enum_pill(value: &str, cx: &App) -> gpui::Div {
 
 /// A checkbox with the literal next to it, so true / false / NULL are never
 /// confused.
-fn bool_cell(v: bool, raw: &str, t: &Tokens) -> gpui::Div {
+fn bool_cell(v: bool, raw: &str, t: &Tokens) -> Div {
     h_flex()
         .gap(dp(6.))
         .child(
@@ -260,7 +264,7 @@ pub struct Grid {
     pub refs: Vec<Option<String>>,
     kinds: Vec<Kind>,
     /// The month the date editor's calendar shows; `None` follows the value.
-    pub cal_month: Option<chrono::NaiveDate>,
+    pub cal_month: Option<NaiveDate>,
     pub on_fk_search: Option<FkSearchFn>,
     /// Rows of the referenced table matching the foreign-key editor's text:
     /// (key, label), and which one ↑ / ↓ highlight. `None` while looking.
@@ -658,12 +662,8 @@ impl Grid {
         .when_some(fk_list, |d, list| {
             d.child(
                 div().absolute().left(px(-2.)).top_full().child(
-                    gpui::deferred(
-                        gpui::anchored()
-                            .snap_to_window_with_margin(px(8.))
-                            .child(list),
-                    )
-                    .with_priority(1),
+                    deferred(anchored().snap_to_window_with_margin(px(8.)).child(list))
+                        .with_priority(1),
                 ),
             )
         })
@@ -724,25 +724,18 @@ impl Grid {
                     .child(Icon::new(IconName::Sparkles).size(dp(11.)))
                     .child("Generate")
                     // Mouse-down, so the editor keeps focus (and isn't saved first).
-                    .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                         cx.stop_propagation();
                         window.prevent_default();
-                        let v = uuid::Uuid::new_v4().to_string();
+                        let v = Uuid::new_v4().to_string();
                         target.update(cx, |i, cx| i.set_value(v, window, cx));
                     }),
             )
         })
         .when_some(calendar, |d, cal| {
-            d.child(
-                div().absolute().left(px(-2.)).top_full().child(
-                    gpui::deferred(
-                        gpui::anchored()
-                            .snap_to_window_with_margin(px(8.))
-                            .child(cal),
-                    )
-                    .with_priority(1),
-                ),
-            )
+            d.child(div().absolute().left(px(-2.)).top_full().child(
+                deferred(anchored().snap_to_window_with_margin(px(8.)).child(cal)).with_priority(1),
+            ))
         })
         .when(temporal(&ty) == Some(Temporal::Time), |d| {
             let target = input.clone();
@@ -765,7 +758,7 @@ impl Grid {
                     .text_size(dp(11.))
                     .text_color(t.text_secondary)
                     .child("Now")
-                    .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                         cx.stop_propagation();
                         window.prevent_default();
                         let v = now_for(Temporal::Time);
@@ -778,8 +771,8 @@ impl Grid {
             |d, (text, error)| {
                 d.child(
                     div().absolute().left(px(-2.)).top_full().child(
-                        gpui::deferred(
-                            gpui::anchored().snap_to_window_with_margin(px(8.)).child(
+                        deferred(
+                            anchored().snap_to_window_with_margin(px(8.)).child(
                                 h_flex()
                                     .mt(dp(6.))
                                     .max_w(dp(360.))
@@ -821,7 +814,7 @@ impl Grid {
         &mut self,
         dir: i32,
         more: bool,
-        input: &Entity<gpui_component::input::InputState>,
+        input: &Entity<InputState>,
         window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
@@ -859,9 +852,9 @@ impl Grid {
     fn render_fk_matches(
         &self,
         col_ix: usize,
-        input: &Entity<gpui_component::input::InputState>,
+        input: &Entity<InputState>,
         cx: &mut Context<TableState<Self>>,
-    ) -> gpui::AnyElement {
+    ) -> AnyElement {
         let t = tokens(cx);
         let mono = cx.theme().mono_font_family.clone();
         let text = input.read(cx).value().trim().to_string();
@@ -915,7 +908,7 @@ impl Grid {
                                 .text_color(t.text_secondary)
                                 .child(label.clone()),
                         )
-                        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                             cx.stop_propagation();
                             window.prevent_default();
                             input.update(cx, |i, cx| i.set_value(key2.clone(), window, cx));
@@ -987,14 +980,14 @@ impl Grid {
     fn render_calendar(
         &self,
         kind: Temporal,
-        input: &Entity<gpui_component::input::InputState>,
+        input: &Entity<InputState>,
         checked: &crate::ui::cell_value::Check,
         cx: &mut Context<TableState<Self>>,
-    ) -> gpui::AnyElement {
+    ) -> AnyElement {
         use chrono::Datelike as _;
         let t = tokens(cx);
         let text = input.read(cx).value().to_string();
-        let today = chrono::Local::now().date_naive();
+        let today = Local::now().date_naive();
         let picked = date_part(&text);
         let month = self
             .cal_month
@@ -1002,10 +995,9 @@ impl Grid {
             .unwrap_or(today)
             .with_day(1)
             .unwrap_or(today);
-        let shift = |m: chrono::NaiveDate, by: i32| {
+        let shift = |m: NaiveDate, by: i32| {
             let n = m.year() * 12 + m.month0() as i32 + by;
-            chrono::NaiveDate::from_ymd_opt(n.div_euclid(12), n.rem_euclid(12) as u32 + 1, 1)
-                .unwrap_or(m)
+            NaiveDate::from_ymd_opt(n.div_euclid(12), n.rem_euclid(12) as u32 + 1, 1).unwrap_or(m)
         };
         // Mondays first; blanks before the 1st.
         let lead = month.weekday().num_days_from_monday() as usize;
@@ -1023,7 +1015,7 @@ impl Grid {
                     .hover(|d| d.bg(t.hover))
                     .child(Icon::new(icon).size(dp(13.)))
                     .on_mouse_down(
-                        gpui::MouseButton::Left,
+                        MouseButton::Left,
                         cx.listener(move |table, _, window, cx| {
                             cx.stop_propagation();
                             window.prevent_default();
@@ -1032,8 +1024,8 @@ impl Grid {
                         }),
                     )
             };
-        let set = |v: String, input: Entity<gpui_component::input::InputState>| {
-            move |_: &gpui::MouseDownEvent, window: &mut Window, cx: &mut App| {
+        let set = |v: String, input: Entity<InputState>| {
+            move |_: &MouseDownEvent, window: &mut Window, cx: &mut App| {
                 cx.stop_propagation();
                 window.prevent_default();
                 input.update(cx, |i, cx| i.set_value(v.clone(), window, cx));
@@ -1067,7 +1059,7 @@ impl Grid {
                     })
                     .child(day.to_string())
                     .on_mouse_down(
-                        gpui::MouseButton::Left,
+                        MouseButton::Left,
                         set(with_date(&text, date, kind), input.clone()),
                     )
                     .into_any_element(),
@@ -1142,14 +1134,16 @@ impl Grid {
                     .border_t_1()
                     .border_color(t.border)
                     .child(button("cal-today", "Today").on_mouse_down(
-                        gpui::MouseButton::Left,
+                        MouseButton::Left,
                         set(with_date(&text, today, kind), input.clone()),
                     ))
                     .when(kind == Temporal::DateTime, |d| {
-                        d.child(button("cal-now", "Now").on_mouse_down(
-                            gpui::MouseButton::Left,
-                            set(now_for(kind), input.clone()),
-                        ))
+                        d.child(
+                            button("cal-now", "Now").on_mouse_down(
+                                MouseButton::Left,
+                                set(now_for(kind), input.clone()),
+                            ),
+                        )
                     })
                     .child(div().flex_1())
                     .child(
@@ -1275,7 +1269,7 @@ impl TableDelegate for Grid {
         row_ix: usize,
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
-    ) -> gpui::Stateful<gpui::Div> {
+    ) -> Stateful<Div> {
         let t = tokens(cx);
         let state = if self.deleted.contains(&row_ix) {
             Some(t.danger)

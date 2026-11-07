@@ -2,8 +2,10 @@
 //! `history.db` (SQLite) next to the other config files. Local only.
 
 use anyhow::Result;
+use anyhow::bail;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::{AssertSqlSafe, Row};
+use sqlx::{query, query_scalar, raw_sql};
 use tokio::sync::OnceCell;
 
 /// Entries kept per connection; older ones are pruned.
@@ -36,15 +38,11 @@ async fn pool() -> Result<&'static SqlitePool> {
             .connect_with(o)
             .await?;
         // Schema version, so later changes can migrate old files.
-        let version: i64 = sqlx::query_scalar("pragma user_version")
-            .fetch_one(&pool)
-            .await?;
+        let version: i64 = query_scalar("pragma user_version").fetch_one(&pool).await?;
         if version > 1 {
-            anyhow::bail!(
-                "history.db was written by a newer Tabula; history is off until you update"
-            );
+            bail!("history.db was written by a newer Tabula; history is off until you update");
         }
-        sqlx::raw_sql(
+        raw_sql(
             "create table if not exists history (
                 id integer primary key,
                 conn_id text not null,
@@ -67,7 +65,7 @@ async fn pool() -> Result<&'static SqlitePool> {
 
 pub async fn record(e: Entry) -> Result<()> {
     let p = pool().await?;
-    sqlx::query(
+    query(
         "insert into history (conn_id, database, sql, ran_at, elapsed_ms, rows, error)
          values (?, ?, ?, ?, ?, ?, ?)",
     )
@@ -80,7 +78,7 @@ pub async fn record(e: Entry) -> Result<()> {
     .bind(&e.error)
     .execute(p)
     .await?;
-    sqlx::query(AssertSqlSafe(format!(
+    query(AssertSqlSafe(format!(
         "delete from history where conn_id = ? and id not in
          (select id from history where conn_id = ? order by id desc limit {KEEP})"
     )))
@@ -93,7 +91,7 @@ pub async fn record(e: Entry) -> Result<()> {
 
 /// Newest first, one entry per distinct SQL text (its latest run).
 pub async fn recent(conn_id: &str, limit: i64) -> Result<Vec<Entry>> {
-    let rows = sqlx::query(
+    let rows = query(
         "select conn_id, database, sql, ran_at, elapsed_ms, rows, error from history
          where id in (select max(id) from history where conn_id = ? group by sql)
          order by id desc limit ?",
@@ -117,7 +115,7 @@ pub async fn recent(conn_id: &str, limit: i64) -> Result<Vec<Entry>> {
 }
 
 pub async fn clear(conn_id: &str) -> Result<()> {
-    sqlx::query("delete from history where conn_id = ?")
+    query("delete from history where conn_id = ?")
         .bind(conn_id)
         .execute(pool().await?)
         .await?;
@@ -145,6 +143,8 @@ pub fn now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::executor::block_on;
+    use uuid::Uuid;
 
     fn entry(conn: &str, sql: &str, at: i64) -> Entry {
         Entry {
@@ -161,8 +161,8 @@ mod tests {
     #[test]
     fn keeps_latest_run_per_query_per_connection() {
         // On the app's runtime, which owns the shared pool.
-        let conn = format!("hist-{}", uuid::Uuid::new_v4());
-        let got = futures::executor::block_on(crate::runtime::spawn(async move {
+        let conn = format!("hist-{}", Uuid::new_v4());
+        let got = block_on(crate::runtime::spawn(async move {
             record(entry(&conn, "select 1", 10)).await?;
             record(entry(&conn, "select 2", 20)).await?;
             record(entry(&conn, "select 1", 30)).await?;

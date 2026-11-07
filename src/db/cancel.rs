@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use tokio::sync::Notify;
+use tokio::{pin, time::timeout};
 
 /// The error message of a cancelled run.
 pub const CANCELLED: &str = "Query cancelled";
@@ -61,7 +62,7 @@ impl Cancel {
         }
         let server = self.server.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(f) = server {
-            let err = match tokio::time::timeout(Duration::from_secs(5), f()).await {
+            let err = match timeout(Duration::from_secs(5), f()).await {
                 Ok(Ok(())) => None,
                 Ok(Err(e)) => Some(e),
                 Err(_) => Some("the server didn't answer the cancel request".into()),
@@ -75,7 +76,7 @@ impl Cancel {
     /// Resolves once `cancel` has run.
     pub async fn cancelled(&self) {
         let notified = self.notify.notified();
-        tokio::pin!(notified);
+        pin!(notified);
         // Register before checking, so a cancel in between isn't missed.
         notified.as_mut().enable();
         if !self.done.load(Ordering::SeqCst) {
@@ -88,6 +89,7 @@ impl Cancel {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use tokio::{spawn, time::timeout};
 
     #[tokio::test]
     async fn cancel_runs_the_server_side_cancel_then_wakes_waiters() {
@@ -100,12 +102,12 @@ mod tests {
                 Ok(())
             })
         }));
-        let waiter = tokio::spawn({
+        let waiter = spawn({
             let c = c.clone();
             async move { c.cancelled().await }
         });
         c.cancel().await;
-        tokio::time::timeout(Duration::from_secs(1), waiter)
+        timeout(Duration::from_secs(1), waiter)
             .await
             .expect("woken")
             .unwrap();

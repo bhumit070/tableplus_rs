@@ -6,6 +6,11 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use crate::db::ConnectionConfig;
+use anyhow::{Error, anyhow, bail};
+use dirs::config_dir as dirs_config_dir;
+use keyring::{Entry, Error as KeyringError};
+use serde::de::DeserializeOwned;
+use serde_json::{from_str, to_string_pretty};
 
 const SERVICE: &str = "tabula";
 
@@ -15,7 +20,7 @@ pub fn config_dir() -> PathBuf {
     if cfg!(test) {
         return std::env::temp_dir().join(format!("tabula-test-config-{}", std::process::id()));
     }
-    dirs::config_dir()
+    dirs_config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("tabula")
 }
@@ -43,7 +48,7 @@ static PROTECTED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::ne
 /// (hand edit, newer format…) → moved aside so the next save can't destroy
 /// it. Unreadable (permissions…) → default, and saves to it are refused.
 /// The message says what happened.
-pub fn read_json<T: serde::de::DeserializeOwned + Default>(
+pub fn read_json<T: DeserializeOwned + Default>(
     p: &std::path::Path,
     what: &str,
 ) -> (T, Option<String>) {
@@ -64,7 +69,7 @@ pub fn read_json<T: serde::de::DeserializeOwned + Default>(
             );
         }
     };
-    match serde_json::from_str(&text) {
+    match from_str(&text) {
         Ok(v) => (v, None),
         Err(e) => {
             let stamp = std::time::SystemTime::now()
@@ -99,7 +104,7 @@ pub fn write_atomic(p: &std::path::Path, text: &str) -> Result<()> {
         .iter()
         .any(|x| x == p)
     {
-        anyhow::bail!(
+        bail!(
             "not saved: {} couldn't be read earlier, so it isn't overwritten",
             p.display()
         );
@@ -128,12 +133,10 @@ fn password(id: &str) -> Result<String> {
     if cfg!(test) {
         return Ok(String::new());
     }
-    match keyring::Entry::new(SERVICE, id).and_then(|e| e.get_password()) {
+    match Entry::new(SERVICE, id).and_then(|e| e.get_password()) {
         Ok(p) => Ok(p),
-        Err(keyring::Error::NoEntry) => Ok(String::new()),
-        Err(e) => Err(anyhow::anyhow!(
-            "Keychain: couldn't read the saved password ({e})"
-        )),
+        Err(KeyringError::NoEntry) => Ok(String::new()),
+        Err(e) => Err(anyhow!("Keychain: couldn't read the saved password ({e})")),
     }
 }
 
@@ -172,14 +175,14 @@ pub fn save_all(list: &[ConnectionConfig]) -> Result<()> {
 }
 
 fn save_to(p: &std::path::Path, list: &[ConnectionConfig]) -> Result<()> {
-    write_atomic(p, &serde_json::to_string_pretty(list)?)
+    write_atomic(p, &to_string_pretty(list)?)
 }
 
 fn set_password(id: &str, password: &str) -> Result<()> {
     if cfg!(test) {
         return Ok(());
     }
-    let entry = keyring::Entry::new(SERVICE, id).map_err(keychain)?;
+    let entry = Entry::new(SERVICE, id).map_err(keychain)?;
     if password.is_empty() {
         delete(&entry)
     } else {
@@ -187,14 +190,14 @@ fn set_password(id: &str, password: &str) -> Result<()> {
     }
 }
 
-fn keychain(e: keyring::Error) -> anyhow::Error {
-    anyhow::anyhow!("Keychain: {e}")
+fn keychain(e: KeyringError) -> Error {
+    anyhow!("Keychain: {e}")
 }
 
 /// Deleting what isn't there is fine; anything else is reported.
-fn delete(entry: &keyring::Entry) -> Result<()> {
+fn delete(entry: &Entry) -> Result<()> {
     match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
         Err(e) => Err(keychain(e)),
     }
 }
@@ -205,7 +208,7 @@ pub fn delete_password(id: &str) -> Result<()> {
         return Ok(());
     }
     for account in [id.to_string(), ssh_account(id)] {
-        delete(&keyring::Entry::new(SERVICE, &account).map_err(keychain)?)?;
+        delete(&Entry::new(SERVICE, &account).map_err(keychain)?)?;
     }
     Ok(())
 }
@@ -214,10 +217,11 @@ pub fn delete_password(id: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::db::Driver;
+    use uuid::Uuid;
 
     #[test]
     fn old_testing_tag_loads_as_development() {
-        let dir = std::env::temp_dir().join(format!("tabula-store-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("tabula-store-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("connections.json");
         let mut c = ConnectionConfig::new(Driver::Sqlite);
@@ -232,7 +236,7 @@ mod tests {
 
     #[test]
     fn unreadable_file_is_kept_aside_not_overwritten() {
-        let dir = std::env::temp_dir().join(format!("tabula-store-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("tabula-store-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("connections.json");
 

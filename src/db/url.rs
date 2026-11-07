@@ -6,6 +6,7 @@
 use anyhow::{Result, bail};
 
 use super::Driver;
+use anyhow::anyhow;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Parsed {
@@ -147,7 +148,7 @@ fn split_host_port(s: &str) -> Result<(String, Option<u16>)> {
         Some("") | None => None,
         Some(p) => Some(
             p.parse()
-                .map_err(|_| anyhow::anyhow!("\"{p}\" isn't a port number"))?,
+                .map_err(|_| anyhow!("\"{p}\" isn't a port number"))?,
         ),
     };
     Ok((decode(&host), port))

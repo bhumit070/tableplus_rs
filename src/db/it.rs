@@ -6,6 +6,8 @@
 
 use super::*;
 use std::sync::Arc;
+use tokio::{join, spawn, time::sleep, time::timeout};
+use uuid::Uuid;
 
 fn it_enabled() -> bool {
     std::env::var("TABULA_IT").is_ok()
@@ -622,17 +624,17 @@ async fn mongo_end_to_end() {
 }
 
 /// ⌘. stops a long statement on the server, not just in the app.
-async fn cancel_scenario(driver: Driver, sleep: &str, still_running: &str) {
+async fn cancel_scenario(driver: Driver, sleep_sql: &str, still_running: &str) {
     let c = Arc::new(Connection::connect(&cfg(driver)).await.expect("connect"));
     let cancel = Arc::new(Cancel::default());
-    let run = tokio::spawn({
-        let (c, cancel, sleep) = (c.clone(), cancel.clone(), sleep.to_string());
-        async move { c.execute_cancellable(&sleep, &cancel).await }
+    let run = spawn({
+        let (c, cancel, sql) = (c.clone(), cancel.clone(), sleep_sql.to_string());
+        async move { c.execute_cancellable(&sql, &cancel).await }
     });
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    sleep(std::time::Duration::from_millis(500)).await;
     let start = Instant::now();
     cancel.cancel().await;
-    let err = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+    let err = timeout(std::time::Duration::from_secs(5), run)
         .await
         .expect("cancel returns promptly")
         .unwrap()
@@ -643,7 +645,7 @@ async fn cancel_scenario(driver: Driver, sleep: &str, still_running: &str) {
     );
     assert!(start.elapsed().as_secs() < 5);
     // The server isn't still sleeping on our behalf.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    sleep(std::time::Duration::from_millis(300)).await;
     let r = c.execute(still_running).await.unwrap();
     assert_eq!(r[0].rows[0][0].as_deref(), Some("0"), "{driver:?}");
     // The pool still works afterwards.
@@ -685,8 +687,8 @@ async fn sqlite_cancel() {
     let c = Connection::connect(&cfg(Driver::Sqlite)).await.unwrap();
     let cancel = Arc::new(Cancel::default());
     let c2 = cancel.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    spawn(async move {
+        sleep(std::time::Duration::from_millis(200)).await;
         c2.cancel().await;
     });
     let err = c
@@ -941,31 +943,31 @@ async fn postgres_over_ssh() {
     let r = conn.execute("select 40 + 2").await.unwrap();
     assert_eq!(r[0].rows[0][0].as_deref(), Some("42"));
     // The pool opens several connections through the same tunnel.
-    let (a, b) = tokio::join!(conn.execute("select 1"), conn.execute("select 2"));
+    let (a, b) = join!(conn.execute("select 1"), conn.execute("select 2"));
     assert!(a.is_ok() && b.is_ok());
     conn.close().await;
 }
 
 /// Process list: another session's slow statement shows up and can be
 /// cancelled from here.
-async fn process_scenario(driver: Driver, sleep: &'static str, query_col: &str) {
+async fn process_scenario(driver: Driver, sleep_sql: &'static str, query_col: &str) {
     let busy = Arc::new(Connection::connect(&cfg(driver)).await.unwrap());
     let admin = Connection::connect(&cfg(driver)).await.unwrap();
-    let run = tokio::spawn({
+    let run = spawn({
         let busy = busy.clone();
-        async move { busy.execute(sleep).await }
+        async move { busy.execute(sleep_sql).await }
     });
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    sleep(std::time::Duration::from_millis(500)).await;
     let list = admin.processes().await.unwrap();
     let qc = list.columns.iter().position(|c| c == query_col).unwrap();
     let row = list
         .rows
         .iter()
-        .find(|r| r[qc].as_deref() == Some(sleep))
+        .find(|r| r[qc].as_deref() == Some(sleep_sql))
         .unwrap_or_else(|| panic!("{driver:?}: sleeping session listed in {:?}", list.rows));
     let id = row[0].clone().unwrap();
     admin.kill(&id, false).await.unwrap();
-    let res = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+    let res = timeout(std::time::Duration::from_secs(5), run)
         .await
         .expect("cancelled promptly")
         .unwrap();
@@ -976,7 +978,7 @@ async fn process_scenario(driver: Driver, sleep: &'static str, query_col: &str) 
     }
     // Our own session is never listed.
     let me = admin.processes().await.unwrap();
-    assert!(me.rows.iter().all(|r| r[qc].as_deref() != Some(sleep)));
+    assert!(me.rows.iter().all(|r| r[qc].as_deref() != Some(sleep_sql)));
 }
 
 #[tokio::test]
@@ -1170,7 +1172,7 @@ async fn postgres_backup_restore() {
         return;
     }
     let admin = Connection::connect(&cfg(Driver::Postgres)).await.unwrap();
-    let tag = uuid::Uuid::new_v4().simple().to_string();
+    let tag = Uuid::new_v4().simple().to_string();
     // Named to sort before "postgres", so the ⌘K picker test (which steps
     // from postgres to the next database) isn't thrown off meanwhile.
     let (src, dst) = (
@@ -1249,7 +1251,7 @@ async fn sqlite_backup() {
         port: 0,
         database: "main".into(),
     };
-    let file = std::env::temp_dir().join(format!("tabula-it-{}.sqlite", uuid::Uuid::new_v4()));
+    let file = std::env::temp_dir().join(format!("tabula-it-{}.sqlite", Uuid::new_v4()));
     backup::dump(&t, backup::Scope::Everything, &file)
         .await
         .unwrap();
@@ -1415,10 +1417,7 @@ async fn postgres_create_drop_database() {
         return;
     }
     let c = Connection::connect(&cfg(Driver::Postgres)).await.unwrap();
-    let name = format!(
-        "_tabula_db_{}",
-        &uuid::Uuid::new_v4().simple().to_string()[..8]
-    );
+    let name = format!("_tabula_db_{}", &Uuid::new_v4().simple().to_string()[..8]);
     c.create_database(&name).await.unwrap();
     assert!(c.databases().await.unwrap().contains(&name));
     assert!(

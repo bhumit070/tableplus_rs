@@ -2,6 +2,7 @@
 //! Every value is text or NULL (that's how results reach the grid).
 
 use crate::db::Driver;
+use serde_json::{Value, to_string_pretty};
 
 pub type Row = Vec<Option<String>>;
 
@@ -166,17 +167,15 @@ fn json_keys(columns: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn json_object(columns: &[String], row: &Row) -> serde_json::Value {
+fn json_object(columns: &[String], row: &Row) -> Value {
     let keys = json_keys(columns);
-    serde_json::Value::Object(
+    Value::Object(
         keys.iter()
             .zip(row)
             .map(|(c, v)| {
                 (
                     c.clone(),
-                    v.clone()
-                        .map(serde_json::Value::String)
-                        .unwrap_or(serde_json::Value::Null),
+                    v.clone().map(Value::String).unwrap_or(Value::Null),
                 )
             })
             .collect(),
@@ -344,7 +343,7 @@ impl<'a> Encoder<'a> {
                     out.push_str(if self.written == 0 { "\n  " } else { ",\n  " });
                     let obj = json_object(self.columns, r);
                     if self.options.pretty {
-                        let obj = serde_json::to_string_pretty(&obj).unwrap_or_default();
+                        let obj = to_string_pretty(&obj).unwrap_or_default();
                         out.push_str(&obj.replace('\n', "\n  "));
                     } else {
                         out.push_str(&obj.to_string());
@@ -403,6 +402,7 @@ pub fn render(format: Format, columns: &[String], rows: &[Row], target: &SqlTarg
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, from_str};
 
     fn cols() -> Vec<String> {
         vec!["id".into(), "name".into()]
@@ -437,9 +437,8 @@ mod tests {
 
     #[test]
     fn json_keeps_nulls() {
-        let j: serde_json::Value =
-            serde_json::from_str(&render(Format::Json, &cols(), &rows(), &pg())).unwrap();
-        assert_eq!(j[1]["name"], serde_json::Value::Null);
+        let j: Value = from_str(&render(Format::Json, &cols(), &rows(), &pg())).unwrap();
+        assert_eq!(j[1]["name"], Value::Null);
         assert_eq!(j[0]["name"], "O'Neil, \"Ada\"");
         let lines = render(Format::JsonLines, &cols(), &rows(), &pg());
         assert_eq!(lines.lines().count(), 2);
@@ -460,7 +459,7 @@ mod tests {
         assert!(!run(Format::Markdown).contains("---"));
         let json = run(Format::Json);
         assert_eq!(json.lines().count(), 4, "{json}");
-        let j: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let j: Value = from_str(&json).unwrap();
         assert_eq!(j[1]["id"], "2");
     }
 
