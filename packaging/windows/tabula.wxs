@@ -7,13 +7,17 @@
            UpgradeCode="4106CACB-EBD3-4DCB-8C54-C7322994D909" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer version of Tabula is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <Icon Id="Tabula.ico" SourceFile="packaging/windows/tabula.ico" />
+    <!-- The icon in Settings → Apps / Programs and Features. -->
+    <Property Id="ARPPRODUCTICON" Value="Tabula.ico" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Tabula">
         <Component>
           <File Source="$(var.Exe)" Name="Tabula.exe" KeyPath="yes">
             <Shortcut Name="Tabula" Directory="ProgramMenuFolder"
-                      WorkingDirectory="INSTALLFOLDER" Advertise="yes" />
+                      WorkingDirectory="INSTALLFOLDER" Advertise="yes"
+                      Icon="Tabula.ico" />
           </File>
         </Component>
       </Directory>

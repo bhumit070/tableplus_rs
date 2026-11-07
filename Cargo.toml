@@ -38,6 +38,9 @@ csv = "1.4.0"
 gpui = { package = "gpui-pre", version = "0.3.11", features = ["test-support"] }
 rand = { version = "0.10", features = ["thread_rng"] }
 
+[target."cfg(windows)".build-dependencies]
+winresource = "0.1.34"
+
 # `cargo deb` (used by the release workflow) builds the Linux .deb.
 [package.metadata.deb]
 maintainer = "bhumit070 <ganatrabhoomit070@gmail.com>"
@@ -50,4 +53,6 @@ recommends = "gnome-keyring"
 assets = [
     ["target/release/tabula", "usr/bin/", "755"],
     ["packaging/linux/tabula.desktop", "usr/share/applications/", "644"],
+    ["packaging/icons/tabula.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["packaging/linux/tabula.png", "usr/share/icons/hicolor/512x512/apps/", "644"],
 ]

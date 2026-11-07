@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Tabula app icon: a table whose header row and middle column form a "T".
+       Source for every platform icon; regenerate them with packaging/icons/render.sh. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#262A3D"/>
+      <stop offset="1" stop-color="#0D0E13"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#97A3FF"/>
+      <stop offset="1" stop-color="#6474F5"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- Body: the macOS icon grid's 824px rounded square. -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)" filter="url(#shadow)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.10" stroke-width="3"/>
+
+  <!-- Header row. -->
+  <rect x="232" y="262" width="560" height="112" rx="22" fill="url(#accent)"/>
+
+  <!-- Body cells: left and right columns are quiet, the middle column is the T's stem. -->
+  <g fill="#FFFFFF" fill-opacity="0.09">
+    <rect x="232" y="392" width="174" height="112" rx="20"/>
+    <rect x="232" y="522" width="174" height="112" rx="20"/>
+    <rect x="232" y="652" width="174" height="112" rx="20"/>
+    <rect x="618" y="392" width="174" height="112" rx="20"/>
+    <rect x="618" y="522" width="174" height="112" rx="20"/>
+    <rect x="618" y="652" width="174" height="112" rx="20"/>
+  </g>
+  <g fill="url(#accent)">
+    <rect x="425" y="392" width="174" height="112" rx="20" fill-opacity="0.95"/>
+    <rect x="425" y="522" width="174" height="112" rx="20" fill-opacity="0.80"/>
+    <rect x="425" y="652" width="174" height="112" rx="20" fill-opacity="0.65"/>
+  </g>
+</svg>

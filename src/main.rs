@@ -116,9 +116,13 @@ fn main() {
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    // Linux desktops match this to tabula.desktop for the icon.
+                    app_id: Some("tabula".into()),
                     ..TitleBar::window_options()
                 },
                 |window, cx| {
+                    // The X11 backend only applies the app id (WM_CLASS) here.
+                    window.set_app_id("tabula");
                     let view = cx.new(|cx| AppView::new(window, cx));
                     cx.new(|cx| Root::new(view, window, cx))
                 },
