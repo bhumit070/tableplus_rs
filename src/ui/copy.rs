@@ -1,10 +1,15 @@
 //! "Copy as …" menu items and "Export…" for grids (table tabs and query
 //! results), built on `crate::export`.
 
+use std::cell::Cell;
+use std::fs::{File, remove_file, rename};
+use std::io::{BufWriter, Write as _};
 use std::path::PathBuf;
+use std::pin::pin;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable,
@@ -20,12 +25,19 @@ use gpui_component::table::TableState;
 use gpui_component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit_assets::IconName;
 
-use super::dialog;
 use super::grid::Grid;
 use super::theme::{dp, tokens};
+use super::{RunQuery, dialog};
 use crate::db::{Connection, TableQuery};
 use crate::export::{self, Format, Row, SqlTarget};
 use crate::runtime;
+use anyhow::{Result, bail};
+use dirs::{download_dir, home_dir};
+use futures::{future::Either, future::select};
+use gpui::relative;
+use serde_json::{Value, from_str, to_string_pretty};
+use tokio::sync::RwLock;
+use uuid::Uuid;
 
 /// Where an export's rows come from.
 pub enum Source {
@@ -33,7 +45,7 @@ pub enum Source {
     Loaded,
     /// Every row of a table (all pages), with the tab's filters and sort.
     Table {
-        conn: std::sync::Arc<tokio::sync::RwLock<Connection>>,
+        conn: Arc<RwLock<Connection>>,
         query: TableQuery,
     },
 }
@@ -80,8 +92,8 @@ pub fn copy_items<H: ExportHost>(menu: PopupMenu, host: WeakEntity<H>, row: usiz
                 &h.sql_target(cx),
             );
             // A single object, not a one-element array.
-            let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-            let text = serde_json::to_string_pretty(&v[0]).unwrap_or_default();
+            let v: Value = from_str(&text).unwrap_or_default();
+            let text = to_string_pretty(&v[0]).unwrap_or_default();
             copy(text, "row as JSON", w, cx)
         }),
     ))
@@ -165,7 +177,7 @@ pub struct Progress {
 pub fn open_export<H: ExportHost>(h: &H, window: &mut Window, cx: &mut App) {
     let view = cx.new(|cx| ExportDialog::new(h, window, cx));
     let w = dialog::width(640., cx);
-    let first = std::cell::Cell::new(true);
+    let first = Cell::new(true);
     window.open_dialog(cx, move |d, window, cx| {
         if first.replace(false) {
             view.read(cx).focus.clone().focus(window, cx);
@@ -180,7 +192,7 @@ pub struct ExportDialog {
     loaded: Vec<Row>,
     selected: Option<Row>,
     target: SqlTarget,
-    table: Option<(std::sync::Arc<tokio::sync::RwLock<Connection>>, TableQuery)>,
+    table: Option<(Arc<RwLock<Connection>>, TableQuery)>,
     scopes: Vec<ScopeChoice>,
     scope: usize,
     format: Format,
@@ -249,8 +261,8 @@ impl ExportDialog {
             });
         }
         let format = Format::Csv;
-        let dir = dirs::download_dir()
-            .or_else(dirs::home_dir)
+        let dir = download_dir()
+            .or_else(home_dir)
             .unwrap_or_else(|| PathBuf::from("."));
         let file = dir.join(format!("{name}.{}", format.extension()));
         let path = cx.new(|cx| {
@@ -291,8 +303,8 @@ impl ExportDialog {
             .parent()
             .filter(|d| d.is_dir())
             .map(PathBuf::from)
-            .or_else(dirs::download_dir)
-            .or_else(dirs::home_dir)
+            .or_else(download_dir)
+            .or_else(home_dir)
             .unwrap_or_else(|| PathBuf::from("."));
         let file = current
             .file_name()
@@ -408,7 +420,7 @@ fn group(n: u64) -> String {
 }
 
 fn expand_home(p: &str) -> PathBuf {
-    match (p.strip_prefix("~/"), dirs::home_dir()) {
+    match (p.strip_prefix("~/"), home_dir()) {
         (Some(rest), Some(home)) => home.join(rest),
         _ => PathBuf::from(p),
     }
@@ -479,7 +491,7 @@ impl Render for ExportDialog {
             .track_focus(&self.focus)
             .key_context("ExportDialog")
             .gap(dp(18.))
-            .on_action(cx.listener(|this, _: &super::RunQuery, window, cx| this.export(window, cx)))
+            .on_action(cx.listener(|this, _: &RunQuery, window, cx| this.export(window, cx)))
             .child(dialog::title("Export", Some(sub.into()), cx))
             .child(dialog::section(
                 "Format",
@@ -636,23 +648,23 @@ struct ExportToast;
 /// Writes `job` in the background. A long export shows a toast with rows
 /// done, an estimate and Cancel; the end is always a notification.
 fn run_export(job: Job, total: Option<u64>, window: &mut Window, cx: &mut App) {
-    let progress = std::sync::Arc::new(Progress::default());
-    let key = SharedString::from(uuid::Uuid::new_v4().to_string());
+    let progress = Arc::new(Progress::default());
+    let key = SharedString::from(Uuid::new_v4().to_string());
     let path = job.path.clone();
     let task = write_export(job, progress.clone());
     let toast = cx.new(|_| ExportProgress {
         progress: progress.clone(),
         total,
-        started: std::time::Instant::now(),
+        started: Instant::now(),
     });
     window
         .spawn(cx, async move |cx| {
             let res = {
-                let mut task = std::pin::pin!(task);
+                let mut task = pin!(task);
                 let delay = cx.background_executor().timer(Duration::from_millis(700));
-                match futures::future::select(task.as_mut(), delay).await {
-                    futures::future::Either::Left((res, _)) => res,
-                    futures::future::Either::Right(_) => {
+                match select(task.as_mut(), delay).await {
+                    Either::Left((res, _)) => res,
+                    Either::Right(_) => {
                         let (shown, key) = (toast.clone(), key.clone());
                         cx.update(|window, cx| {
                             ExportProgress::show(shown, key, window, cx);
@@ -676,11 +688,11 @@ fn run_export(job: Job, total: Option<u64>, window: &mut Window, cx: &mut App) {
                                 }
                             }
                         };
-                        let ticker = std::pin::pin!(ticker);
-                        match futures::future::select(task, ticker).await {
-                            futures::future::Either::Left((res, _)) => res,
+                        let ticker = pin!(ticker);
+                        match select(task, ticker).await {
+                            Either::Left((res, _)) => res,
                             // The window went away; the file still gets written.
-                            futures::future::Either::Right((_, task)) => task.await,
+                            Either::Right((_, task)) => task.await,
                         }
                     }
                 }
@@ -728,9 +740,9 @@ fn run_export(job: Job, total: Option<u64>, window: &mut Window, cx: &mut App) {
 
 /// The toast body of a running export (design.md, Components → Toast).
 struct ExportProgress {
-    progress: std::sync::Arc<Progress>,
+    progress: Arc<Progress>,
     total: Option<u64>,
-    started: std::time::Instant,
+    started: Instant,
 }
 
 impl ExportProgress {
@@ -800,7 +812,7 @@ impl Render for ExportProgress {
                         .h_full()
                         .rounded_full()
                         .bg(t.accent)
-                        .w(gpui::relative(fraction.unwrap_or(0.))),
+                        .w(relative(fraction.unwrap_or(0.))),
                 ),
             )
             .child(
@@ -817,8 +829,7 @@ impl Render for ExportProgress {
 /// Rows per page when exporting a whole table.
 const PAGE: usize = 5000;
 
-async fn write_export(job: Job, progress: std::sync::Arc<Progress>) -> anyhow::Result<usize> {
-    use std::io::Write as _;
+async fn write_export(job: Job, progress: Arc<Progress>) -> Result<usize> {
     let Job {
         format,
         options,
@@ -830,11 +841,11 @@ async fn write_export(job: Job, progress: std::sync::Arc<Progress>) -> anyhow::R
     } = job;
     // Written next to the destination, then renamed: a failed or cancelled
     // export never leaves a half file under the chosen name.
-    let tmp = path.with_extension(format!("tabula-{}.tmp", uuid::Uuid::new_v4().simple()));
+    let tmp = path.with_extension(format!("tabula-{}.tmp", Uuid::new_v4().simple()));
     let result = runtime::spawn({
         let tmp = tmp.clone();
         async move {
-            let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+            let mut out = BufWriter::new(File::create(&tmp)?);
             match source {
                 Source::Loaded => {
                     let mut e = export::Encoder::new(format, &columns, &target).options(options);
@@ -859,7 +870,7 @@ async fn write_export(job: Job, progress: std::sync::Arc<Progress>) -> anyhow::R
                     let mut n = 0;
                     loop {
                         if progress.cancel.load(Ordering::Relaxed) {
-                            anyhow::bail!("cancelled");
+                            bail!("cancelled");
                         }
                         n += page.len();
                         out.write_all(e.rows(&page).as_bytes())?;
@@ -880,11 +891,11 @@ async fn write_export(job: Job, progress: std::sync::Arc<Progress>) -> anyhow::R
     .await;
     match result {
         Ok(n) => {
-            std::fs::rename(&tmp, &path)?;
+            rename(&tmp, &path)?;
             Ok(n)
         }
         Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
+            let _ = remove_file(&tmp);
             Err(e)
         }
     }
@@ -903,6 +914,10 @@ pub fn row_tsv(g: &Grid, r: usize) -> String {
 mod tests {
     use super::*;
     use crate::db::{ConnectionConfig, DbObject, Driver, ObjectKind};
+    use futures::executor::block_on;
+    use std::env::temp_dir;
+    use std::fs::{read_to_string, write};
+    use tokio::sync::RwLock;
 
     /// A whole-table export reads every page, not just the one on screen.
     #[test]
@@ -917,12 +932,12 @@ mod tests {
     #[test]
     fn table_export_reads_all_pages() {
         let mut cfg = ConnectionConfig::new(Driver::Sqlite);
-        let db = std::env::temp_dir().join(format!("tabula-export-{}.db", cfg.id));
-        std::fs::write(&db, b"").unwrap();
+        let db = temp_dir().join(format!("tabula-export-{}.db", cfg.id));
+        write(&db, b"").unwrap();
         cfg.file = db.to_string_lossy().into();
-        let out = std::env::temp_dir().join(format!("tabula-export-{}.csv", cfg.id));
+        let out = temp_dir().join(format!("tabula-export-{}.csv", cfg.id));
         let out2 = out.clone();
-        let n = futures::executor::block_on(runtime::spawn(async move {
+        let n = block_on(runtime::spawn(async move {
             let c = Connection::connect(&cfg).await?;
             c.execute(
                 "create table t (id integer primary key, v text); \
@@ -930,7 +945,7 @@ mod tests {
                  insert into t (v) select 'row ' || x from n",
             )
             .await?;
-            let conn = std::sync::Arc::new(tokio::sync::RwLock::new(c));
+            let conn = Arc::new(RwLock::new(c));
             let query = TableQuery {
                 object: DbObject {
                     schema: None,
@@ -961,13 +976,13 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(n, 12345);
-        let text = std::fs::read_to_string(&out).unwrap();
+        let text = read_to_string(&out).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 12346);
         assert_eq!(lines[0], "id,v");
         assert_eq!(lines[1], "1,row 1");
         assert_eq!(lines[12345], "12345,row 12345");
-        let _ = std::fs::remove_file(out);
-        let _ = std::fs::remove_file(db);
+        let _ = remove_file(out);
+        let _ = remove_file(db);
     }
 }

@@ -10,7 +10,7 @@ also starts with a `//!` comment saying the same in more detail.
 | `main.rs` | ~130 | Entry point: starts gpui, loads settings, binds keys, registers actions, builds the menu bar and opens the window. On Windows release builds, `windows_subsystem = "windows"` prevents a console window. |
 | `runtime.rs` | ~60 | The tokio runtime the drivers run on, and `spawn` / `spawn_detached` to reach it from the UI. Panics become errors. |
 | `store.rs` | ~230 | Config folder, saved connections, keychain access, `read_json` (moves damaged files aside), `write_atomic`. |
-| `settings.rs` | ~130 | User settings (font sizes, session restore) as a gpui global, saved to `settings.json`. |
+| `settings.rs` | ~170 | User settings (font sizes, session restore, appearance, rows per page, default safe mode) as a gpui global, saved to `settings.json`. |
 | `restore.rs` | ~80 | What `session.json` holds, for reopening last time's connections and tabs. |
 | `saved.rs` | ~100 | Saved queries in `saved_queries.json`, per connection or global. |
 | `history.rs` | ~190 | Query history in `history.db` (SQLite through sqlx), pruned to 5,000 entries per connection, with a schema version. |
@@ -59,7 +59,7 @@ also starts with a `//!` comment saying the same in more detail.
 | `table_editor.rs` | ~430 | New Table / Edit Columns dialog. |
 | `processes.rs` | ~230 | Process list (⌘⇧P). |
 | `picker.rs` | ~250 | Searchable pick-one dialog. |
-| `settings_view.rs` | ~130 | Settings dialog. |
+| `settings_view.rs` | ~640 | Settings dialog: sections, and the shortcut list built from `key_bindings()` with names from the menu bar. |
 | `theme.rs` | ~70 | Bundled Geist fonts and the Tabula Dark / Light themes. |
 
 ## Other files

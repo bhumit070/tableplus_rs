@@ -451,7 +451,9 @@ impl AppView {
                     .icon(IconName::Settings)
                     .ghost()
                     .tooltip("Settings (⌘,)")
-                    .on_click(|_, window, cx| SettingsView::open(window, cx)),
+                    .on_click(|_, window, cx| {
+                        SettingsView::open(window, cx);
+                    }),
             )
     }
 
@@ -789,8 +791,14 @@ fn toggle_theme(window: &mut Window, cx: &mut App) {
         ThemeMode::Dark
     };
     Theme::change(mode, Some(window), cx);
-    // A theme switch can reload sizes from the theme file; keep the user's.
-    settings::apply_theme(cx);
+    // Remembered, so the next launch opens the same way. This also puts
+    // the user's sizes back (a theme switch can reload them).
+    settings::update(cx, |s| {
+        s.appearance = match mode {
+            ThemeMode::Light => settings::Appearance::Light,
+            ThemeMode::Dark => settings::Appearance::Dark,
+        }
+    });
 }
 
 /// The window's root view, so app-wide shortcuts can reach it.
@@ -875,7 +883,11 @@ pub fn register_actions(cx: &mut App) {
     cx.on_action(|_: &Connection8, cx| go_to(cx, 7));
     cx.on_action(|_: &Connection9, cx| go_to(cx, 8));
     cx.on_action(|_: &ToggleTheme, cx| with_app(cx, |_, w, cx| toggle_theme(w, cx)));
-    cx.on_action(|_: &OpenSettings, cx| with_app(cx, |_, w, cx| SettingsView::open(w, cx)));
+    cx.on_action(|_: &OpenSettings, cx| {
+        with_app(cx, |_, w, cx| {
+            SettingsView::open(w, cx);
+        })
+    });
 
     cx.on_action(|_: &NewQuery, cx| with_session(cx, |s, w, cx| s.new_query(w, cx)));
     cx.on_action(|_: &CloseTab, cx| with_session(cx, |s, w, cx| s.close_active_tab(w, cx)));
@@ -1007,11 +1019,16 @@ mod tests {
 
     use super::*;
     use crate::db::{ConnectionConfig, Driver};
+    use chrono::NaiveTime;
+    use futures::executor::block_on;
+    use gpui::{ClipboardItem, Modifiers};
+    use gpui_component::init;
+    use serde_json::to_string;
 
     /// Opens the real app view in a test window, with app-wide shortcuts.
     fn open(cx: &mut TestAppContext) -> (Entity<AppView>, VisualTestContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            init(cx);
             cx.bind_keys(crate::ui::key_bindings());
             register_actions(cx);
         });
@@ -1164,7 +1181,7 @@ mod tests {
         let row = cx
             .debug_bounds("pick-row-postgres")
             .expect("postgres row is shown");
-        cx.simulate_click(row.center(), gpui::Modifiers::none());
+        cx.simulate_click(row.center(), Modifiers::none());
         cx.run_until_parked();
         wait_until(&mut cx, "click to switch to postgres", |cx| {
             current(cx).as_deref() == Some("postgres")
@@ -1190,7 +1207,7 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
         cfg.file = file.to_string_lossy().into();
         let setup = cfg.clone();
-        futures::executor::block_on(crate::runtime::spawn(async move {
+        block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&setup).await?;
             c.execute("create table t (id integer primary key, a text); insert into t (a) values ('x'), ('y')")
                 .await?;
@@ -1254,7 +1271,7 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
         cfg.file = file.to_string_lossy().into();
         let setup = cfg.clone();
-        futures::executor::block_on(crate::runtime::spawn(async move {
+        block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&setup).await?;
             c.execute(
                 "create table t (id integer primary key, a text, b text); \
@@ -1351,7 +1368,7 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
         cfg.file = file.to_string_lossy().into();
         let setup = cfg.clone();
-        futures::executor::block_on(crate::runtime::spawn(async move {
+        block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&setup).await?;
             c.execute(
                 "create table t (id integer primary key, n integer, b boolean, s varchar(3)); \
@@ -1431,7 +1448,7 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
         cfg.file = file.to_string_lossy().into();
         let setup = cfg.clone();
-        futures::executor::block_on(crate::runtime::spawn(async move {
+        block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&setup).await?;
             c.execute(
                 "create table t (id integer primary key, d date, ts timestamp, u uuid, tm time); \
@@ -1468,7 +1485,7 @@ mod tests {
             let b = cx
                 .debug_bounds(what)
                 .unwrap_or_else(|| panic!("{what} not drawn"));
-            cx.simulate_click(b.center(), gpui::Modifiers::none());
+            cx.simulate_click(b.center(), Modifiers::none());
             cx.run_until_parked();
         };
 
@@ -1520,10 +1537,7 @@ mod tests {
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         let tm = staged(&mut cx, 0, 4).flatten().expect("a time staged");
-        assert!(
-            chrono::NaiveTime::parse_from_str(&tm, "%H:%M:%S").is_ok(),
-            "{tm}"
-        );
+        assert!(NaiveTime::parse_from_str(&tm, "%H:%M:%S").is_ok(), "{tm}");
         let _ = std::fs::remove_file(file);
     }
 
@@ -1537,7 +1551,7 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
         cfg.file = file.to_string_lossy().into();
         let setup = cfg.clone();
-        futures::executor::block_on(crate::runtime::spawn(async move {
+        block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&setup).await?;
             c.execute(
                 "create table customers (id integer primary key, name text, email text); \
@@ -1598,7 +1612,7 @@ mod tests {
             matches(cx).is_some_and(|m| m.len() == 3)
         });
         let b = cx.debug_bounds("fk-match-2").expect("third match drawn");
-        cx.simulate_click(b.center(), gpui::Modifiers::none());
+        cx.simulate_click(b.center(), Modifiers::none());
         cx.run_until_parked();
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
@@ -1619,7 +1633,7 @@ mod tests {
         let setup = cfg.clone();
         let read_a = move || {
             let setup = setup.clone();
-            futures::executor::block_on(crate::runtime::spawn(async move {
+            block_on(crate::runtime::spawn(async move {
                 let c = crate::db::Connection::connect(&setup).await?;
                 let r = c.execute("select a from t").await?;
                 c.close().await;
@@ -1628,7 +1642,7 @@ mod tests {
             .unwrap()
         };
         let setup = cfg.clone();
-        futures::executor::block_on(crate::runtime::spawn(async move {
+        block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&setup).await?;
             c.execute(
                 "create table t (id integer primary key, a text); insert into t (a) values ('x')",
@@ -1684,7 +1698,7 @@ mod tests {
         cx.simulate_keystrokes("cmd-s");
         cx.run_until_parked();
         let b = cx.debug_bounds("snooze").expect("snooze offered");
-        cx.simulate_click(b.center(), gpui::Modifiers::none());
+        cx.simulate_click(b.center(), Modifiers::none());
         cx.run_until_parked();
         cx.simulate_keystrokes("cmd-enter");
         wait_until(&mut cx, "commit z", |_| read_a().as_deref() == Some("z"));
@@ -1707,7 +1721,7 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
         cfg.file = file.to_string_lossy().into();
         let setup = cfg.clone();
-        futures::executor::block_on(crate::runtime::spawn(async move {
+        block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&setup).await?;
             c.execute("create table t (id integer primary key, a text); insert into t (a) values ('x'), ('y'), ('z')")
                 .await?;
@@ -1763,7 +1777,7 @@ mod tests {
         let save = |cx: &mut VisualTestContext| {
             cx.run_until_parked();
             let b = cx.debug_bounds("conn-save").expect("save drawn");
-            cx.simulate_click(b.center(), gpui::Modifiers::none());
+            cx.simulate_click(b.center(), Modifiers::none());
             // Let the dialog finish closing.
             cx.executor()
                 .advance_clock(std::time::Duration::from_secs(1));
@@ -1773,7 +1787,7 @@ mod tests {
         home.update_in(&mut cx, |h, w, cx| h.open_form(None, w, cx));
         cx.run_until_parked();
         // The URL field has focus on a new connection; a paste fills the form.
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+        cx.write_to_clipboard(ClipboardItem::new_string(
             "mysql://ada:s%40cret@db.internal:3307/shop?ssl-mode=REQUIRED".into(),
         ));
         cx.simulate_keystrokes("cmd-v");
@@ -1785,7 +1799,7 @@ mod tests {
         assert_eq!(c.name, "shop");
         assert!(c.ssl);
         assert_eq!(c.password, "s@cret");
-        let json = serde_json::to_string(&c).unwrap();
+        let json = to_string(&c).unwrap();
         assert!(!json.contains("s@cret"), "{json}");
 
         home.update_in(&mut cx, |h, w, cx| h.open_form(None, w, cx));
@@ -1813,7 +1827,7 @@ mod tests {
         cfg.file = file.to_string_lossy().into();
         let out = std::env::temp_dir().join(format!("tabula-ui-export-{}", cfg.id));
         let setup = cfg.clone();
-        futures::executor::block_on(crate::runtime::spawn(async move {
+        block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&setup).await?;
             c.execute("create table t (id integer primary key, a text); insert into t (a) values ('x'), ('y'), ('z')")
                 .await?;
@@ -1849,7 +1863,7 @@ mod tests {
             let b = cx
                 .debug_bounds(what)
                 .unwrap_or_else(|| panic!("{what} drawn"));
-            cx.simulate_click(b.center(), gpui::Modifiers::none());
+            cx.simulate_click(b.center(), Modifiers::none());
             cx.run_until_parked();
         };
         let export = |cx: &mut VisualTestContext, path: &std::path::Path| {
@@ -1898,7 +1912,7 @@ mod tests {
         let setup = cfg.clone();
         let sql = |text: &'static str| {
             let setup = setup.clone();
-            futures::executor::block_on(crate::runtime::spawn(async move {
+            block_on(crate::runtime::spawn(async move {
                 let c = crate::db::Connection::connect(&setup).await?;
                 c.execute(text).await?;
                 c.close().await;
@@ -1980,7 +1994,7 @@ mod tests {
         cfg.file = file.to_string_lossy().into();
         let setup = cfg.clone();
         let db = cfg.clone();
-        futures::executor::block_on(crate::runtime::spawn(async move {
+        block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&setup).await?;
             c.execute(
                 "create table t (id integer primary key, a text); \
@@ -2030,7 +2044,7 @@ mod tests {
                 !q.is_dirty(cx) && !q.running() && q.cell(1, 1, cx).as_deref() == Some("z")
             })
         });
-        let saved = futures::executor::block_on(crate::runtime::spawn(async move {
+        let saved = block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&db).await?;
             let r = c.execute("select a from t where id = 2").await?;
             Ok(r[0].rows[0][0].clone())
@@ -2106,7 +2120,7 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
         cfg.file = file.to_string_lossy().into();
         let setup = cfg.clone();
-        futures::executor::block_on(crate::runtime::spawn(async move {
+        block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&setup).await?;
             c.execute(
                 "create table author (id integer primary key, name text); \
@@ -2149,7 +2163,7 @@ mod tests {
             .debug_bounds("fk-link-1-2")
             .expect("link drawn on a non-NULL foreign-key cell");
         assert!(cx.debug_bounds("fk-link-2-2").is_none(), "no link on NULL");
-        cx.simulate_click(link.center(), gpui::Modifiers::none());
+        cx.simulate_click(link.center(), Modifiers::none());
         wait_until(&mut cx, "author tab", |cx| {
             session.read_with(cx, |s, cx| {
                 s.active_table()
@@ -2168,7 +2182,7 @@ mod tests {
         // The chip's ✕ clears the reference filter.
         cx.run_until_parked();
         let clear = cx.debug_bounds("clear-fixed").expect("chip shown");
-        cx.simulate_click(clear.center(), gpui::Modifiers::none());
+        cx.simulate_click(clear.center(), Modifiers::none());
         wait_until(&mut cx, "all authors", |cx| {
             author.read_with(cx, |t, cx| t.loaded_rows(cx) == 3)
         });
@@ -2184,7 +2198,7 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
         cfg.file = file.to_string_lossy().into();
         let setup = cfg.clone();
-        futures::executor::block_on(crate::runtime::spawn(async move {
+        block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&setup).await?;
             c.execute(
                 "create table t (id integer primary key, doc text); \
@@ -2219,7 +2233,7 @@ mod tests {
         assert!(cx.debug_bounds("row-detail").is_some(), "panel shown");
 
         let edit = cx.debug_bounds("detail-edit-1").expect("doc is editable");
-        cx.simulate_click(edit.center(), gpui::Modifiers::none());
+        cx.simulate_click(edit.center(), Modifiers::none());
         cx.run_until_parked();
         assert_eq!(tab.read_with(&cx, |t, cx| t.editing_cell(cx)), Some((1, 1)));
         cx.simulate_input("changed");
@@ -2355,7 +2369,7 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
         cfg.file = file.to_string_lossy().into();
         let setup = cfg.clone();
-        futures::executor::block_on(crate::runtime::spawn(async move {
+        block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&setup).await?;
             c.execute("create table people (id integer primary key, name text not null, age int)")
                 .await?;
@@ -2489,7 +2503,7 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
         cfg.file = file.to_string_lossy().into();
         let setup = cfg.clone();
-        futures::executor::block_on(crate::runtime::spawn(async move {
+        block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&setup).await?;
             c.execute("create table old_name (id integer primary key)")
                 .await?;
@@ -2530,7 +2544,7 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
         cfg.file = file.to_string_lossy().into();
         let setup = cfg.clone();
-        futures::executor::block_on(crate::runtime::spawn(async move {
+        block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&setup).await?;
             c.execute("create table kept (id integer primary key)")
                 .await?;
@@ -2640,7 +2654,7 @@ mod tests {
         );
         cx.run_until_parked();
         let retry = cx.debug_bounds("retry-objects").expect("Retry shown");
-        cx.simulate_click(retry.center(), gpui::Modifiers::none());
+        cx.simulate_click(retry.center(), Modifiers::none());
         wait_until(&mut cx, "recovered", |cx| {
             session.read_with(cx, |s, _| s.load_error().is_none())
         });

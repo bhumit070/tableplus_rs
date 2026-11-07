@@ -35,6 +35,9 @@ use super::{
 use crate::db::{DbObject, EnvTag, Filter, FilterOp, QueryResult, Structure, TableQuery};
 use crate::runtime;
 use crate::ui::DisabledWhen as _;
+use anyhow::Result;
+use gpui::{AnyElement, Div, EventEmitter, PathPromptOptions, Stateful};
+use tokio::{fs::read, task::spawn_blocking};
 
 pub enum TableTabEvent {
     /// Open `table` showing only rows matching `filters`.
@@ -47,9 +50,9 @@ pub enum TableTabEvent {
     OpenQuery(String),
 }
 
-impl gpui::EventEmitter<TableTabEvent> for TableTab {}
+impl EventEmitter<TableTabEvent> for TableTab {}
 
-const PAGE_SIZES: [usize; 4] = [100, 300, 1000, 5000];
+use crate::settings::PAGE_SIZES;
 
 struct FilterRow {
     column: Entity<SelectState<SearchList>>,
@@ -219,7 +222,7 @@ impl TableTab {
             show_filters: false,
             applied: vec![],
             page: 0,
-            page_size: PAGE_SIZES[1],
+            page_size: crate::settings::get(cx).page_size,
             total: None,
             elapsed: 0,
             error: None,
@@ -469,7 +472,7 @@ impl TableTab {
 
     fn apply_load(
         &mut self,
-        res: anyhow::Result<(Option<Structure>, (QueryResult, Option<u64>))>,
+        res: Result<(Option<Structure>, (QueryResult, Option<u64>))>,
         cx: &mut Context<Self>,
     ) {
         self.table.update(cx, |t, cx| {
@@ -902,7 +905,7 @@ impl TableTab {
             );
             return;
         }
-        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
@@ -940,10 +943,10 @@ impl TableTab {
         // Read and parse off the UI thread: a big file mustn't freeze it.
         let path = path.to_path_buf();
         let task = runtime::spawn(async move {
-            let bytes = tokio::fs::read(&path)
+            let bytes = read(&path)
                 .await
                 .with_context(|| format!("reading {}", path.display()))?;
-            tokio::task::spawn_blocking(move || crate::csv_import::parse(&bytes)).await?
+            spawn_blocking(move || crate::csv_import::parse(&bytes)).await?
         });
         cx.spawn_in(window, async move |this, cx| {
             let res = task.await;
@@ -1334,7 +1337,7 @@ impl TableTab {
         id: (&'static str, usize),
         filter: &Filter,
         cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
+    ) -> Stateful<Div> {
         let t = tokens(cx);
         let mono = cx.theme().mono_font_family.clone();
         let value = if !filter.op.needs_value() {
@@ -1400,7 +1403,7 @@ impl TableTab {
         };
         let page_size = self.page_size;
         let me = cx.entity().downgrade();
-        let mut chips: Vec<gpui::AnyElement> = Vec::new();
+        let mut chips: Vec<AnyElement> = Vec::new();
         if data {
             for (i, f) in self.fixed.iter().enumerate() {
                 chips.push(
@@ -1615,7 +1618,7 @@ impl TableTab {
 
     /// While edits are staged: what's pending, Preview SQL, Discard, Commit.
     /// It floats in a strip below the grid, so it never covers a row.
-    fn render_pending(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn render_pending(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (edited, new, deleted) = self.table.read(cx).delegate().change_summary();
         let total = edited + new + deleted;
         if total == 0 || self.show_structure {

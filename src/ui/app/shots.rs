@@ -13,6 +13,11 @@ use gpui_component::{Root, Theme, ThemeMode};
 
 use super::*;
 use crate::db::{ConnectionConfig, Driver};
+use futures::executor::block_on;
+use gpui_component::init;
+use gpui_kit_assets::AllAssets;
+use gpui_platform::current_headless_renderer;
+use uuid::Uuid;
 
 const W: f32 = 1512.;
 const H: f32 = 944.;
@@ -30,12 +35,12 @@ impl Shots {
         // don't run on; Core Text itself doesn't.
         let mut cx = HeadlessAppContext::with_platform(
             Arc::new(gpui_apple::AppleTextSystem::new()),
-            Arc::new(gpui_kit_assets::AllAssets),
-            gpui_platform::current_headless_renderer,
+            Arc::new(AllAssets),
+            current_headless_renderer,
         );
         cx.allow_parking();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            init(cx);
             crate::ui::theme::init(cx);
             crate::settings::init(cx);
             cx.bind_keys(crate::ui::key_bindings());
@@ -119,7 +124,7 @@ fn demo_db() -> ConnectionConfig {
     std::fs::write(&file, b"").unwrap();
     cfg.file = file.to_string_lossy().into();
     let setup = cfg.clone();
-    futures::executor::block_on(crate::runtime::spawn(async move {
+    block_on(crate::runtime::spawn(async move {
         let c = crate::db::Connection::connect(&setup).await?;
         let mut sql = String::from(
             "create table customers (id integer primary key, name varchar(40) not null, \
@@ -140,7 +145,7 @@ fn demo_db() -> ConnectionConfig {
                 i + 1,
                 ["IN", "US", "BR", "JP", "NG"][i],
                 if i % 2 == 0 { "true" } else { "false" },
-                uuid::Uuid::new_v4()
+                Uuid::new_v4()
             );
         }
         let status = ["pending", "paid", "shipped", "refunded", "pending", "paid"];
@@ -180,8 +185,10 @@ fn screenshots() {
     s.snap("03-home-empty");
 
     // Settings and the new-connection form, over the empty home.
-    s.in_window(|w, cx| crate::ui::settings_view::SettingsView::open(w, cx));
+    let settings = s.in_window(|w, cx| crate::ui::settings_view::SettingsView::open(w, cx));
     s.snap("21-settings");
+    s.in_window(|_, cx| settings.update(cx, |v, cx| v.show_shortcuts(cx)));
+    s.snap("21-settings-shortcuts");
     s.in_window(|w, cx| w.close_dialog(cx));
     let home = s.cx.update(|cx| s.app.read(cx).home.clone());
     s.in_window(|w, cx| home.update(cx, |h, cx| h.open_form(None, w, cx)));

@@ -120,8 +120,11 @@
 
 ## Settings (⌘,)
 
-Interface and editor font sizes, session restore, and light / dark theme
-(⌘⇧L).
+Sections for General (session restore), Appearance (System / Light / Dark,
+remembered across launches; ⌘⇧L switches too; interface size), Editor
+(font size with a preview), Data grid (rows per page when a table opens),
+Safe mode (what new connections start with), and Shortcuts: a searchable
+list of every key binding. Changes apply at once.
 
 ## Not yet supported
 

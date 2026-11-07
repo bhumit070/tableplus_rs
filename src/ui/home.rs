@@ -17,6 +17,8 @@ use super::conn_form::ConnForm;
 use super::tag_color;
 use crate::db::{ConnectionConfig, Driver};
 use crate::{import, store};
+use gpui::{ClickEvent, FontWeight, PathPromptOptions};
+use uuid::Uuid;
 
 pub struct Home {
     app: WeakEntity<AppView>,
@@ -81,7 +83,11 @@ impl Home {
         cx: &mut Context<Self>,
     ) {
         let is_new = cfg.is_none();
-        let mut cfg = cfg.unwrap_or_else(|| ConnectionConfig::new(Driver::Postgres));
+        let mut cfg = cfg.unwrap_or_else(|| {
+            let mut c = ConnectionConfig::new(Driver::Postgres);
+            c.safe_mode = crate::settings::get(cx).default_safe_mode;
+            c
+        });
         // The form must show the real secret: a blank field saved back
         // would delete the stored password.
         if !is_new && let Err(e) = store::load_secrets(&mut cfg) {
@@ -286,7 +292,7 @@ impl Home {
     }
 
     fn import_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
@@ -326,7 +332,7 @@ impl Home {
             );
             return;
         }
-        copy.id = uuid::Uuid::new_v4().to_string();
+        copy.id = Uuid::new_v4().to_string();
         copy.name = format!("{} copy", cfg.display_name());
         self.upsert(&copy, window, cx);
     }
@@ -417,7 +423,7 @@ impl Home {
                     .justify_center()
                     .bg(theme.secondary)
                     .text_xs()
-                    .font_weight(gpui::FontWeight::BOLD)
+                    .font_weight(FontWeight::BOLD)
                     .child(cfg.driver.short()),
             )
             .child(
@@ -427,7 +433,7 @@ impl Home {
                     .child(
                         div()
                             .text_sm()
-                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .font_weight(FontWeight::MEDIUM)
                             .truncate()
                             .child(cfg.display_name()),
                     )
@@ -501,7 +507,7 @@ impl Home {
             )
             .on_click({
                 let cfg = cfg.clone();
-                cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
+                cx.listener(move |this, ev: &ClickEvent, window, cx| {
                     if ev.click_count() == 2 {
                         this.connect(cfg.clone(), window, cx);
                     }
@@ -590,7 +596,7 @@ impl Render for Home {
                         .child(Icon::new(IconName::Database).size(px(28.)).text_color(theme.primary))
                         .child(
                             v_flex()
-                                .child(div().text_xl().font_weight(gpui::FontWeight::BOLD).child("Connections"))
+                                .child(div().text_xl().font_weight(FontWeight::BOLD).child("Connections"))
                                 .child(
                                     div()
                                         .text_sm()

@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use gpui::{
     App, Div, FontWeight, Hsla, ParentElement as _, Rems, Rgba, SharedString, Styled as _, div,
@@ -14,6 +15,9 @@ use gpui_component::{ActiveTheme as _, Theme, ThemeRegistry};
 use gpui_kit_assets::IconName;
 
 use crate::db::{ConnectionConfig, Driver, EnvTag, SafeMode};
+use gpui::rgb;
+use serde::Deserialize;
+use serde_json::from_str;
 
 const THEMES: &str = include_str!("../../assets/themes/tabula.json");
 const DARK: &str = "Tabula Dark";
@@ -93,12 +97,12 @@ struct TokenSets {
 }
 
 /// Parsed once, on first use.
-static TOKEN_SETS: std::sync::LazyLock<TokenSets> = std::sync::LazyLock::new(|| {
-    #[derive(serde::Deserialize)]
+static TOKEN_SETS: LazyLock<TokenSets> = LazyLock::new(|| {
+    #[derive(Deserialize)]
     struct File {
         tokens: HashMap<String, HashMap<String, String>>,
     }
-    let file: File = serde_json::from_str(THEMES).expect("parse assets/themes/tabula.json");
+    let file: File = from_str(THEMES).expect("parse assets/themes/tabula.json");
     TokenSets {
         dark: Tokens::parse(&file.tokens["dark"]),
         light: Tokens::parse(&file.tokens["light"]),
@@ -241,7 +245,7 @@ pub fn safe_mode_badge(cfg: &ConnectionConfig, cx: &App) -> (String, Hsla, Optio
 pub fn enum_color(value: &str, cx: &App) -> Hsla {
     let t = tokens(cx);
     let dark = cx.theme().mode.is_dark();
-    let hex = |d: u32, l: u32| -> Hsla { gpui::rgb(if dark { d } else { l }).into() };
+    let hex = |d: u32, l: u32| -> Hsla { rgb(if dark { d } else { l }).into() };
     let palette = [
         t.info,
         t.keyword,
@@ -262,8 +266,8 @@ pub fn engine_color(driver: Driver, cx: &App) -> Hsla {
     let t = tokens(cx);
     match driver {
         Driver::Postgres => t.info,
-        Driver::MySql if cx.theme().mode.is_dark() => gpui::rgb(0xF29D4B).into(),
-        Driver::MySql => gpui::rgb(0xC2762B).into(),
+        Driver::MySql if cx.theme().mode.is_dark() => rgb(0xF29D4B).into(),
+        Driver::MySql => rgb(0xC2762B).into(),
         Driver::Sqlite => t.number,
         Driver::Redis => t.danger,
         Driver::Mongo => t.success,
@@ -312,18 +316,21 @@ pub fn keychain_name() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{Rgba, TestAppContext};
+    use gpui_component::{ThemeSet, init};
+    use serde_json::{Value, from_str};
 
     #[test]
     fn themes_parse_and_every_colour_is_valid() {
-        let set: gpui_component::ThemeSet = serde_json::from_str(THEMES).unwrap();
+        let set: ThemeSet = from_str(THEMES).unwrap();
         let names: Vec<_> = set.themes.iter().map(|t| t.name.to_string()).collect();
         assert_eq!(names, [DARK, LIGHT]);
-        let json: serde_json::Value = serde_json::from_str(THEMES).unwrap();
+        let json: Value = from_str(THEMES).unwrap();
         for theme in json["themes"].as_array().unwrap() {
             for (key, value) in theme["colors"].as_object().unwrap() {
                 let value = value.as_str().unwrap();
                 assert!(
-                    gpui::Rgba::try_from(value).is_ok(),
+                    Rgba::try_from(value).is_ok(),
                     "{key} = {value} isn't a colour"
                 );
             }
@@ -333,12 +340,12 @@ mod tests {
     }
 
     #[gpui::test]
-    fn safe_mode_badge_says_what_happens(cx: &mut gpui::TestAppContext) {
+    fn safe_mode_badge_says_what_happens(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            init(cx);
             let t = tokens(cx);
             let badge = |tag, mode, cx: &App| {
-                let mut cfg = ConnectionConfig::new(crate::db::Driver::Postgres);
+                let mut cfg = ConnectionConfig::new(Driver::Postgres);
                 cfg.tag = tag;
                 cfg.safe_mode = mode;
                 let (label, color, _) = safe_mode_badge(&cfg, cx);

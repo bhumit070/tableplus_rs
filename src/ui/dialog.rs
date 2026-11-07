@@ -14,10 +14,11 @@ use gpui_component::{Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit_assets::IconName;
 
 use super::theme::{caps, dp, tokens};
+use crate::settings;
 
 /// A dialog `px` design pixels wide (at the default 13px interface size).
 pub fn width(px_: f32, cx: &App) -> Pixels {
-    px(px_ * crate::settings::get(cx).ui_font_size / 13.)
+    px(px_ * settings::get(cx).ui_font_size / 13.)
 }
 
 /// Gives a dialog the shared surface. The content brings its own title

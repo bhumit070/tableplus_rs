@@ -4,6 +4,8 @@
 //! Test connection reports inline (server version and latency, or the
 //! error with details).
 
+use std::cell::Cell;
+use std::path::Path;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -24,11 +26,12 @@ use gpui_component::{
 };
 use gpui_kit_assets::IconName;
 
-use super::dialog;
 use super::theme::{dp, engine_badge, env_color, keychain_name, tokens};
+use super::{RunQuery, dialog};
 use crate::db::ssh::{SshAuth, SshConfig, UnknownHostKey};
 use crate::db::{Connection, ConnectionConfig, Driver, EnvTag, SafeMode, url};
 use crate::runtime;
+use gpui::{Div, Hsla};
 
 const SSH_AUTHS: [(SshAuth, &str); 3] = [
     (SshAuth::Password, "Password"),
@@ -121,7 +124,7 @@ impl ConnForm {
     ) {
         let form = cx.new(|cx| ConnForm::new(cfg, is_new, on_done, window, cx));
         let w = dialog::width(680., cx);
-        let first = std::cell::Cell::new(true);
+        let first = Cell::new(true);
         window.open_dialog(cx, move |d, window, cx| {
             if first.replace(false) {
                 let input = form.read(cx).first_input();
@@ -300,7 +303,7 @@ impl ConnForm {
         if p.driver == Some(Driver::Sqlite) {
             set(&self.file, p.file.clone(), window, cx);
             if self.name.read(cx).value().is_empty() {
-                let stem = std::path::Path::new(&p.file)
+                let stem = Path::new(&p.file)
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_default();
@@ -525,7 +528,7 @@ impl ConnForm {
 }
 
 /// A label over its field.
-fn field(label: impl IntoElement, input: impl IntoElement, cx: &App) -> gpui::Div {
+fn field(label: impl IntoElement, input: impl IntoElement, cx: &App) -> Div {
     let t = tokens(cx);
     v_flex()
         .gap(dp(6.))
@@ -540,7 +543,7 @@ fn field(label: impl IntoElement, input: impl IntoElement, cx: &App) -> gpui::Di
         .child(input)
 }
 
-fn hint(text: impl Into<SharedString>, color: gpui::Hsla) -> gpui::Div {
+fn hint(text: impl Into<SharedString>, color: Hsla) -> Div {
     div()
         .text_size(dp(11.5))
         .text_color(color)
@@ -866,9 +869,7 @@ impl Render for ConnForm {
             .min_h_0()
             .flex_shrink(1.)
             .gap(dp(16.))
-            .on_action(
-                cx.listener(|this, _: &super::RunQuery, window, cx| this.done(true, window, cx)),
-            )
+            .on_action(cx.listener(|this, _: &RunQuery, window, cx| this.done(true, window, cx)))
             .child(dialog::title(
                 if self.is_new {
                     "New connection"

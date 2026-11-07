@@ -116,7 +116,9 @@ time: **More info → Run anyway**.
 - **Schemas (PostgreSQL):** the sidebar groups tables by schema, and the
   schema in the title bar shows one schema and makes it the default for
   queries (`search_path`), so `SELECT * FROM orders` finds `sales.orders`.
-- **Settings (⌘,):** interface and editor font sizes, light/dark theme.
+- **Settings (⌘,):** interface and editor font sizes, system / light /
+  dark theme, rows per page, default safe mode, and a searchable shortcut
+  list.
 
 ## Keyboard shortcuts
 
