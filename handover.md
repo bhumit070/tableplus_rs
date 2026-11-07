@@ -108,8 +108,21 @@ Done since (local, not pushed):
 | `03cb297` | 6b History + saved queries in one dialog (`ui/history_view.rs`) |
 | `0c6dfb3` | Loading and empty states (`ui/loading.rs`): skeleton rows after 150 ms, loading chip with Stop, db switching, connecting rail tile, busy toasts, empty table / no matches |
 | `e6f6f36` | Could-not-connect state on home cards |
+| `e1c57e2` | 7a Command-palette look for every picker (sections, icons, key caps, highlighted matches) |
+| `2c26a95` | CI: only the newest commit builds / releases (cancel older runs, draft-then-publish, head check) |
+| `dabf94c` | ⌘↵ runs the statement at the cursor (`db::split::statement_at`), ⌘⇧↵ runs all; result tabs close; no tab bar for one result |
+| `0df6382` | New Database… switches to the new database |
+| `c095faa` | 24.6 Welcome back: launch offers last session instead of reconnecting (`always_reopen`) |
+| `e5a2df8` | 24.4 Passwords step before the first keychain access (`keychain_explained`, `save_passwords`) |
+| `12b44b1` | Sample database (`src/sample.rs`) |
+| `3fd21d3` | 24.1–24.5 First-run onboarding (`ui/onboarding.rs`, `onboarded`) |
+| `b183262` | Docs refresh |
 
-Screenshots now also cover 02-query-results, 04-edit-connection,
+All of the above was pushed to `main` at the user's request at the end of
+that session.
+
+Screenshots now also cover 05-palette, 17-open-connection, 24-welcome-back,
+24-passwords and 24-1…24-5 onboarding steps, and 02-query-results, 04-edit-connection,
 14-explain, 15-history, 21-settings-shortcuts, 22-loading, 22-no-matches.
 
 Committed after this was first written (shots baseline): `src/ui/app/shots.rs` has screenshots for settings,
@@ -148,6 +161,12 @@ Key new files: `src/ui/theme.rs` (tokens, `dp`, pills, `kbd`, `caps`,
    open-connection picker restyle (17), new-table dialog (18), row menu with
    Copy as submenu and preview (09), row panel tabs Fields / JSON /
    References.
+7. Remaining new features: filter popover (10), in-place Structure editing
+   (08), CSV column mapping (13), Redis typed editors and TTL (19), MongoDB
+   document cards (20), process list restyle (16), new-table dialog (18),
+   row menu Copy as submenu (09), row panel tabs. The palette's scope chips
+   and ⌘↵ / ⌥↵ actions (05), and the database switcher's Recent section and
+   sizes (06), are also still open.
 8. States (22): done except the **connection lost** banner (countdown,
    Retry, dimmed read-only grid, edits kept) and the query error
    **suggestion** ("Did you mean total?" with a one-click fix, SQLSTATE,
