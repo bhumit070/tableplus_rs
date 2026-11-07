@@ -1069,7 +1069,7 @@ impl Session {
         done: &'static str,
         window: &mut Window,
         cx: &mut Context<Self>,
-        on_ok: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
+        on_ok: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         op: impl FnOnce(
             std::sync::Arc<RwLock<crate::db::Connection>>,
         ) -> std::pin::Pin<
@@ -1082,7 +1082,7 @@ impl Session {
             this.update_in(cx, |s, window, cx| {
                 match res {
                     Ok(msg) => {
-                        on_ok(s, cx);
+                        on_ok(s, window, cx);
                         window.push_notification(
                             Notification::success(msg.unwrap_or_else(|| done.to_string())),
                             cx,
@@ -1127,11 +1127,13 @@ impl Session {
             cx,
             move |name, window, cx| {
                 me.update(cx, |s, cx| {
+                    let created = name.clone();
                     s.run_op(
                         "Database created",
                         window,
                         cx,
-                        |_, _| {},
+                        // Straight into the new database.
+                        move |s, window, cx| s.request_switch_database(created, window, cx),
                         move |c| {
                             Box::pin(async move {
                                 c.read().await.create_database(&name).await.map(|_| None)
@@ -1183,7 +1185,7 @@ impl Session {
                                 "Database dropped",
                                 window,
                                 cx,
-                                |_, _| {},
+                                |_, _, _| {},
                                 move |c| {
                                     Box::pin(async move {
                                         c.read().await.drop_database(&typed).await.map(|_| None)
@@ -1238,7 +1240,7 @@ impl Session {
                         "Renamed",
                         window,
                         cx,
-                        move |s, cx| s.close_tabs_of(&old, cx),
+                        move |s, _, cx| s.close_tabs_of(&old, cx),
                         move |c| {
                             Box::pin(async move {
                                 c.read().await.rename_object(&o, &name).await.map(|_| None)
@@ -1271,7 +1273,7 @@ impl Session {
                         "Table duplicated",
                         window,
                         cx,
-                        |_, _| {},
+                        |_, _, _| {},
                         move |c| {
                             Box::pin(async move {
                                 c.read()
@@ -1298,7 +1300,7 @@ impl Session {
             "Done",
             window,
             cx,
-            |_, _| {},
+            |_, _, _| {},
             move |c| Box::pin(async move { c.read().await.maintain(&obj).await.map(Some) }),
         );
     }

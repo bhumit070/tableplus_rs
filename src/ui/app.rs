@@ -1923,6 +1923,48 @@ mod tests {
         }
     }
 
+    /// New Database… switches to the database it created.
+    /// Needs the Postgres container (TABULA_IT=1).
+    #[gpui::test]
+    fn new_database_opens_it(cx: &mut TestAppContext) {
+        if std::env::var("TABULA_IT").is_err() {
+            return;
+        }
+        cx.executor().allow_parking();
+        let (app, mut cx) = open(cx);
+        let mut cfg = ConnectionConfig::new(Driver::Postgres);
+        cfg.port = 55432;
+        cfg.user = "postgres".into();
+        cfg.password = "test".into();
+        cfg.database = "postgres".into();
+        app.update_in(&mut cx, |a, w, cx| {
+            a.connect(cfg.clone(), w, cx, |_, _, _| {})
+        });
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        let name = format!("tabula_it_new_{}", &cfg.id[..8]);
+        cx.update(|window, cx| window.blur(cx));
+        cx.dispatch_action(NewDatabase);
+        cx.run_until_parked();
+        cx.simulate_input(&name);
+        cx.simulate_keystrokes("enter");
+        let n = name.clone();
+        wait_until(&mut cx, "switched to the new database", move |cx| {
+            session.read_with(cx, |s, _| s.current_db() == n)
+        });
+        // Clean up from a separate connection.
+        block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&cfg).await?;
+            c.execute(&format!("drop database if exists \"{name}\" with (force)"))
+                .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+    }
+
     /// ⌘↵ runs the statement under the cursor (one result, no tab bar);
     /// ⌘⇧↵ runs them all; a result tab's × closes it.
     #[gpui::test]

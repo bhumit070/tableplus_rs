@@ -131,7 +131,8 @@
   with Cancel Query and Kill Connection.
 - **Backup / Restore** with the database's own tools (`pg_dump` / `psql`,
   `mysqldump` / `mysql`); SQLite is copied with `VACUUM INTO`.
-- **Create / drop databases** and the **database switcher** (⌘K).
+- **Create / drop databases** (a new database opens right away) and the
+  **database switcher** (⌘K).
 
 ## Safety
 
