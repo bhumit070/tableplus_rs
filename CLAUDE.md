@@ -59,6 +59,10 @@ Key cross-cutting mechanics:
 - Code that may run inside another update of the same entity (shortcut handlers, dialog callbacks, settings notifications) must defer with `window.defer` / `cx.defer`, or gpui panics ("already being updated").
 - Secrets stay in the keychain — never in JSON files, logs or command lines. `*.tableplusconnection` files contain real passwords: never read or commit them.
 - Each file starts with a `//!` comment describing what it does; comments explain *why*, briefly.
+- **Small commits.** Commit after each small change once it's verified
+  (builds with no warnings, `cargo test` passes, screenshots checked for UI
+  changes), so every commit works on its own and nothing is left broken
+  between them. Don't batch unrelated changes into one commit.
 - Keep docs in step with behaviour changes: `README.md`, `docs/` (features, shortcuts, architecture, modules, development).
 
 ## gpui / gpui-component gotchas
