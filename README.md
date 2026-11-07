@@ -9,6 +9,59 @@ connections as you like: each one gets an icon in the left rail.
 features, shortcuts, and how it's built (architecture, every source file and
 dependency, development and releases).
 
+## Installation
+
+### macOS (Apple Silicon and Intel)
+
+With [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask bhumit070/tap/tabula
+```
+
+`brew upgrade` keeps it up to date. Or download the `.dmg` for your Mac from
+the [latest release](https://github.com/bhumit070/tableplus_rs/releases/latest)
+and drag Tabula to Applications.
+
+Tabula isn't notarized by Apple yet, so macOS blocks the first launch (with
+Homebrew too). Open Tabula once, then go to **System Settings → Privacy &
+Security** and click **Open Anyway**. Or clear the quarantine flag yourself:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Tabula.app
+```
+
+### Debian and Ubuntu (x86_64)
+
+Add the apt repository once, then install. `sudo apt upgrade` picks up new
+releases:
+
+```sh
+curl -fsSL https://bhumit070.github.io/tabula-apt/tabula.gpg \
+  | sudo tee /usr/share/keyrings/tabula.gpg >/dev/null
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/tabula.gpg] https://bhumit070.github.io/tabula-apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/tabula.list
+sudo apt update && sudo apt install tabula
+```
+
+This also installs the Vulkan loader and GNOME Keyring, which Tabula needs.
+Or install a downloaded `.deb` directly (no automatic updates):
+`sudo apt install ./Tabula-*-linux-x86_64.deb`.
+
+### Other Linux distributions
+
+Download the `.tar.gz` from the
+[latest release](https://github.com/bhumit070/tableplus_rs/releases/latest),
+extract it and run `./tabula`. You need X11 or Wayland, Vulkan, and a Secret
+Service keyring (GNOME Keyring or KWallet) to save passwords.
+
+### Windows (x86_64)
+
+From the [latest release](https://github.com/bhumit070/tableplus_rs/releases/latest),
+the `.msi` installs Tabula with a Start menu entry, and the bare `.exe` runs
+without installing. Neither is signed yet, so SmartScreen may warn the first
+time: **More info → Run anyway**.
+
 ## Supported databases
 
 | Database | Browse & edit | Query editor |
@@ -107,26 +160,7 @@ Versions are `vMAJOR.MINOR.PATCH`: MAJOR.MINOR come from `Cargo.toml`, and
 PATCH counts up per release. If one platform fails to build, the others are
 still published and the release notes say which is missing.
 
-- **macOS** (`.dmg`): drag Tabula to Applications, or install with
-  Homebrew: `brew install --cask bhumit070/tap/tabula`. Not notarized yet, so
-  macOS blocks the first launch, with Homebrew too: open Tabula once, then
-  System Settings → Privacy & Security → Open Anyway (or run
-  `xattr -dr com.apple.quarantine /Applications/Tabula.app`).
-- **Linux** (`.deb` for Debian/Ubuntu, `.tar.gz` for others): needs X11 or
-  Wayland, Vulkan, and a Secret Service keyring (GNOME Keyring, KWallet) for
-  saved passwords. The `.deb` installs Vulkan and GNOME Keyring for you. On
-  Debian/Ubuntu, the apt repository gives you updates with `apt upgrade`:
-
-  ```sh
-  curl -fsSL https://bhumit070.github.io/tabula-apt/tabula.gpg \
-    | sudo tee /usr/share/keyrings/tabula.gpg >/dev/null
-  echo "deb [arch=amd64 signed-by=/usr/share/keyrings/tabula.gpg] https://bhumit070.github.io/tabula-apt stable main" \
-    | sudo tee /etc/apt/sources.list.d/tabula.list
-  sudo apt update && sudo apt install tabula
-  ```
-- **Windows** (`.msi` installer, or the bare `.exe` to run without
-  installing): not signed yet, so SmartScreen may warn the first time (More
-  info → Run anyway).
+See [Installation](#installation) for what each file is and how to install it.
 
 ## Building
 
