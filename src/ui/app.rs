@@ -1328,9 +1328,13 @@ mod tests {
             current(cx).as_deref() == Some("tabula_it_other")
         });
 
-        // Clicking a database switches too.
+        // Clicking a database switches too. The one we came from is Recent.
         cx.simulate_keystrokes("cmd-k");
         cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("pick-row-recent:postgres").is_some(),
+            "previous database listed under Recent"
+        );
         let row = cx
             .debug_bounds("pick-row-postgres")
             .expect("postgres row is shown");

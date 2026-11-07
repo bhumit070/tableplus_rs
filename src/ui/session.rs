@@ -73,6 +73,9 @@ pub struct Session {
     loading: bool,
     /// The database a ⌘K switch is moving to, until it's done.
     switching_db: Option<String>,
+    /// Databases switched to in this session, newest first, for the
+    /// switcher's Recent section.
+    recent_dbs: Vec<String>,
     /// Why the table list couldn't be loaded; shown in the sidebar with Retry.
     load_error: Option<String>,
     /// Why the database list couldn't be loaded.
@@ -108,6 +111,7 @@ impl Session {
             queries_opened: 0,
             loading: false,
             switching_db: None,
+            recent_dbs: Vec::new(),
             load_error: None,
             dbs_error: None,
             focus: cx.focus_handle(),
@@ -243,6 +247,13 @@ impl Session {
             this.update_in(cx, |this, window, cx| match res {
                 Ok(()) => {
                     this.switching_db = None;
+                    // Where we were and where we are now are both recent.
+                    let previous = this.current_db.clone();
+                    for database in [previous, name.clone()] {
+                        this.recent_dbs.retain(|d| *d != database);
+                        this.recent_dbs.insert(0, database);
+                    }
+                    this.recent_dbs.truncate(4);
                     // Right away, not after the sidebar reload, so a quick
                     // ⌘K already knows which database is current.
                     this.current_db = name.clone();
@@ -509,7 +520,12 @@ impl Session {
     pub fn new_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_query(String::new(), window, cx);
     }
+}
 
+/// The switcher's "Create database…" row (no database is named this).
+const CREATE_DATABASE: &str = "\u{0}create";
+
+impl Session {
     /// ⌘K: pick another database on this connection.
     pub fn open_db_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.databases.len() < 2 {
@@ -522,18 +538,45 @@ impl Session {
             }
             return;
         }
-        let items = self
-            .databases
+        // Recent first (up to 3, the current one marked), then all of them.
+        let recent: Vec<PickItem> = self
+            .recent_dbs
             .iter()
+            .filter(|d| self.databases.contains(d))
+            .take(3)
             .map(|d| PickItem {
                 current: *d == self.current_db,
-                icon: Some(IconName::Database),
-                group: Some("Databases".into()),
-                ..PickItem::new(d, d)
+                icon: Some(IconName::RotateCcwClock),
+                group: Some("Recent".into()),
+                ..PickItem::new(format!("recent:{d}"), d)
             })
             .collect();
+        let mut items: Vec<PickItem> = if recent.len() > 1 { recent } else { vec![] };
+        items.extend(self.databases.iter().map(|d| PickItem {
+            current: *d == self.current_db,
+            icon: Some(IconName::Database),
+            group: Some("All databases".into()),
+            ..PickItem::new(d, d)
+        }));
+        let can_create = matches!(self.shared.cfg.driver, Driver::Postgres | Driver::MySql);
+        if can_create {
+            items.push(PickItem {
+                icon: Some(IconName::Plus),
+                group: Some("New".into()),
+                ..PickItem::new(CREATE_DATABASE, "Create database…")
+            });
+        }
         let me = cx.entity().downgrade();
-        let on_pick: OnPick = Rc::new(move |name, window, cx| {
+        let on_pick: OnPick = Rc::new(move |id, window, cx| {
+            if id == CREATE_DATABASE {
+                let me = me.clone();
+                // After the picker has closed.
+                window.defer(cx, move |window, cx| {
+                    me.update(cx, |s, cx| s.new_database(window, cx)).ok();
+                });
+                return;
+            }
+            let name = id.strip_prefix("recent:").map(str::to_string).unwrap_or(id);
             me.update(cx, |s, cx| s.request_switch_database(name, window, cx))
                 .ok();
         });
