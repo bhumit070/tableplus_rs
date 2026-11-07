@@ -36,7 +36,9 @@
   the server). Switching database shows "Switching to …" in the title bar
   and placeholder rows in the sidebar; a connection being opened gets a
   spinner tile in the left rail; backups and restores keep a progress
-  toast until they finish. An empty table offers *Add row* and *Import
+  toast until they finish. A connection that couldn't be opened keeps the
+  reason on its home card, with Retry and Details (and Edit connection…
+  from there). An empty table offers *Add row* and *Import
   CSV…*; a filter that matches nothing says so and offers *Clear filters*.
 - **Staged editing:** edits are tinted (amber edited, green new, red
   deleted) and nothing is written until you commit (⌘S). A bar below the

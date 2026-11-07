@@ -391,6 +391,12 @@ fn screenshots() {
                 c.name = name.into();
                 c.tag = tag;
                 c.host = host.into();
+                if name == "acme-staging" {
+                    h.set_failure(
+                        &c.id,
+                        "connection refused (os error 61): is the server running on staging-db.acme.internal:5432?",
+                    );
+                }
                 if name == "acme-production" {
                     c.ssh = Some(Default::default());
                     c.ssl = true;

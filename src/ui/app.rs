@@ -125,13 +125,14 @@ impl AppView {
         }
     }
 
-    /// Opens a connection in a new session. `done(ok)` runs either way.
+    /// Opens a connection in a new session. `done` runs either way, with
+    /// the error when it failed.
     pub fn connect(
         &mut self,
         cfg: ConnectionConfig,
         window: &mut Window,
         cx: &mut Context<Self>,
-        done: impl FnOnce(bool, &mut Window, &mut App) + 'static,
+        done: impl FnOnce(Connected, &mut Window, &mut App) + 'static,
     ) {
         let c = cfg.clone();
         let task = runtime::spawn(async move { Connection::connect(&c).await });
@@ -145,7 +146,11 @@ impl AppView {
                     this.confirm_host_key(unknown.clone(), cfg, window, cx, done);
                     return;
                 }
-                done(res.is_ok(), window, cx);
+                done(
+                    res.as_ref().map(|_| ()).map_err(|e| format!("{e:#}")),
+                    window,
+                    cx,
+                );
                 match res {
                     Ok(conn) => {
                         let shared = Rc::new(Shared {
@@ -187,9 +192,9 @@ impl AppView {
         cfg: ConnectionConfig,
         window: &mut Window,
         cx: &mut Context<Self>,
-        done: impl FnOnce(bool, &mut Window, &mut App) + 'static,
+        done: impl FnOnce(Connected, &mut Window, &mut App) + 'static,
     ) {
-        type Done = Box<dyn FnOnce(bool, &mut Window, &mut App)>;
+        type Done = Box<dyn FnOnce(Connected, &mut Window, &mut App)>;
         let done: Rc<RefCell<Option<Done>>> = Rc::new(RefCell::new(Some(Box::new(done))));
         let me = cx.entity().downgrade();
         let body: SharedString = format!(
@@ -208,11 +213,9 @@ impl AppView {
                         return true;
                     };
                     if let Err(e) = unknown.trust() {
-                        window.push_notification(
-                            Notification::error(format!("Couldn't save the host key: {e:#}")),
-                            cx,
-                        );
-                        done(false, window, cx);
+                        let why = format!("Couldn't save the host key: {e:#}");
+                        window.push_notification(Notification::error(why.clone()), cx);
+                        done(Err(why), window, cx);
                         return true;
                     }
                     let cfg = cfg.clone();
@@ -221,7 +224,7 @@ impl AppView {
                 })
                 .on_cancel(move |_, window, cx| {
                     if let Some(done) = done_cancel.borrow_mut().take() {
-                        done(false, window, cx);
+                        done(Err("The SSH host key wasn't trusted.".into()), window, cx);
                     }
                     true
                 })
@@ -854,6 +857,9 @@ fn toggle_theme(window: &mut Window, cx: &mut App) {
         }
     });
 }
+
+/// How a connection attempt ended: the error text when it failed.
+pub type Connected = Result<(), String>;
 
 /// The window's root view, so app-wide shortcuts can reach it.
 struct AppHandle {
@@ -1897,6 +1903,34 @@ mod tests {
         for f in files {
             let _ = remove_file(f);
         }
+    }
+
+    /// A failed connection keeps its reason on the home card until the next
+    /// attempt.
+    #[gpui::test]
+    fn failed_connection_stays_on_its_card(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let (app, mut cx) = open(cx);
+        let home = app.read_with(&cx, |a, _| a.home.clone());
+        let mut cfg = ConnectionConfig::new(Driver::Postgres);
+        cfg.name = "nowhere".into();
+        // Nothing listens on port 1.
+        cfg.port = 1;
+        let id = cfg.id.clone();
+        home.update(&mut cx, |h, _| h.connections = vec![cfg.clone()]);
+        home.update_in(&mut cx, |h, w, cx| h.connect(cfg.clone(), w, cx));
+        wait_until(&mut cx, "attempt over", |cx| {
+            home.read_with(cx, |h, _| h.connecting.is_empty())
+        });
+        let why = home.read_with(&cx, |h, _| h.failure(&id));
+        assert!(why.is_some(), "reason kept");
+        assert_eq!(app.read_with(&cx, |a, _| a.sessions.len()), 0);
+        // Trying again clears it while it runs.
+        home.update_in(&mut cx, |h, w, cx| h.connect(cfg.clone(), w, cx));
+        assert_eq!(home.read_with(&cx, |h, _| h.failure(&id)), None);
+        wait_until(&mut cx, "second attempt", |cx| {
+            home.read_with(cx, |h, _| h.connecting.is_empty())
+        });
     }
 
     /// Pasting a connection URL fills the form; Save keeps the password

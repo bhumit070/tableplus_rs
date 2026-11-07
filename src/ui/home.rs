@@ -2,7 +2,7 @@
 //! grouped Open now / Saved, with search (`/`), an environment filter,
 //! Import and New connection.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use chrono::Utc;
@@ -12,7 +12,7 @@ use gpui::{
     Styled, Subscription, WeakEntity, Window, div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::dialog::DialogFooter;
+use gpui_component::dialog::{DialogButtonProps, DialogFooter};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_component::notification::Notification;
@@ -34,6 +34,8 @@ pub struct Home {
     search: Entity<InputState>,
     /// Ids of connections being opened (several at launch).
     pub connecting: HashSet<String>,
+    /// Why the last attempt to open a connection failed, by id.
+    failed: HashMap<String, String>,
     /// Set when connections.json couldn't be read (it's kept aside).
     load_warning: Option<String>,
     env_filter: Option<EnvTag>,
@@ -58,6 +60,7 @@ impl Home {
             load_warning,
             search,
             connecting: Default::default(),
+            failed: Default::default(),
             env_filter: None,
             focus: cx.focus_handle(),
             _subs: subs,
@@ -142,16 +145,21 @@ impl Home {
             }
         };
         self.connecting.insert(cfg.id.clone());
+        self.failed.remove(&cfg.id);
         cx.notify();
         let home = cx.entity().downgrade();
         self.app
             .update(cx, |app, cx| {
                 let retry = cfg.clone();
-                app.connect(cfg, window, cx, move |ok, window, cx| {
+                app.connect(cfg, window, cx, move |res, window, cx| {
                     home.update(cx, |h, cx| {
                         h.connecting.remove(&retry.id);
-                        if ok {
-                            h.touch(&retry.id, window, cx);
+                        let ok = res.is_ok();
+                        match res {
+                            Ok(()) => h.touch(&retry.id, window, cx),
+                            Err(e) => {
+                                h.failed.insert(retry.id.clone(), e);
+                            }
                         }
                         // Imported connections have no password yet: let the user add it.
                         // (Not when the keychain failed: saving that form
@@ -380,6 +388,17 @@ impl Home {
         });
     }
 
+    /// For screenshots.
+    #[cfg(test)]
+    pub fn set_failure(&mut self, id: &str, why: &str) {
+        self.failed.insert(id.into(), why.into());
+    }
+
+    #[cfg(test)]
+    pub fn failure(&self, id: &str) -> Option<String> {
+        self.failed.get(id).cloned()
+    }
+
     /// Marks `id` as just used, so the card can say when.
     fn touch(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(c) = self.connections.iter_mut().find(|c| c.id == id) {
@@ -443,7 +462,64 @@ impl Home {
         }
         tags.truncate(3);
 
-        let footer: AnyElement = if connecting {
+        let failed = self.failed.get(&cfg.id).cloned();
+        let footer: AnyElement = if let (Some(why), false) = (failed.clone(), connecting) {
+            let (retry, edit) = (cfg.clone(), cfg.clone());
+            let name = cfg.display_name();
+            let home = cx.entity().downgrade();
+            h_flex()
+                .gap(dp(4.))
+                .text_size(dp(11.5))
+                .text_color(t.danger)
+                .child(Icon::new(IconName::CircleX).xsmall())
+                .child("Couldn't connect")
+                .child(
+                    Button::new(("retry", ix))
+                        .cursor_pointer()
+                        .label("Retry")
+                        .ghost()
+                        .xsmall()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.connect(retry.clone(), window, cx);
+                        })),
+                )
+                .child(
+                    Button::new(("why", ix))
+                        .cursor_pointer()
+                        .label("Details")
+                        .ghost()
+                        .xsmall()
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            let (why, home, edit) = (why.clone(), home.clone(), edit.clone());
+                            let title = format!("Couldn't connect to {name}");
+                            window.open_alert_dialog(cx, move |d, _, _| {
+                                let (home, edit) = (home.clone(), edit.clone());
+                                d.title(title.clone())
+                                    .description(why.clone())
+                                    .show_cancel(true)
+                                    .button_props(
+                                        DialogButtonProps::default()
+                                            .ok_text("Edit connection…")
+                                            .cancel_text("Close"),
+                                    )
+                                    .on_ok(move |_, window, cx| {
+                                        let (home, edit) = (home.clone(), edit.clone());
+                                        // After this dialog has closed.
+                                        window.defer(cx, move |window, cx| {
+                                            home.update(cx, |h, cx| {
+                                                h.open_form(Some(edit), window, cx)
+                                            })
+                                            .ok();
+                                        });
+                                        true
+                                    })
+                            });
+                        }),
+                )
+                .into_any_element()
+        } else if connecting {
             h_flex()
                 .gap(dp(6.))
                 .text_size(dp(11.5))
@@ -524,7 +600,9 @@ impl Home {
             .gap(dp(6.))
             .rounded(dp(12.))
             .border_1()
-            .border_color(if open_ix.is_some() {
+            .border_color(if failed.is_some() && !connecting {
+                t.danger.opacity(0.45)
+            } else if open_ix.is_some() {
                 t.success.opacity(0.35)
             } else {
                 t.border
