@@ -84,8 +84,12 @@
 - **Copy as** JSON, INSERT, UPDATE, CSV, Markdown, or a column as an
   `IN (…)` list.
 - **Export** (⌘⇧E) to CSV, TSV, JSON, JSON Lines, Markdown, HTML or SQL.
-  Table exports stream every page to disk, so large tables don't fill
-  memory. In CSV, NULL is an empty field and an empty string is `""`.
+  One dialog picks the format, the rows (current filter, whole table, this
+  page or the selected row, with counts), format options (header row,
+  pretty JSON), and the destination, with a live two-row preview. Table
+  exports stream every page to disk, so large tables don't fill memory; a
+  long export shows progress with an estimate and Cancel. In CSV, NULL is
+  an empty field and an empty string is `""`.
 - **Import CSV** into an existing table: columns are matched by header
   name, and all rows go in one transaction.
 

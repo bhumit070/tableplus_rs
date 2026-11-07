@@ -5,6 +5,7 @@ pub mod completion;
 pub mod confirm;
 pub mod conn_form;
 pub mod copy;
+pub mod dialog;
 pub mod grid;
 pub mod home;
 pub mod picker;

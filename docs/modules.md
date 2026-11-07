@@ -52,7 +52,8 @@ also starts with a `//!` comment saying the same in more detail.
 | `grid.rs` | ~480 | `Grid`: the table delegate holding rows and staged edits. |
 | `cell_edit.rs` | ~270 | In-place cell editing shared by table and query tabs. |
 | `completion.rs` | ~590 | Autocomplete for SQL, MongoDB and Redis. |
-| `copy.rs` | ~310 | "Copy as …" menu items and the Export dialog (streams to a temp file, then renames it). |
+| `copy.rs` | ~970 | "Copy as …" menu items and the Export dialog: format tiles, row scope, options, preview, destination; streams to a temp file, then renames it, with a progress toast and Cancel. |
+| `dialog.rs` | ~180 | The shared dialog look (surface, title, footer) and its controls: section labels, tiles, radio rows. |
 | `row_panel.rs` | ~160 | Row detail panel (⌘⇧I). |
 | `table_editor.rs` | ~430 | New Table / Edit Columns dialog. |
 | `processes.rs` | ~230 | Process list (⌘⇧P). |

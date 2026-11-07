@@ -1728,6 +1728,10 @@ impl copy::ExportHost for TableTab {
             query: self.current_query(cx),
         }
     }
+
+    fn export_total(&self, _cx: &App) -> Option<u64> {
+        self.total
+    }
 }
 
 impl cell_edit::CellEditHost for TableTab {

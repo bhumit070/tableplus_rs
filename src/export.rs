@@ -39,6 +39,14 @@ impl Format {
         }
     }
 
+    /// The name on a format tile.
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Format::SqlInsert => "SQL INSERT",
+            f => f.label(),
+        }
+    }
+
     pub fn extension(self) -> &'static str {
         match self {
             Format::Csv => "csv",
@@ -50,9 +58,24 @@ impl Format {
             Format::SqlInsert => "sql",
         }
     }
+}
 
-    pub fn from_id(id: &str) -> Option<Format> {
-        Format::ALL.into_iter().find(|f| f.extension() == id)
+/// Export options (design.md, screen 12). Each applies only to the formats
+/// it names; the defaults match "Copy as".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Options {
+    /// CSV, TSV and Markdown: a first line of column names.
+    pub header: bool,
+    /// JSON: one indented object per row, or one line per row.
+    pub pretty: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            header: true,
+            pretty: true,
+        }
     }
 }
 
@@ -68,6 +91,11 @@ pub struct SqlTarget {
 impl SqlTarget {
     pub fn ident(&self, s: &str) -> String {
         ident(self.driver, s)
+    }
+
+    /// The table as SQL writes it: `"public"."orders"`.
+    pub fn qualified(&self) -> String {
+        self.table_name()
     }
 
     fn table_name(&self) -> String {
@@ -250,6 +278,7 @@ pub fn in_list(driver: Driver, values: &[Option<String>]) -> String {
 /// `footer` — so a big table never has to sit in memory at once.
 pub struct Encoder<'a> {
     format: Format,
+    options: Options,
     columns: &'a [String],
     target: &'a SqlTarget,
     /// Rows written so far (JSON needs commas between objects).
@@ -260,13 +289,24 @@ impl<'a> Encoder<'a> {
     pub fn new(format: Format, columns: &'a [String], target: &'a SqlTarget) -> Self {
         Encoder {
             format,
+            options: Options::default(),
             columns,
             target,
             written: 0,
         }
     }
 
+    pub fn options(mut self, options: Options) -> Self {
+        self.options = options;
+        self
+    }
+
     pub fn header(&self) -> String {
+        if !self.options.header
+            && matches!(self.format, Format::Csv | Format::Tsv | Format::Markdown)
+        {
+            return String::new();
+        }
         let names: Vec<Option<String>> = self.columns.iter().cloned().map(Some).collect();
         match self.format {
             Format::Csv => delimited_line(&names, ','),
@@ -302,9 +342,13 @@ impl<'a> Encoder<'a> {
                 Format::Tsv => out.push_str(&delimited_line(r, '\t')),
                 Format::Json => {
                     out.push_str(if self.written == 0 { "\n  " } else { ",\n  " });
-                    let obj = serde_json::to_string_pretty(&json_object(self.columns, r))
-                        .unwrap_or_default();
-                    out.push_str(&obj.replace('\n', "\n  "));
+                    let obj = json_object(self.columns, r);
+                    if self.options.pretty {
+                        let obj = serde_json::to_string_pretty(&obj).unwrap_or_default();
+                        out.push_str(&obj.replace('\n', "\n  "));
+                    } else {
+                        out.push_str(&obj.to_string());
+                    }
                 }
                 Format::JsonLines => {
                     out.push_str(&json_object(self.columns, r).to_string());
@@ -399,6 +443,25 @@ mod tests {
         assert_eq!(j[0]["name"], "O'Neil, \"Ada\"");
         let lines = render(Format::JsonLines, &cols(), &rows(), &pg());
         assert_eq!(lines.lines().count(), 2);
+    }
+
+    #[test]
+    fn options_drop_header_and_compact_json() {
+        let opts = Options {
+            header: false,
+            pretty: false,
+        };
+        let run = |f| {
+            let (c, r, t) = (cols(), rows(), pg());
+            let mut e = Encoder::new(f, &c, &t).options(opts);
+            format!("{}{}{}", e.header(), e.rows(&r), e.footer())
+        };
+        assert_eq!(run(Format::Csv), "1,\"O'Neil, \"\"Ada\"\"\"\n2,\n");
+        assert!(!run(Format::Markdown).contains("---"));
+        let json = run(Format::Json);
+        assert_eq!(json.lines().count(), 4, "{json}");
+        let j: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(j[1]["id"], "2");
     }
 
     #[test]

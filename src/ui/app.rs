@@ -1754,6 +1754,84 @@ mod tests {
         let _ = std::fs::remove_file(file);
     }
 
+    /// The export dialog writes the filtered rows by default, the whole
+    /// table when asked, in the chosen format and to the typed path.
+    #[gpui::test]
+    fn export_dialog(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = std::env::temp_dir().join(format!("tabula-ui-export-{}.db", cfg.id));
+        std::fs::write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let out = std::env::temp_dir().join(format!("tabula-ui-export-{}", cfg.id));
+        let setup = cfg.clone();
+        futures::executor::block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute("create table t (id integer primary key, a text); insert into t (a) values ('x'), ('y'), ('z')")
+                .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("t").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let i = s.object_index("t").unwrap();
+            s.open_object(i, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        let rows = |cx: &mut VisualTestContext| tab.read_with(cx, |t, cx| t.loaded_rows(cx));
+        wait_until(&mut cx, "rows", |cx| rows(cx) == 3);
+        tab.update_in(&mut cx, |t, w, cx| {
+            t.toggle_filter(&ToggleFilter, w, cx);
+            t.set_filter_value_for_test(0, "2", w, cx);
+        });
+        wait_until(&mut cx, "filtered rows", |cx| rows(cx) == 1);
+
+        let click = |cx: &mut VisualTestContext, what: &'static str| {
+            cx.run_until_parked();
+            let b = cx
+                .debug_bounds(what)
+                .unwrap_or_else(|| panic!("{what} drawn"));
+            cx.simulate_click(b.center(), gpui::Modifiers::none());
+            cx.run_until_parked();
+        };
+        let export = |cx: &mut VisualTestContext, path: &std::path::Path| {
+            click(cx, "export-path");
+            cx.simulate_keystrokes("cmd-a backspace");
+            cx.simulate_input(&path.to_string_lossy());
+            cx.simulate_keystrokes("cmd-enter");
+            let p = path.to_path_buf();
+            wait_until(cx, "export file", move |_| p.exists());
+            std::fs::read_to_string(path).unwrap()
+        };
+
+        // Default: CSV of the current filter.
+        cx.dispatch_action(ExportData);
+        let csv = out.with_extension("csv");
+        assert_eq!(export(&mut cx, &csv), "id,a\n2,y\n");
+
+        // TSV of the whole table, without the header row.
+        cx.dispatch_action(ExportData);
+        click(&mut cx, "export-format-tsv");
+        click(&mut cx, "export-scope-1");
+        click(&mut cx, "export-header");
+        let tsv = out.with_extension("tsv");
+        assert_eq!(export(&mut cx, &tsv), "1\tx\n2\ty\n3\tz\n");
+
+        for f in [file, csv, tsv] {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+
     /// Enum columns edit with a dropdown of their values: typing jumps to a
     /// value, arrows move (NULL is last), Enter picks, Esc cancels.
     /// Needs the Postgres container (TABULA_IT=1).

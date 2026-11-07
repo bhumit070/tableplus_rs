@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{AnyWindowHandle, HeadlessAppContext, Window, px, size};
-use gpui_component::{Root, Theme, ThemeMode, WindowExt as _};
+use gpui_component::{Root, Theme, ThemeMode};
 
 use super::*;
 use crate::db::{ConnectionConfig, Driver};
