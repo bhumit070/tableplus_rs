@@ -8,7 +8,7 @@ use anyhow::Context as _;
 
 use gpui::{
     App, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight, IntoElement,
-    ParentElement, Render, SharedString, Styled, Subscription, Window, div, prelude::*, px,
+    ParentElement, Render, Styled, Subscription, Window, div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -36,7 +36,7 @@ use super::{
     ToggleFilter, search_list,
 };
 use crate::db::{
-    DbObject, EnvTag, Filter, FilterKind, FilterOp, ObjectKind, QueryResult, Structure, TableQuery,
+    DbObject, Filter, FilterKind, FilterOp, ObjectKind, QueryResult, Structure, TableQuery,
 };
 use crate::runtime;
 use crate::ui::DisabledWhen as _;
@@ -105,6 +105,8 @@ pub struct TableTab {
     /// Bumped per reload; only the latest response is applied, so a slow
     /// earlier page can't overwrite a newer one.
     load_seq: u64,
+    /// The last import dialog opened (tests reach it through this).
+    import_view: Option<Entity<crate::ui::csv_import_view::CsvImportView>>,
     /// When the running load began; `None` when idle.
     load_started: Option<Instant>,
     /// The same for foreign-key lookups while editing.
@@ -300,6 +302,7 @@ impl TableTab {
             edit_sub: None,
             load_seq: 0,
             load_started: None,
+            import_view: None,
             fk_seq: 0,
             fk_labels: Default::default(),
             _subs: subs,
@@ -401,6 +404,13 @@ impl TableTab {
         self.table
             .update(cx, |table, cx| table.set_selected_cell(row, column, cx));
         self.filter_by_cell(row, window, cx);
+    }
+
+    #[cfg(test)]
+    pub fn import_view_for_test(
+        &self,
+    ) -> Option<Entity<crate::ui::csv_import_view::CsvImportView>> {
+        self.import_view.clone()
     }
 
     #[cfg(test)]
@@ -1362,16 +1372,22 @@ impl TableTab {
         }
         // Read and parse off the UI thread: a big file mustn't freeze it.
         let path = path.to_path_buf();
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
         let task = runtime::spawn(async move {
             let bytes = read(&path)
                 .await
                 .with_context(|| format!("reading {}", path.display()))?;
-            spawn_blocking(move || crate::csv_import::parse(&bytes)).await?
+            let size = bytes.len() as u64;
+            let csv = spawn_blocking(move || crate::csv_import::parse(&bytes)).await??;
+            Ok((csv, size))
         });
         cx.spawn_in(window, async move |this, cx| {
             let res = task.await;
             this.update_in(cx, |t, window, cx| match res {
-                Ok(csv) => t.confirm_import(csv, window, cx),
+                Ok((csv, size)) => t.confirm_import(csv, file_name.clone(), size, window, cx),
                 Err(e) => window.push_notification(
                     Notification::error(format!("{e:#}")).title("Import failed"),
                     cx,
@@ -1382,14 +1398,23 @@ impl TableTab {
         .detach();
     }
 
+    /// The import dialog (design.md screen 13); Import runs through the
+    /// safe-mode gate like any write.
     fn confirm_import(
         &mut self,
         csv: crate::csv_import::Csv,
+        file_name: String,
+        file_size: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let fail = |msg: String, window: &mut Window, cx: &mut Context<Self>| {
-            window.push_notification(Notification::error(msg).title("Import failed"), cx);
+        let Some(columns) = self.structure.as_ref().map(|s| s.columns.clone()) else {
+            window.push_notification(
+                Notification::error("The table's columns haven't loaded yet")
+                    .title("Import failed"),
+                cx,
+            );
+            return;
         };
         let atomic = self
             .shared
@@ -1397,88 +1422,51 @@ impl TableTab {
             .try_read()
             .map(|c| c.commits_atomically())
             .unwrap_or(true);
-        let Some(columns) = self.structure.as_ref().map(|s| s.columns.clone()) else {
-            return fail("The table's columns haven't loaded yet".into(), window, cx);
-        };
-        let mapping = match crate::csv_import::map_columns(&csv.headers, &columns) {
-            Ok(m) => m,
-            Err(e) => return fail(format!("{e:#}"), window, cx),
-        };
-        let matched: Vec<String> = csv
-            .headers
-            .iter()
-            .zip(&mapping)
-            .filter_map(|(h, m)| {
-                m.as_ref().map(|m| {
-                    if h == m {
-                        m.clone()
-                    } else {
-                        format!("{m} ← {h}")
-                    }
-                })
-            })
-            .collect();
-        if matched.is_empty() {
-            return fail(
-                format!(
-                    "No CSV column matches a column of {}. The header row must use the column names.",
-                    self.object.title()
-                ),
-                window,
-                cx,
-            );
-        }
-        let ignored: Vec<&String> = csv
-            .headers
-            .iter()
-            .zip(&mapping)
-            .filter(|(_, m)| m.is_none())
-            .map(|(h, _)| h)
-            .collect();
-        let n = csv.rows.len();
-        let changes = crate::csv_import::changes(&csv, &mapping);
-        let mut text = format!(
-            "Insert {n} row(s) into {}.\n\nColumns: {}",
-            self.object.title(),
-            matched.join(", ")
-        );
-        if !ignored.is_empty() {
-            text.push_str(&format!(
-                "\nIgnored (no such column): {}",
-                ignored
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        text.push_str("\n\nEmpty cells get the column's default.");
-        text.push_str(if atomic {
-            " All rows are inserted in one transaction: if one fails, none are."
-        } else {
-            " If a row fails, the rows before it stay inserted."
-        });
-        let title = if self.shared.cfg.tag == EnvTag::Production {
-            "Import into PRODUCTION?"
-        } else {
-            "Import CSV?"
-        };
-        let weak = cx.entity().downgrade();
-        let changes = std::rc::Rc::new(changes);
-        window.open_alert_dialog(cx, move |d, _, _| {
-            let (weak, changes, columns) = (weak.clone(), changes.clone(), columns.clone());
-            d.title(title)
-                .description(SharedString::from(text.clone()))
-                .show_cancel(true)
-                .on_ok(move |_, window, cx| {
-                    let (changes, columns) = ((*changes).clone(), columns.clone());
-                    weak.update(cx, |t, cx| {
+        let me = cx.entity().downgrade();
+        let cfg = self.shared.cfg.clone();
+        let table = self.object.title();
+        let insert_columns = columns.clone();
+        let on_import: crate::ui::csv_import_view::OnImport =
+            Rc::new(move |changes, window, cx| {
+                let rows = changes.len();
+                let detail = format!("INSERT INTO {table} … ({rows} rows from the CSV file)");
+                let gate = crate::db::safety::gate_write(&cfg);
+                let (me_later, columns_later, changes_later) =
+                    (me.clone(), insert_columns.clone(), changes.clone());
+                if super::guarded(
+                    gate,
+                    &cfg,
+                    "Import",
+                    detail,
+                    window,
+                    cx,
+                    move |window, cx| {
+                        let (columns, changes) = (columns_later.clone(), changes_later.clone());
+                        me_later
+                            .update(cx, |t, cx| {
+                                t.run_import(changes, columns, atomic, window, cx)
+                            })
+                            .ok();
+                    },
+                ) {
+                    let columns = insert_columns.clone();
+                    me.update(cx, |t, cx| {
                         t.run_import(changes, columns, atomic, window, cx)
                     })
                     .ok();
-                    true
-                })
-        });
+                }
+            });
+        let view = crate::ui::csv_import_view::CsvImportView::open(
+            csv,
+            file_name,
+            file_size,
+            self.object.title(),
+            columns,
+            on_import,
+            window,
+            cx,
+        );
+        self.import_view = Some(view);
     }
 
     fn run_import(

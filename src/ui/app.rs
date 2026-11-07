@@ -1156,6 +1156,7 @@ mod shots;
 mod tests {
     use std::env::temp_dir;
     use std::fs::{remove_file, write};
+    use std::path::Path;
     use std::time::{Duration, Instant};
 
     use gpui::{TestAppContext, VisualTestContext};
@@ -3001,11 +3002,17 @@ mod tests {
             tab.read_with(cx, |t, _| t.has_structure())
         });
 
-        tab.update_in(&mut cx, |t, w, cx| t.import_csv_file(&good, w, cx));
-        wait_until(&mut cx, "confirmation", |cx| {
-            cx.update(|w, cx| w.has_active_dialog(cx))
-        });
-        cx.simulate_keystrokes("enter");
+        // Waits for the import dialog of `file` and presses Import.
+        let import = |cx: &mut VisualTestContext, file: &Path| {
+            let before = tab.read_with(cx, |t, _| t.import_view_for_test().map(|v| v.entity_id()));
+            tab.update_in(cx, |t, w, cx| t.import_csv_file(file, w, cx));
+            wait_until(cx, "import dialog", |cx| {
+                tab.read_with(cx, |t, _| t.import_view_for_test().map(|v| v.entity_id())) != before
+            });
+            tab.read_with(cx, |t, _| t.import_view_for_test().unwrap())
+        };
+        let dialog = import(&mut cx, &good);
+        dialog.update_in(&mut cx, |d, w, cx| d.import_for_test(w, cx));
         wait_until(&mut cx, "imported", |cx| {
             tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 3)
         });
@@ -3020,11 +3027,9 @@ mod tests {
         );
 
         // The second row has no name (NOT NULL): the whole file is rejected.
-        tab.update_in(&mut cx, |t, w, cx| t.import_csv_file(&bad, w, cx));
-        wait_until(&mut cx, "confirmation", |cx| {
-            cx.update(|w, cx| w.has_active_dialog(cx))
-        });
-        cx.simulate_keystrokes("enter");
+        cx.executor().advance_clock(Duration::from_secs(1));
+        let dialog = import(&mut cx, &bad);
+        dialog.update_in(&mut cx, |d, w, cx| d.import_for_test(w, cx));
         cx.run_until_parked();
         std::thread::sleep(std::time::Duration::from_millis(200));
         cx.run_until_parked();
@@ -3033,6 +3038,27 @@ mod tests {
             3,
             "nothing inserted"
         );
+
+        // An age that isn't a number fails validation: Import waits until
+        // those rows are skipped, then the rest go in.
+        let typed = good.with_extension("typed.csv");
+        write(&typed, "name,age\nKen,abc\nBarbara,79\n").unwrap();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        let dialog = import(&mut cx, &typed);
+        dialog.update_in(&mut cx, |d, w, cx| d.import_for_test(w, cx));
+        cx.run_until_parked();
+        assert!(
+            cx.update(|w, cx| w.has_active_dialog(cx)),
+            "blocked by the bad row"
+        );
+        dialog.update_in(&mut cx, |d, w, cx| {
+            d.skip_invalid_for_test(w, cx);
+            d.import_for_test(w, cx);
+        });
+        wait_until(&mut cx, "valid row imported", |cx| {
+            tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 4)
+        });
+        let _ = remove_file(typed);
         for f in [file, good, bad] {
             let _ = std::fs::remove_file(f);
         }

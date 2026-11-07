@@ -4,6 +4,8 @@
 //!     cargo test screenshots -- --ignored --nocapture
 //! PNGs land in target/shots/. The data is synthetic (a temp SQLite file).
 
+use std::env::temp_dir;
+use std::fs::write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -263,6 +265,19 @@ fn screenshots() {
         })
     });
     s.snap("18-new-table");
+    s.in_window(|w, cx| w.close_dialog(cx));
+    s.settle();
+    let csv_file = temp_dir().join("tabula-shots-orders.csv");
+    write(
+        &csv_file,
+        "customer_id,status,total,currency,created,note\n2,paid,129.00,USD,2026-11-01 10:00:00,web\n3,shipped,abc,EUR,2026-11-02 11:30:00,ios\n1,pending,48.50,GBP,2026-11-03 09:15:00,web\n",
+    )
+    .unwrap();
+    s.in_window(|w, cx| tab.update(cx, |t, cx| t.import_csv_file(&csv_file, w, cx)));
+    s.wait("import dialog", |cx| {
+        tab.read(cx).import_view_for_test().is_some()
+    });
+    s.snap("13-import-csv");
     s.in_window(|w, cx| w.close_dialog(cx));
     s.settle();
     s.in_window(|w, cx| tab.update(cx, |t, cx| t.clear_filters(w, cx)));

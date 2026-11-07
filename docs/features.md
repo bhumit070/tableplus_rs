@@ -150,11 +150,13 @@ actually involved.
   exports stream every page to disk, so large tables don't fill memory; a
   long export shows progress with an estimate and Cancel. In CSV, NULL is
   an empty field and an empty string is `""`.
-- **Import CSV** into an existing table: columns are matched by header
-  name, and all rows go in one transaction.
-
-## Administration
-
+- **Import CSV** into an existing table: a dialog shows the file (rows,
+  columns, size, encoding, delimiter), options (header row, empty fields as
+  NULL, skip rows that fail validation) and the column mapping — each CSV
+  column to a table column or skip, with sample values and ✓ / ⚠ / ×.
+  Values are checked locally with the cell editors' rules, with line
+  numbers for problems; unmapped required columns block Import. All rows
+  go in one transaction, through safe mode.
 - **Process list** (⌘⇧P): server sessions, live every 2 s (or paused),
   filtered to Active / Idle in transaction / All. The selected session's
   full query, client and start time show below the list, with "Blocked by

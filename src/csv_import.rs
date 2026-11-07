@@ -1,17 +1,63 @@
-//! CSV import into an existing table: the header row is matched to the
-//! table's columns by name (case-insensitive); each data row becomes one
-//! INSERT, all applied in one transaction. An empty field is NULL and a
-//! quoted empty one (`""`) is an empty string, matching the export.
+//! CSV import into an existing table (design.md screen 13): the header row
+//! is matched to the table's columns by name (case-insensitive), or by
+//! position without a header; the mapping can be changed; each kept row
+//! becomes one INSERT, all applied in one transaction. An empty field is
+//! NULL (or an empty string, by choice) and a quoted empty one (`""`) is an
+//! empty string, matching the export.
+
+use std::collections::HashSet;
+use std::iter::once;
 
 use anyhow::{Context as _, Result, bail};
 
 use crate::db::{Change, ColumnInfo};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Csv {
     pub headers: Vec<String>,
     /// `None` = NULL (an empty field).
     pub rows: Vec<Vec<Option<String>>>,
+    /// The separator found in the first line.
+    pub delimiter: char,
+    /// "UTF-8", "UTF-16 LE" or "UTF-16 BE".
+    pub encoding: &'static str,
+}
+
+/// The import dialog's choices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Options {
+    /// The first line holds column names; off: it's data too.
+    pub header: bool,
+    /// Empty fields insert NULL; off: an empty string.
+    pub empty_is_null: bool,
+    /// Rows that fail local validation are left out instead of stopping
+    /// the import (design.md answer #20).
+    pub skip_invalid: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            header: true,
+            empty_is_null: true,
+            skip_invalid: false,
+        }
+    }
+}
+
+impl Csv {
+    /// Column names and data rows for `header`: without a header the first
+    /// line is data and columns are "column 1", "column 2", ….
+    pub fn table(&self, header: bool) -> (Vec<String>, Vec<Vec<Option<String>>>) {
+        if header {
+            return (self.headers.clone(), self.rows.clone());
+        }
+        let first: Vec<Option<String>> = self.headers.iter().map(|h| Some(h.clone())).collect();
+        let rows: Vec<Vec<Option<String>>> = once(first).chain(self.rows.iter().cloned()).collect();
+        let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+        let names = (1..=width).map(|n| format!("column {n}")).collect();
+        (names, rows)
+    }
 }
 
 /// Reads CSV (comma, semicolon or tab separated, picked from the header
@@ -36,14 +82,17 @@ pub fn parse(bytes: &[u8]) -> Result<Csv> {
             .context("the file says UTF-16 but isn't valid UTF-16")
     };
     let owned;
-    let bytes = if let Some(rest) = bytes.strip_prefix(b"\xFF\xFE") {
+    let (bytes, encoding) = if let Some(rest) = bytes.strip_prefix(b"\xFF\xFE") {
         owned = utf16(rest, true)?;
-        &owned[..]
+        (&owned[..], "UTF-16 LE")
     } else if let Some(rest) = bytes.strip_prefix(b"\xFE\xFF") {
         owned = utf16(rest, false)?;
-        &owned[..]
+        (&owned[..], "UTF-16 BE")
     } else {
-        bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes)
+        (
+            bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes),
+            "UTF-8",
+        )
     };
     let Ok(text) = std::str::from_utf8(bytes) else {
         bail!("the file isn't UTF-8 text; save it as CSV UTF-8 and try again");
@@ -70,7 +119,12 @@ pub fn parse(bytes: &[u8]) -> Result<Csv> {
     let rows = records
         .filter(|r| headers.len() == 1 || r.iter().any(Option::is_some))
         .collect();
-    Ok(Csv { headers, rows })
+    Ok(Csv {
+        headers,
+        rows,
+        delimiter: sep,
+        encoding,
+    })
 }
 
 /// Splits CSV text into records (RFC 4180, any line ending). Unlike the
@@ -131,37 +185,84 @@ fn records(text: &str, sep: char) -> Result<Vec<Vec<Option<String>>>> {
     Ok(out)
 }
 
-/// For each CSV column, the table column it fills (by name, ignoring case).
-/// Two CSV columns for one table column is an error: which one wins?
-pub fn map_columns(headers: &[String], table: &[ColumnInfo]) -> Result<Vec<Option<String>>> {
-    let mapping: Vec<Option<String>> = headers
+/// The default mapping: by name with a header row (duplicates go to the
+/// first CSV column only), by position without one.
+pub fn default_mapping(
+    headers: &[String],
+    table: &[ColumnInfo],
+    header: bool,
+) -> Vec<Option<String>> {
+    if !header {
+        return (0..headers.len())
+            .map(|i| table.get(i).map(|c| c.name.clone()))
+            .collect();
+    }
+    let mut taken = HashSet::new();
+    headers
         .iter()
         .map(|h| {
             table
                 .iter()
                 .find(|c| c.name.eq_ignore_ascii_case(h))
                 .map(|c| c.name.clone())
+                .filter(|name| taken.insert(name.clone()))
         })
-        .collect();
-    let mut seen = std::collections::HashSet::new();
-    if let Some(dup) = mapping.iter().flatten().find(|c| !seen.insert(*c)) {
-        bail!("two CSV columns would both fill {dup}; rename or remove one");
-    }
-    Ok(mapping)
+        .collect()
 }
 
-/// One insert per row. Columns missing from a short row are left out, so
-/// their default applies; empty fields insert NULL.
-pub fn changes(csv: &Csv, mapping: &[Option<String>]) -> Vec<Change> {
-    csv.rows
+/// Table columns the import can't leave out: NOT NULL, no default, not
+/// mapped, and not an integer key the database numbers itself.
+pub fn missing_required(table: &[ColumnInfo], mapping: &[Option<String>]) -> Vec<String> {
+    table
         .iter()
-        .map(|row| Change::Insert {
+        .filter(|c| !c.nullable && c.default.is_none())
+        .filter(|c| !(c.is_pk && c.data_type.to_ascii_lowercase().contains("int")))
+        .filter(|c| !mapping.iter().flatten().any(|m| *m == c.name))
+        .map(|c| c.name.clone())
+        .collect()
+}
+
+/// Rows (0-based) with a value that `valid(type, text)` rejects, and the
+/// first column at fault.
+pub fn invalid_rows(
+    rows: &[Vec<Option<String>>],
+    mapping: &[Option<String>],
+    table: &[ColumnInfo],
+    valid: impl Fn(&str, &str) -> bool,
+) -> Vec<(usize, String)> {
+    rows.iter()
+        .enumerate()
+        .filter_map(|(index, row)| {
+            mapping.iter().zip(row).find_map(|(column, value)| {
+                let column = table.iter().find(|c| Some(&c.name) == column.as_ref())?;
+                let value = value.as_deref()?;
+                (!valid(&column.data_type, value)).then(|| (index, column.name.clone()))
+            })
+        })
+        .collect()
+}
+
+/// One insert per row kept by `keep`, with `options` applied.
+pub fn changes_with(
+    rows: &[Vec<Option<String>>],
+    mapping: &[Option<String>],
+    options: Options,
+    keep: impl Fn(usize) -> bool,
+) -> Vec<Change> {
+    rows.iter()
+        .enumerate()
+        .filter(|(index, _)| keep(*index))
+        .map(|(_, row)| Change::Insert {
             values: mapping
                 .iter()
                 .zip(row)
-                .filter_map(|(col, v)| {
-                    let col = col.clone()?;
-                    Some((col, v.clone()))
+                .filter_map(|(column, value)| {
+                    let column = column.clone()?;
+                    let value = match value {
+                        None if !options.empty_is_null => Some(String::new()),
+                        other => other.clone(),
+                    };
+                    Some((column, value))
                 })
                 .collect(),
         })
@@ -250,9 +351,11 @@ mod tests {
     #[test]
     fn maps_by_name_and_skips_unknown_and_empty() {
         let c = parse(b"NAME,extra,age\nAda,x,36\nLinus,y,\n").unwrap();
-        let m = map_columns(&c.headers, &[col("id"), col("name"), col("age")]).unwrap();
+        let table = [col("id"), col("name"), col("age")];
+        let (headers, rows) = c.table(true);
+        let m = default_mapping(&headers, &table, true);
         assert_eq!(m, [Some("name".into()), None, Some("age".into())]);
-        let ch = changes(&c, &m);
+        let ch = changes_with(&rows, &m, Options::default(), |_| true);
         let Change::Insert { values } = &ch[1] else {
             panic!()
         };
@@ -260,7 +363,67 @@ mod tests {
             values,
             &vec![("name".into(), Some("Linus".into())), ("age".into(), None)]
         );
+        // Two CSV columns for one table column: only the first fills it.
         let dup = parse(b"Name,name\nA,B\n").unwrap();
-        assert!(map_columns(&dup.headers, &[col("name")]).is_err());
+        assert_eq!(
+            default_mapping(&dup.headers, &[col("name")], true),
+            [Some("name".into()), None]
+        );
+    }
+
+    #[test]
+    fn options_mapping_and_validation() {
+        let csv = parse(b"id,Name,age\n1,Ada,36\n2,,x\n").unwrap();
+        assert_eq!((csv.delimiter, csv.encoding), (',', "UTF-8"));
+        let mut age = col("age");
+        age.data_type = "integer".into();
+        let mut name = col("name");
+        name.nullable = false;
+        let mut id = col("id");
+        id.data_type = "integer".into();
+        id.is_pk = true;
+        id.nullable = false;
+        let table = vec![id, name, age];
+
+        let (headers, rows) = csv.table(true);
+        let mapping = default_mapping(&headers, &table, true);
+        assert_eq!(
+            mapping,
+            [Some("id".into()), Some("name".into()), Some("age".into())]
+        );
+        assert!(missing_required(&table, &mapping).is_empty());
+        // Unmapping name (NOT NULL, no default) blocks; the integer key doesn't.
+        let without_name = vec![Some("id".into()), None, Some("age".into())];
+        assert_eq!(missing_required(&table, &without_name), ["name"]);
+
+        let invalid = invalid_rows(&rows, &mapping, &table, |ty, text| {
+            !ty.contains("int") || text.parse::<i64>().is_ok()
+        });
+        assert_eq!(invalid, [(1, "age".to_string())]);
+
+        let options = Options {
+            empty_is_null: false,
+            ..Options::default()
+        };
+        let kept = changes_with(&rows, &mapping, options, |i| i != 1);
+        assert_eq!(kept.len(), 1);
+        let all = changes_with(&rows, &mapping, options, |_| true);
+        let Change::Insert { values } = &all[1] else {
+            panic!()
+        };
+        assert_eq!(
+            values[1],
+            ("name".into(), Some(String::new())),
+            "empty → ''"
+        );
+
+        // Without a header the first line is data, mapped by position.
+        let (headers, rows) = csv.table(false);
+        assert_eq!(headers, ["column 1", "column 2", "column 3"]);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            default_mapping(&headers, &table, false)[2],
+            Some("age".into())
+        );
     }
 }
