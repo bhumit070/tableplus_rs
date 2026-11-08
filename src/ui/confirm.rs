@@ -126,7 +126,24 @@ impl ConfirmWrite {
             if first.replace(false) {
                 view.read(cx).focus.clone().focus(window, cx);
             }
-            dialog.w(width).close_button(false).child(view.clone())
+            // gpui-component binds ↵ to the dialog's OK, and bindings run
+            // before our key handler: decide here. Production cancels;
+            // elsewhere ↵ confirms (confirm closes the dialog itself).
+            let on_enter = view.clone();
+            dialog
+                .w(width)
+                .close_button(false)
+                .on_ok(move |_, window, cx| {
+                    on_enter.update(cx, |this, cx| {
+                        if this.production() {
+                            true
+                        } else {
+                            this.confirm(window, cx);
+                            false
+                        }
+                    })
+                })
+                .child(view.clone())
         });
     }
 
