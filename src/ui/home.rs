@@ -385,7 +385,7 @@ impl Home {
         });
     }
 
-    fn import_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn import_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.with_keychain(true, window, cx, |h, window, cx| {
             h.import_file_now(window, cx)
         });
@@ -411,7 +411,7 @@ impl Home {
         .detach();
     }
 
-    fn import_tableplus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn import_tableplus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.with_keychain(true, window, cx, |h, window, cx| {
             h.import_tableplus_now(window, cx)
         });

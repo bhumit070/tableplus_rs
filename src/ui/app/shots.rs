@@ -18,6 +18,7 @@ use crate::db::{ConnectionConfig, Driver};
 use crate::settings::Settings;
 use crate::ui::mongo_views::DocView;
 use crate::ui::onboarding::Step;
+use crate::ui::passwords::Outcome;
 use crate::ui::passwords::gate_always;
 use chrono::Utc;
 use futures::executor::block_on;
@@ -204,11 +205,21 @@ fn screenshots() {
         (Step::Welcome, "24-1-welcome"),
         (Step::Look, "24-2-look"),
         (Step::Connections, "24-3-connections"),
-        (Step::Done, "24-5-done"),
+        (Step::Passwords, "24-4-passwords"),
     ] {
-        s.cx.update(|cx| flow.update(cx, |flow, cx| flow.show_step(step, cx)));
+        s.in_window(|w, cx| flow.update(cx, |flow, cx| flow.show_step(step, w, cx)));
         s.snap(name);
     }
+    // 24.4b: the keychain's answers.
+    let step = s.cx.update(|cx| flow.read(cx).passwords_step().unwrap());
+    s.in_window(|_, cx| {
+        step.update(cx, |step, cx| {
+            step.show_outcome(Outcome::Refused("denied".into()), cx)
+        })
+    });
+    s.snap("24-4b-keychain-refused");
+    s.in_window(|w, cx| flow.update(cx, |flow, cx| flow.show_step(Step::Done, w, cx)));
+    s.snap("24-5-done");
     s.cx.update(|cx| app.update(cx, |app, cx| app.end_onboarding(cx)));
 
     // Settings and the new-connection form, over the empty home.

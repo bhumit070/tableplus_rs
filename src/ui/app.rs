@@ -770,6 +770,22 @@ impl AppView {
 impl Render for AppView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = tokens(cx);
+        // Onboarding fills the window: just the traffic lights over it.
+        if let Some(onboarding) = &self.onboarding {
+            return v_flex()
+                .size_full()
+                .bg(t.canvas)
+                .text_color(t.text)
+                .key_context("App")
+                .track_focus(&self.focus)
+                .child(
+                    TitleBar::new()
+                        .h(px(44.))
+                        .bg(t.canvas)
+                        .border_color(t.canvas),
+                )
+                .child(div().flex_1().min_h_0().child(onboarding.clone()));
+        }
         let content = match (&self.onboarding, self.active_session()) {
             (Some(onboarding), _) => onboarding.clone().into_any_element(),
             (None, Some(s)) => s.into_any_element(),
@@ -2036,7 +2052,8 @@ mod tests {
         cx.run_until_parked();
         cx.simulate_keystrokes("enter");
         assert_eq!(step(&mut cx), Step::Look);
-        click(&mut cx, "theme-card-2");
+        // Cards: System, Dark, Light.
+        click(&mut cx, "theme-card-1");
         let appearance = cx.update(|_, cx| settings::get(cx).appearance);
         assert_eq!(appearance, Appearance::Dark);
         click(&mut cx, "onboarding-next");
@@ -2059,6 +2076,65 @@ mod tests {
         app.update(&mut cx, |app, cx| app.start_onboarding(cx));
         click(&mut cx, "onboarding-skip");
         assert!(app.read_with(&cx, |a, _| a.onboarding.is_none()));
+    }
+
+    /// A path that needs a password goes through the Passwords step: ↵
+    /// asks the keychain, shows it was allowed, then moves on with the
+    /// form open behind. "Don't save passwords" turns saving off instead.
+    #[gpui::test]
+    fn onboarding_passwords_step(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let (app, mut cx) = open(cx);
+        let click = |cx: &mut VisualTestContext, what: &'static str| {
+            cx.run_until_parked();
+            let bounds = cx
+                .debug_bounds(what)
+                .unwrap_or_else(|| panic!("{what} drawn"));
+            cx.simulate_click(bounds.center(), Modifiers::none());
+            cx.run_until_parked();
+        };
+        cx.update(|_, cx| crate::settings::update(cx, |s| s.keychain_explained = false));
+        let flow = app.update(&mut cx, |app, cx| app.start_onboarding(cx));
+        let step = |cx: &mut VisualTestContext| flow.read_with(cx, |flow, _| flow.step());
+        cx.run_until_parked();
+        click(&mut cx, "onboarding-start");
+        click(&mut cx, "onboarding-next");
+        assert_eq!(step(&mut cx), Step::Connections);
+        click(&mut cx, "pick-new");
+        assert_eq!(step(&mut cx), Step::Passwords);
+        cx.update(|window, cx| window.blur(cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        let passwords = flow.read_with(&cx, |flow, _| flow.passwords_step().unwrap());
+        assert!(matches!(
+            passwords.read_with(&cx, |step, _| step.outcome().clone()),
+            crate::ui::passwords::Outcome::Allowed(_)
+        ));
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        assert_eq!(step(&mut cx), Step::Done, "moves on by itself");
+        assert!(
+            cx.debug_bounds("engine-pg").is_some(),
+            "the form opened behind"
+        );
+        let s = cx.update(|_, cx| crate::settings::get(cx));
+        assert!(s.keychain_explained && s.save_passwords);
+        cx.update(|w, cx| w.close_dialog(cx));
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+
+        // Again, declining this time.
+        cx.update(|_, cx| crate::settings::update(cx, |s| s.keychain_explained = false));
+        let flow = app.update(&mut cx, |app, cx| app.start_onboarding(cx));
+        flow.update_in(&mut cx, |flow, w, cx| {
+            flow.show_step(Step::Connections, w, cx)
+        });
+        click(&mut cx, "pick-import");
+        assert_eq!(flow.read_with(&cx, |flow, _| flow.step()), Step::Passwords);
+        click(&mut cx, "no-passwords");
+        assert_eq!(flow.read_with(&cx, |flow, _| flow.step()), Step::Done);
+        assert!(!cx.update(|_, cx| crate::settings::get(cx).save_passwords));
     }
 
     /// "Try the sample database" opens it, saved once as a connection.
@@ -2126,8 +2202,13 @@ mod tests {
             "step first"
         );
         assert!(cx.debug_bounds("engine-pg").is_none(), "form not yet");
+        // Continue asks the keychain (allowed in tests), shows that for a
+        // moment, then moves on.
         let b = cx.debug_bounds("passwords-continue").unwrap();
         cx.simulate_click(b.center(), Modifiers::none());
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
         cx.executor().advance_clock(Duration::from_secs(1));
         cx.run_until_parked();
         assert!(cx.debug_bounds("engine-pg").is_some(), "then the form");

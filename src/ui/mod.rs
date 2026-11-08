@@ -13,6 +13,7 @@ pub mod history_view;
 pub mod home;
 pub mod index_editor;
 pub mod loading;
+pub mod logo;
 pub mod mcp_service;
 pub mod mongo_views;
 pub mod onboarding;

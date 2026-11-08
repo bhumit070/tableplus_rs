@@ -592,6 +592,18 @@ impl Session {
         self.server_version.as_deref()
     }
 
+    /// Opens the object called `name` (the sample's "orders" after
+    /// onboarding); false when there's none.
+    pub fn open_named(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        match self.objects.iter().position(|object| object.name == name) {
+            Some(index) => {
+                self.open_object(index, window, cx);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn open_object(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(obj) = self.objects.get(idx).cloned() else {
             return;

@@ -206,6 +206,19 @@ fn delete(entry: &Entry) -> Result<()> {
     }
 }
 
+/// A harmless keychain read (design.md 24.4): it's what makes macOS ask
+/// whether Tabula may use the keychain, at a moment the user expects it.
+/// "No entry" is success; a refusal or a missing keyring is the error.
+pub fn probe_keychain() -> Result<()> {
+    if cfg!(test) {
+        return Ok(());
+    }
+    match Entry::new(SERVICE, "keychain-check").and_then(|entry| entry.get_password()) {
+        Ok(_) | Err(KeyringError::NoEntry) => Ok(()),
+        Err(error) => Err(keychain(error)),
+    }
+}
+
 /// Keychain account for the MCP server's access token.
 const MCP_TOKEN: &str = "mcp-token";
 
