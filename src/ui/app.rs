@@ -2107,10 +2107,14 @@ mod tests {
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         let passwords = flow.read_with(&cx, |flow, _| flow.passwords_step().unwrap());
-        assert!(matches!(
-            passwords.read_with(&cx, |step, _| step.outcome().clone()),
-            crate::ui::passwords::Outcome::Allowed(_)
-        ));
+        // The keychain probe runs on a tokio thread, which run_until_parked
+        // doesn't wait for: on a busy machine it may not be done yet.
+        wait_until(&mut cx, "keychain allowed", |cx| {
+            matches!(
+                passwords.read_with(cx, |step, _| step.outcome().clone()),
+                crate::ui::passwords::Outcome::Allowed(_)
+            )
+        });
         cx.executor().advance_clock(Duration::from_secs(2));
         cx.run_until_parked();
         assert_eq!(step(&mut cx), Step::Done, "moves on by itself");
