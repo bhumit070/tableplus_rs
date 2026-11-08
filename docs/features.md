@@ -87,7 +87,9 @@ actually involved.
   the typed key or name (its first text columns); ↑ / ↓ and ↵ or a click
   pick one.
 - **Arrays** (PostgreSQL) and MySQL `SET` values show as chips; binary
-  columns show their type and size instead of hex.
+  columns show their type and size instead of hex. Right-click a binary
+  cell to **Save Value to File…** or **Load File into Cell…** (up to
+  16 MB, staged like any edit and written as bytes on commit).
 - **⌥⌫** sets the selected cell to NULL; **⌥↵** opens the bigger editor,
   which JSON cells use by default: highlighted, *Format*, live validity,
   *Set NULL*.

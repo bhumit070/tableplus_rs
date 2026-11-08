@@ -30,7 +30,7 @@ use super::dialog;
 #[cfg(test)]
 use super::foreign_key_editor::confirm_drop as confirm_drop_foreign_key;
 use super::foreign_key_editor::{ForeignKeyDialog, render_list as render_foreign_key_list};
-use super::grid::{Grid, data_table};
+use super::grid::{Grid, Kind, data_table};
 #[cfg(test)]
 use super::index_editor::confirm_drop as confirm_drop_index;
 use super::index_editor::{IndexDialog, render_list as render_index_list};
@@ -45,15 +45,19 @@ use super::{
     AddRow, Commit, CopyCell, DeleteRows, Discard, ExportData, SearchList, SetNull, Shared,
     ToggleFilter, search_list,
 };
+use crate::db::binary::{decode, encode};
 use crate::db::ddl::index_entries;
 use crate::db::{
     DbObject, Driver, Filter, FilterKind, FilterOp, ObjectKind, QueryResult, Structure, TableQuery,
 };
 use crate::runtime;
 use crate::ui::DisabledWhen as _;
-use anyhow::Result;
+use anyhow::{Result, bail};
+use dirs::{download_dir, home_dir};
 use gpui::{AnyElement, Div, EventEmitter, KeyDownEvent, PathPromptOptions, Stateful};
-use tokio::{fs::read, task::spawn_blocking};
+use std::path::PathBuf;
+use tokio::fs::{metadata as tokio_metadata, read, write as tokio_write};
+use tokio::task::spawn_blocking;
 
 pub enum TableTabEvent {
     /// Open `table` showing only rows matching `filters`.
@@ -184,6 +188,12 @@ impl TableTab {
                 .upgrade()
                 .map(|tab| tab.read(cx).inbound_labels())
                 .unwrap_or_default();
+            // The cell under the pointer holds bytes: offer Save / Load file.
+            let binary_column = w.upgrade().and_then(|tab| {
+                let table = tab.read(cx).table.read(cx);
+                let column = table.selected_cell().map(|(_, column)| column)?;
+                (table.delegate().kind(column) == Kind::Binary).then_some(column)
+            });
             let (header, on_reference) = w
                 .upgrade()
                 .map(|tab| {
@@ -249,6 +259,26 @@ impl TableTab {
                             },
                         ),
                     )
+                })
+                .when_some(binary_column, |menu, column| {
+                    let (save, load) = (w.clone(), w.clone());
+                    menu.separator()
+                        .item(PopupMenuItem::new("Save Value to File…").on_click(
+                            move |_, window, cx| {
+                                save.update(cx, |t, cx| {
+                                    t.save_cell_to_file(row, column, window, cx)
+                                })
+                                .ok();
+                            },
+                        ))
+                        .item(PopupMenuItem::new("Load File into Cell…").on_click(
+                            move |_, window, cx| {
+                                load.update(cx, |t, cx| {
+                                    t.load_file_into_cell(row, column, window, cx)
+                                })
+                                .ok();
+                            },
+                        ))
                 })
                 .when(!inbound.is_empty(), |menu| {
                     let w = w.clone();
@@ -1423,6 +1453,124 @@ impl TableTab {
             table: fk.ref_table.clone(),
             filters,
         });
+    }
+
+    /// Writes a binary cell's bytes (its hex decoded) to a file the user
+    /// picks.
+    pub fn save_cell_to_file(
+        &mut self,
+        row: usize,
+        column: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let grid = self.table.read(cx).delegate();
+        let Some(text) = grid.cell_string(row, column) else {
+            window.push_notification("The value is NULL: nothing to save", cx);
+            return;
+        };
+        let bytes = decode(&text).unwrap_or_else(|| text.into_bytes());
+        let name = format!(
+            "{}-{}.bin",
+            self.object.name,
+            grid.columns.get(column).cloned().unwrap_or_default()
+        );
+        let directory = download_dir()
+            .or_else(home_dir)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let picked = cx.prompt_for_new_path(&directory, Some(&name));
+        cx.spawn_in(window, async move |_, cx| {
+            let Ok(Ok(Some(path))) = picked.await else {
+                return;
+            };
+            let written = runtime::spawn(async move {
+                tokio_write(&path, bytes)
+                    .await
+                    .with_context(|| format!("couldn't write {}", path.display()))?;
+                anyhow::Ok(path)
+            })
+            .await;
+            cx.update(|window, cx| match written {
+                Ok(path) => window.push_notification(format!("Saved to {}", path.display()), cx),
+                Err(error) => {
+                    window.push_notification(Notification::error(format!("{error:#}")), cx)
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Stages a file's bytes as the binary cell's new value (hex, which
+    /// the commit writes as bytes). Files over 16 MB are refused.
+    pub fn load_file_into_cell(
+        &mut self,
+        row: usize,
+        column: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Load into cell".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update_in(cx, |tab, window, cx| {
+                tab.stage_file(row, column, path, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Reads `path` and stages its bytes in the cell.
+    pub fn stage_file(
+        &mut self,
+        row: usize,
+        column: usize,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        const LIMIT: u64 = 16 * 1024 * 1024;
+        let driver = self.shared.cfg.driver;
+        cx.spawn_in(window, async move |this, cx| {
+            let read = runtime::spawn(async move {
+                let size = tokio_metadata(&path).await?.len();
+                if size > LIMIT {
+                    bail!(
+                        "{} is {} MB; cells take files up to 16 MB",
+                        path.display(),
+                        size / 1024 / 1024
+                    );
+                }
+                anyhow::Ok(read(&path).await?)
+            })
+            .await;
+            this.update_in(cx, |tab, window, cx| match read {
+                Ok(bytes) => {
+                    let value = encode(driver, &bytes);
+                    tab.table.update(cx, |table, cx| {
+                        table.delegate_mut().set_cell(row, column, Some(value));
+                        table.refresh(cx);
+                    });
+                    cx.notify();
+                }
+                Err(error) => {
+                    window.push_notification(Notification::error(format!("{error:#}")), cx)
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// "orders (customer_id)" for each table whose foreign key points here.

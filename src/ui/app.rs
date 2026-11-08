@@ -2809,6 +2809,68 @@ mod tests {
         let _ = remove_file(file);
     }
 
+    /// Load file: a file's bytes go into a blob cell and, once committed,
+    /// are in the database byte for byte.
+    #[gpui::test]
+    fn load_file_into_blob(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = temp_dir().join(format!("tabula-ui-blob-{}.db", cfg.id));
+        write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute("create table files (id integer primary key, data blob); insert into files (id) values (1)")
+                .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+        let payload: Vec<u8> = (0..=255).rev().collect();
+        let source = temp_dir().join(format!("tabula-ui-blob-{}.bin", cfg.id));
+        write(&source, &payload).unwrap();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| {
+            a.connect(cfg.clone(), w, cx, |_, _, _| {})
+        });
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("files").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let index = s.object_index("files").unwrap();
+            s.open_object(index, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "rows", |cx| {
+            tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 1 && !t.is_loading(cx))
+        });
+        let source_path = source.clone();
+        tab.update_in(&mut cx, |t, w, cx| t.stage_file(0, 1, source_path, w, cx));
+        wait_until(&mut cx, "staged", |cx| {
+            tab.read_with(cx, |t, cx| t.is_dirty(cx))
+        });
+        tab.update_in(&mut cx, |t, w, cx| t.commit(&Commit, w, cx));
+        wait_until(&mut cx, "committed", |cx| {
+            tab.read_with(cx, |t, cx| !t.is_dirty(cx) && !t.is_loading(cx))
+        });
+        let stored = block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&cfg).await?;
+            let result = c.execute("select data from files").await?;
+            c.close().await;
+            Ok(result[0].rows[0][0].clone())
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(crate::db::binary::decode(&stored).unwrap(), payload);
+        let _ = remove_file(file);
+        let _ = remove_file(source);
+    }
+
     /// A saved query shows in the sidebar as soon as it's saved.
     #[gpui::test]
     fn saved_queries_in_sidebar(cx: &mut TestAppContext) {
