@@ -2,6 +2,7 @@
 //! common, string-based API the UI can render directly.
 
 pub mod backup;
+pub mod binary;
 pub mod cancel;
 pub mod ddl;
 pub mod explain;

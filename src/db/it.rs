@@ -1504,6 +1504,55 @@ async fn database_stats_per_server() {
     );
 }
 
+/// Load file: hex staged into a binary column is written as those bytes
+/// and reads back the same, on each SQL server.
+async fn binary_scenario(driver: Driver) {
+    let c = Connection::connect(&cfg(driver)).await.unwrap();
+    let blob = match driver {
+        Driver::Postgres => "bytea",
+        _ => "blob",
+    };
+    c.execute(&format!(
+        "drop table if exists it_bin; create table it_bin (id int primary key, data {blob}); \
+         insert into it_bin (id) values (1)"
+    ))
+    .await
+    .unwrap();
+    let objects = c.list_objects().await.unwrap();
+    let table = obj(&objects, "it_bin");
+    let st = c.structure(&table).await.unwrap();
+    let bytes: Vec<u8> = (0..=255).collect();
+    let staged = binary::encode(driver, &bytes);
+    let change = Change::Update {
+        key: kv(&[("id", Some("1"))]),
+        set: vec![("data".into(), Some(staged))],
+    };
+    c.commit(&table, &st.columns, &[change]).await.unwrap();
+    let read = c.execute("select data from it_bin").await.unwrap();
+    let text = read[0].rows[0][0].clone().unwrap();
+    assert_eq!(binary::decode(&text).unwrap(), bytes, "{driver:?}: {text}");
+    c.execute("drop table it_bin").await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_binary() {
+    binary_scenario(Driver::Sqlite).await;
+}
+
+#[tokio::test]
+async fn postgres_binary() {
+    if it_enabled() {
+        binary_scenario(Driver::Postgres).await;
+    }
+}
+
+#[tokio::test]
+async fn mysql_binary() {
+    if it_enabled() {
+        binary_scenario(Driver::MySql).await;
+    }
+}
+
 #[tokio::test]
 async fn sqlite_ddl() {
     ddl_scenario(Driver::Sqlite).await;

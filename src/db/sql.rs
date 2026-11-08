@@ -16,6 +16,7 @@ use sqlx::{
     ValueRef,
 };
 
+use super::binary::{encode, hex_digits, is_binary_type};
 use super::cancel::{CANCELLED, Cancel};
 use super::split::split_statements;
 use super::{
@@ -340,10 +341,22 @@ fn pg_row(row: &PgRow) -> Vec<Option<String>> {
 fn my_row(row: &MySqlRow) -> Vec<Option<String>> {
     (0..row.len())
         .map(|i| {
+            // Binary data as 0x… hex, like SQLite's blobs, so it can be
+            // sized, saved to a file and written back unchanged. The type
+            // name alone isn't enough: information_schema reports its text
+            // columns as binary too, so text that is valid UTF-8 stays text.
+            let binary = matches!(
+                row.column(i).type_info().name(),
+                "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" | "VARBINARY" | "BINARY"
+            );
             row.try_get_unchecked::<Option<Vec<u8>>, _>(i)
                 .ok()
                 .flatten()
-                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .map(|bytes| match String::from_utf8(bytes) {
+                    Ok(text) => text,
+                    Err(invalid) if binary => encode(Driver::MySql, invalid.as_bytes()),
+                    Err(invalid) => String::from_utf8_lossy(invalid.as_bytes()).into_owned(),
+                })
         })
         .collect()
 }
@@ -1523,6 +1536,27 @@ impl SqlConn {
             let mut params: Vec<Option<String>> = Vec::new();
             // Placeholder (or literal) for a value of column `col`.
             let mut val = |col: &str, v: &Option<String>| -> String {
+                // Hex into a binary column means bytes (Load file), not text.
+                let hex = v
+                    .as_deref()
+                    .filter(|_| ty(col).is_some_and(|t| is_binary_type(&t)))
+                    .and_then(hex_digits)
+                    .map(str::to_string);
+                if let Some(digits) = hex {
+                    if inline {
+                        return if pg {
+                            format!("'\\x{digits}'::bytea")
+                        } else {
+                            format!("X'{digits}'")
+                        };
+                    }
+                    if pg {
+                        params.push(Some(format!("\\x{digits}")));
+                        return format!("cast(${}::text as bytea)", params.len());
+                    }
+                    params.push(Some(digits));
+                    return "unhex(?)".into();
+                }
                 if inline {
                     return sql_literal(v);
                 }
