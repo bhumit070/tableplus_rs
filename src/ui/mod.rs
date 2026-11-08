@@ -7,6 +7,7 @@ pub mod conn_form;
 pub mod copy;
 pub mod csv_import_view;
 pub mod dialog;
+pub mod foreign_key_editor;
 pub mod grid;
 pub mod history_view;
 pub mod home;

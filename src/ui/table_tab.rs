@@ -27,6 +27,9 @@ use gpui_kit_assets::IconName;
 use super::cell_edit::{self, EditStart};
 use super::copy;
 use super::dialog;
+#[cfg(test)]
+use super::foreign_key_editor::confirm_drop as confirm_drop_foreign_key;
+use super::foreign_key_editor::{ForeignKeyDialog, render_list as render_foreign_key_list};
 use super::grid::{Grid, data_table};
 #[cfg(test)]
 use super::index_editor::confirm_drop as confirm_drop_index;
@@ -585,6 +588,13 @@ impl TableTab {
     pub fn show_columns(&mut self, cx: &mut Context<Self>) {
         self.show_structure = true;
         self.struct_section = 0;
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub fn show_foreign_keys_for_test(&mut self, cx: &mut Context<Self>) {
+        self.show_structure = true;
+        self.struct_section = 2;
         cx.notify();
     }
 
@@ -1157,6 +1167,66 @@ impl TableTab {
     pub fn drop_index_for_test(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         let on_done = self.on_structure_change(cx);
         confirm_drop_index(self.shared.clone(), &self.object, name, on_done, window, cx);
+    }
+
+    /// `+ Foreign key`: the dialog, with this table's columns to pick from.
+    pub fn open_foreign_key_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<ForeignKeyDialog>> {
+        let columns = self
+            .structure
+            .as_ref()?
+            .columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect();
+        let on_done = self.on_structure_change(cx);
+        Some(ForeignKeyDialog::open(
+            self.shared.clone(),
+            self.object.clone(),
+            columns,
+            on_done,
+            window,
+            cx,
+        ))
+    }
+
+    fn render_foreign_keys(&self, cx: &mut Context<Self>) -> AnyElement {
+        let keys = self
+            .structure
+            .as_ref()
+            .map(|structure| structure.foreign_keys.clone())
+            .unwrap_or_default();
+        let tab = cx.entity().downgrade();
+        let on_add = Rc::new(move |window: &mut Window, cx: &mut App| {
+            tab.update(cx, |tab, cx| {
+                tab.open_foreign_key_dialog(window, cx);
+            })
+            .ok();
+        });
+        let on_done = self.on_structure_change(cx);
+        render_foreign_key_list(&self.shared, &self.object, &keys, on_add, on_done, cx)
+    }
+
+    #[cfg(test)]
+    pub fn foreign_key_names(&self) -> Vec<String> {
+        self.structure
+            .iter()
+            .flat_map(|structure| structure.foreign_keys.iter().map(|key| key.name.clone()))
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub fn drop_foreign_key_for_test(
+        &mut self,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let on_done = self.on_structure_change(cx);
+        confirm_drop_foreign_key(self.shared.clone(), &self.object, name, on_done, window, cx);
     }
 
     fn render_indexes(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2569,6 +2639,7 @@ impl Render for TableTab {
                 },
                 1 if self.structure_editable() => self.render_indexes(cx),
                 1 => data_table(&self.struct_idx, cx).into_any_element(),
+                2 if self.structure_editable() => self.render_foreign_keys(cx),
                 2 => data_table(&self.struct_fks, cx).into_any_element(),
                 _ => v_flex()
                     .size_full()

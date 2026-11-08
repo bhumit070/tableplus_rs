@@ -2233,6 +2233,90 @@ mod tests {
         .unwrap();
     }
 
+    /// + Foreign key adds one (named after its column); Drop Foreign Key…
+    /// confirms, then drops it. Needs the Postgres container (TABULA_IT=1).
+    #[gpui::test]
+    fn add_and_drop_foreign_key(cx: &mut TestAppContext) {
+        if std::env::var("TABULA_IT").is_err() {
+            return;
+        }
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Postgres);
+        cfg.port = 55432;
+        cfg.user = "postgres".into();
+        cfg.password = "test".into();
+        cfg.database = "postgres".into();
+        let tag = cfg.id[..8].to_string();
+        let (people, pets) = (format!("ui_fk_people_{tag}"), format!("ui_fk_pets_{tag}"));
+        let setup = (cfg.clone(), people.clone(), pets.clone());
+        block_on(crate::runtime::spawn(async move {
+            let (cfg, people, pets) = setup;
+            let c = crate::db::Connection::connect(&cfg).await?;
+            c.execute(&format!(
+                "create table {people} (id int primary key); \
+                 create table {pets} (id int primary key, owner_id int)"
+            ))
+            .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| {
+            a.connect(cfg.clone(), w, cx, |_, _, _| {})
+        });
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        let pets_name = pets.clone();
+        wait_until(&mut cx, "tables", move |cx| {
+            session.read_with(cx, |s, _| s.object_index(&pets_name).is_some())
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        session.update_in(&mut cx, |s, w, cx| {
+            let index = s.object_index(&pets).unwrap();
+            s.open_object(index, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "structure", |cx| {
+            tab.read_with(cx, |t, _| t.has_structure())
+        });
+        let key_dialog = tab
+            .update_in(&mut cx, |t, w, cx| t.open_foreign_key_dialog(w, cx))
+            .unwrap();
+        key_dialog.update_in(&mut cx, |dialog, w, cx| {
+            dialog.choose_column("owner_id", w, cx);
+            dialog.set_reference(&people, "id", w, cx);
+            dialog.set_on_delete(1, cx);
+            dialog.create(w, cx);
+        });
+        let key_name = format!("{pets}_owner_id_fkey");
+        let expected = key_name.clone();
+        wait_until(&mut cx, "foreign key added", move |cx| {
+            tab.read_with(cx, |t, _| t.foreign_key_names().contains(&expected))
+        });
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        tab.update_in(&mut cx, |t, w, cx| {
+            t.drop_foreign_key_for_test(&key_name, w, cx)
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        wait_until(&mut cx, "foreign key dropped", move |cx| {
+            tab.read_with(cx, |t, _| t.foreign_key_names().is_empty())
+        });
+        block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&cfg).await?;
+            c.execute(&format!("drop table {pets}; drop table {people}"))
+                .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+    }
+
     /// Selecting a Redis key opens it in the key editor; a staged field is
     /// saved with HSET. Needs the Redis container (TABULA_IT=1).
     #[gpui::test]

@@ -3,7 +3,7 @@
 
 use anyhow::{Result, bail};
 
-use super::{ColumnInfo, Driver, QueryResult};
+use super::{ColumnInfo, Driver, ForeignKey, QueryResult};
 use crate::export::ident;
 
 /// A column as the editor describes it.
@@ -296,6 +296,76 @@ pub fn index_entries(driver: Driver, indexes: &QueryResult) -> Vec<IndexEntry> {
         .collect()
 }
 
+/// What happens to referencing rows when the referenced row goes.
+pub const ON_DELETE: [&str; 4] = ["NO ACTION", "CASCADE", "SET NULL", "RESTRICT"];
+
+/// `ALTER TABLE … ADD CONSTRAINT name FOREIGN KEY (…) REFERENCES …`.
+/// SQLite can't add constraints to an existing table.
+pub fn add_foreign_key(
+    driver: Driver,
+    schema: Option<&str>,
+    table: &str,
+    key: &ForeignKey,
+) -> Result<String> {
+    if driver == Driver::Sqlite {
+        bail!("SQLite can't add a foreign key to an existing table");
+    }
+    if key.name.trim().is_empty() {
+        bail!("the foreign key needs a name");
+    }
+    if key.columns.is_empty() || key.columns.len() != key.ref_columns.len() {
+        bail!("pick the column, and the column it refers to");
+    }
+    if key.ref_table.trim().is_empty() {
+        bail!("pick the table it refers to");
+    }
+    let list = |columns: &[String]| -> String {
+        columns
+            .iter()
+            .map(|column| ident(driver, column.trim()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let on_delete = match key.on_delete.trim() {
+        "" => "NO ACTION",
+        action => action,
+    };
+    if !ON_DELETE.contains(&on_delete) {
+        bail!("unknown ON DELETE action {on_delete}");
+    }
+    Ok(format!(
+        "ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({}) ON DELETE {on_delete};",
+        table_name(driver, schema, table),
+        ident(driver, key.name.trim()),
+        list(&key.columns),
+        table_name(
+            driver,
+            key.ref_schema.as_deref().or(schema),
+            key.ref_table.trim()
+        ),
+        list(&key.ref_columns),
+    ))
+}
+
+/// `ALTER TABLE … DROP CONSTRAINT` (Postgres) / `DROP FOREIGN KEY` (MySQL).
+pub fn drop_foreign_key(
+    driver: Driver,
+    schema: Option<&str>,
+    table: &str,
+    key_name: &str,
+) -> Result<String> {
+    let verb = match driver {
+        Driver::Postgres => "DROP CONSTRAINT",
+        Driver::MySql => "DROP FOREIGN KEY",
+        _ => bail!("SQLite can't drop a foreign key from an existing table"),
+    };
+    Ok(format!(
+        "ALTER TABLE {} {verb} {};",
+        table_name(driver, schema, table),
+        ident(driver, key_name)
+    ))
+}
+
 /// The statements as one script; transactional where the server rolls DDL
 /// back on failure (Postgres, SQLite).
 pub fn script(driver: Driver, stmts: &[String]) -> String {
@@ -382,6 +452,34 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn foreign_key_statements_per_dialect() {
+        let key = ForeignKey {
+            name: "orders_customer_fk".into(),
+            columns: vec!["customer_id".into()],
+            ref_schema: None,
+            ref_table: "customers".into(),
+            ref_columns: vec!["id".into()],
+            on_update: String::new(),
+            on_delete: "CASCADE".into(),
+        };
+        assert_eq!(
+            add_foreign_key(Driver::Postgres, Some("shop"), "orders", &key).unwrap(),
+            "ALTER TABLE \"shop\".\"orders\" ADD CONSTRAINT \"orders_customer_fk\" FOREIGN KEY (\"customer_id\") REFERENCES \"shop\".\"customers\" (\"id\") ON DELETE CASCADE;"
+        );
+        assert!(add_foreign_key(Driver::Sqlite, None, "orders", &key).is_err());
+        let unnamed = ForeignKey {
+            name: String::new(),
+            ..key.clone()
+        };
+        assert!(add_foreign_key(Driver::MySql, None, "orders", &unnamed).is_err());
+        assert_eq!(
+            drop_foreign_key(Driver::MySql, None, "orders", "orders_customer_fk").unwrap(),
+            "ALTER TABLE `orders` DROP FOREIGN KEY `orders_customer_fk`;"
+        );
+        assert!(drop_foreign_key(Driver::Sqlite, None, "orders", "x").is_err());
     }
 
     #[test]

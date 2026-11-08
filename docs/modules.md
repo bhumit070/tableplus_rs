@@ -55,6 +55,7 @@ also starts with a `//!` comment saying the same in more detail.
 | `session.rs` | ~2,070 | One open connection: sidebar tree (placeholder rows while loading or switching), database / schema switching, tabs, ⌘P go to, history / saved queries, backup / restore (with progress toasts), create / drop database, sidebar menus. |
 | `table_tab.rs` | ~2,170 | Table tab: filters, grid, pager, Structure view, commit, CSV import, foreign-key navigation. |
 | `query_tab.rs` | ~1,970 | Query tab: toolbar (Run statement / Run all, Stop, Explain, Format, Save, History, Run on, Limit), result tabs with status dots, the failed statement underlined, editable results, EXPLAIN tree / raw / insight, loading state. |
+| `foreign_key_editor.rs` | ~530 | Structure › Foreign Keys: the list with its right-click menu, and the + Foreign key dialog. |
 | `grid.rs` | ~1,620 | `Grid`: the table delegate holding rows and staged edits; delayed placeholder rows while loading and a custom empty view. |
 | `cell_edit.rs` | ~900 | In-place cell editing shared by table and query tabs. |
 | `completion.rs` | ~590 | Autocomplete for SQL, MongoDB and Redis. |

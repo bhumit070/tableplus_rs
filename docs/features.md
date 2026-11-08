@@ -112,6 +112,12 @@ actually involved.
   *+ Index* opens a small dialog: pick columns in order, unique or not,
   and the name follows the columns until you type your own; the
   `CREATE INDEX` is shown live.
+- **Foreign keys:** Structure › Foreign Keys lists each one as
+  `(column) → table (column) ON DELETE …`; right-click to copy it or drop
+  it (confirmed). *+ Foreign key* picks the column, the table (from a
+  menu of tables) and column it refers to, and what deleting the
+  referenced row does; the statement shows live. SQLite can't change
+  constraints of an existing table, so there the list is read-only.
 - **New Table:** name, columns (type menu, NULL, default, key) and the
   `CREATE TABLE` shown live. It starts blank, with `id` + `created_at` /
   `updated_at`, or as a copy of another table's columns. Nothing runs

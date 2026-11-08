@@ -337,6 +337,8 @@ fn screenshots() {
     s.snap("08-new-index");
     s.in_window(|w, cx| w.close_dialog(cx));
     s.settle();
+    s.in_window(|_, cx| tab.update(cx, |t, cx| t.show_foreign_keys_for_test(cx)));
+    s.snap("08-foreign-keys");
     s.in_window(|w, cx| {
         columns.update(cx, |editor, cx| editor.discard_for_test(w, cx));
         tab.update(cx, |t, cx| t.show_data_for_test(cx));

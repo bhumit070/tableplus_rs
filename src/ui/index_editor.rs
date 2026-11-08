@@ -28,7 +28,7 @@ use crate::runtime;
 use crate::ui::DisabledWhen as _;
 
 /// Runs `statement`, then tells the tab to read the structure again.
-fn run_statement(
+pub(super) fn run_statement(
     shared: Rc<Shared>,
     statement: String,
     success: &'static str,
