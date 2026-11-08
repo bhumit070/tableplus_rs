@@ -1246,6 +1246,37 @@ async fn ddl_scenario(driver: Driver) {
             "{driver:?} rolled back"
         );
     }
+    // + Index and Drop Index…, read back through the index list.
+    let table = obj(&objects, "it_ddl");
+    let index_names = |structure: &Structure| -> Vec<String> {
+        ddl::index_entries(driver, &structure.indexes)
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect()
+    };
+    let create_index = ddl::create_index(
+        driver,
+        table.schema.as_deref(),
+        "it_ddl",
+        "it_ddl_age_idx",
+        &["age".to_string(), "id".to_string()],
+        true,
+    )
+    .unwrap();
+    c.execute(&create_index).await.unwrap();
+    let st = c.structure(&table).await.unwrap();
+    assert!(
+        index_names(&st).contains(&"it_ddl_age_idx".to_string()),
+        "{driver:?}: {:?}",
+        index_names(&st)
+    );
+    let drop_index = ddl::drop_index(driver, table.schema.as_deref(), "it_ddl", "it_ddl_age_idx");
+    c.execute(&drop_index).await.unwrap();
+    let st = c.structure(&table).await.unwrap();
+    assert!(
+        !index_names(&st).contains(&"it_ddl_age_idx".to_string()),
+        "{driver:?}"
+    );
     c.execute("drop table it_ddl").await.unwrap();
 }
 

@@ -30,7 +30,7 @@ use super::dialog;
 use super::grid::{Grid, data_table};
 #[cfg(test)]
 use super::index_editor::confirm_drop as confirm_drop_index;
-use super::index_editor::{IndexDialog, index_entries, render_list as render_index_list};
+use super::index_editor::{IndexDialog, render_list as render_index_list};
 use super::loading;
 use super::row_panel;
 use super::structure_editor::StructureEditor;
@@ -40,6 +40,7 @@ use super::{
     AddRow, Commit, CopyCell, DeleteRows, Discard, ExportData, SearchList, SetNull, Shared,
     ToggleFilter, search_list,
 };
+use crate::db::ddl::index_entries;
 use crate::db::{
     DbObject, Driver, Filter, FilterKind, FilterOp, ObjectKind, QueryResult, Structure, TableQuery,
 };

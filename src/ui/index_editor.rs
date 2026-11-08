@@ -21,75 +21,11 @@ use super::confirm::ConfirmWrite;
 use super::table_editor::OnDone;
 use super::theme::{dp, tokens};
 use super::{Shared, dialog, guarded};
-use crate::db::ddl::{create_index, drop_index};
+use crate::db::ddl::{IndexEntry, create_index, drop_index};
 use crate::db::safety::gate_write;
-use crate::db::{Cancel, DbObject, Driver, QueryResult};
+use crate::db::{Cancel, DbObject};
 use crate::runtime;
 use crate::ui::DisabledWhen as _;
-
-/// One index, however the engine lists it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct IndexEntry {
-    pub name: String,
-    pub definition: String,
-}
-
-/// Postgres and SQLite list `name, definition`; MySQL's `SHOW INDEX` has
-/// one row per indexed column, grouped here into `UNIQUE (a, b)`.
-pub fn index_entries(driver: Driver, indexes: &QueryResult) -> Vec<IndexEntry> {
-    let position = |name: &str| {
-        indexes
-            .columns
-            .iter()
-            .position(|column| column.eq_ignore_ascii_case(name))
-    };
-    if driver == Driver::MySql {
-        let (Some(key), Some(column), Some(non_unique)) = (
-            position("Key_name"),
-            position("Column_name"),
-            position("Non_unique"),
-        ) else {
-            return vec![];
-        };
-        let mut entries: Vec<(String, bool, Vec<String>)> = vec![];
-        for row in &indexes.rows {
-            let cell = |index: usize| row.get(index).cloned().flatten().unwrap_or_default();
-            let name = cell(key);
-            match entries
-                .iter_mut()
-                .find(|(existing, _, _)| *existing == name)
-            {
-                Some((_, _, columns)) => columns.push(cell(column)),
-                None => entries.push((name, cell(non_unique) == "0", vec![cell(column)])),
-            }
-        }
-        return entries
-            .into_iter()
-            .map(|(name, unique, columns)| IndexEntry {
-                definition: format!(
-                    "{}({})",
-                    if unique { "UNIQUE " } else { "" },
-                    columns.join(", ")
-                ),
-                name,
-            })
-            .collect();
-    }
-    let (Some(name), definition) = (position("name"), position("definition")) else {
-        return vec![];
-    };
-    indexes
-        .rows
-        .iter()
-        .map(|row| IndexEntry {
-            name: row.get(name).cloned().flatten().unwrap_or_default(),
-            // SQLite has no SQL for the indexes it makes itself.
-            definition: definition
-                .and_then(|index| row.get(index).cloned().flatten())
-                .unwrap_or_else(|| "(made by the table's constraints)".into()),
-        })
-        .collect()
-}
 
 /// Runs `statement`, then tells the tab to read the structure again.
 fn run_statement(
@@ -501,47 +437,5 @@ impl Render for IndexDialog {
                 ],
                 cx,
             ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn groups_mysql_index_rows() {
-        let result = QueryResult {
-            columns: [
-                "Table",
-                "Non_unique",
-                "Key_name",
-                "Seq_in_index",
-                "Column_name",
-            ]
-            .map(String::from)
-            .to_vec(),
-            rows: vec![
-                ["orders", "0", "PRIMARY", "1", "id"],
-                ["orders", "1", "by_status", "1", "status"],
-                ["orders", "1", "by_status", "2", "created_at"],
-            ]
-            .into_iter()
-            .map(|row| row.into_iter().map(|cell| Some(cell.to_string())).collect())
-            .collect(),
-            ..Default::default()
-        };
-        assert_eq!(
-            index_entries(Driver::MySql, &result),
-            [
-                IndexEntry {
-                    name: "PRIMARY".into(),
-                    definition: "UNIQUE (id)".into()
-                },
-                IndexEntry {
-                    name: "by_status".into(),
-                    definition: "(status, created_at)".into()
-                },
-            ]
-        );
     }
 }
