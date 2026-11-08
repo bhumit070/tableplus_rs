@@ -1636,6 +1636,7 @@ mod tests {
                 value2: value2.into(),
             };
             let query = |filters: Vec<Filter>, match_any: bool| TableQuery {
+                find: String::new(),
                 object: DbObject {
                     schema: None,
                     name: "t".into(),

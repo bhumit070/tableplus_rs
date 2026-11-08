@@ -2362,6 +2362,26 @@ mod tests {
                 !t.is_dirty(cx) && !t.is_loading(cx) && t.page_json_for_test(cx).contains("shipped")
             })
         });
+        // The find bar: a filter document narrows the page; bad JSON says so.
+        tab.update_in(&mut cx, |t, w, cx| {
+            t.find_for_test(r#"{ status: "pending" }"#, w, cx)
+        });
+        wait_until(&mut cx, "found nothing", |cx| {
+            tab.read_with(cx, |t, cx| !t.is_loading(cx) && t.loaded_rows(cx) == 0)
+        });
+        tab.update_in(&mut cx, |t, w, cx| {
+            t.find_for_test(r#"{ "items.count": 2 }"#, w, cx)
+        });
+        wait_until(&mut cx, "found by a nested field", |cx| {
+            tab.read_with(cx, |t, cx| !t.is_loading(cx) && t.loaded_rows(cx) == 1)
+        });
+        tab.update_in(&mut cx, |t, w, cx| t.find_for_test("{ status: ", w, cx));
+        wait_until(&mut cx, "bad filter reported", |cx| {
+            tab.read_with(cx, |t, _| {
+                t.error_for_test()
+                    .is_some_and(|error| error.contains("find filter"))
+            })
+        });
         block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&cfg).await?;
             c.execute("db.dropDatabase()").await.ok();

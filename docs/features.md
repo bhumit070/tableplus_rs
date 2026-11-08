@@ -136,6 +136,10 @@ actually involved.
   from the union of top-level fields) and **JSON** (the page as raw JSON,
   numbers and booleans kept). Edits made in any view stage together and
   save as `$set` by `_id`.
+  A **find** bar above the data takes a filter document in JSON5
+  (`{ status: "paid", total: { $gt: 100 } }`, dotted paths for nested
+  fields); ↵ applies it on top of the filter chips, and clearing it shows
+  everything again.
 
 ## Query editor
 

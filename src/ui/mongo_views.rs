@@ -6,7 +6,7 @@
 
 use gpui::{
     AnyElement, Context, Entity, FontWeight, IntoElement, ParentElement, Styled, Window, div,
-    prelude::*, transparent_black,
+    prelude::*,
 };
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Editor, EditorState};
@@ -178,9 +178,8 @@ pub fn render_documents<H: CellEditHost + 'static>(
                 .mb(dp(10.))
                 .rounded(dp(8.))
                 .border_1()
-                .border_color(t.border)
-                .border_l_2()
-                .border_color(tint.unwrap_or(transparent_black()))
+                // New / removed documents tint the whole outline.
+                .border_color(tint.unwrap_or(t.border))
                 .bg(t.surface)
                 .when(removed, |card| card.opacity(0.5))
                 .child(

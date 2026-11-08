@@ -1019,6 +1019,7 @@ mod tests {
             .await?;
             let conn = Arc::new(RwLock::new(c));
             let query = TableQuery {
+                find: String::new(),
                 object: DbObject {
                     schema: None,
                     name: "t".into(),

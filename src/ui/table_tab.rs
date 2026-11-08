@@ -89,6 +89,9 @@ pub struct TableTab {
     redis_key: Option<Entity<RedisKeyView>>,
     /// MongoDB: Documents (cards), Table or JSON.
     doc_view: DocView,
+    /// MongoDB's find bar, and the filter document it applied.
+    find_input: Option<Entity<InputState>>,
+    find: String,
     /// The JSON view's editor and the text it was made from.
     json_view: Option<(Entity<EditorState>, String)>,
     struct_cols: Entity<TableState<Grid>>,
@@ -305,6 +308,8 @@ impl TableTab {
             columns_editor: None,
             redis_key: None,
             doc_view: DocView::default(),
+            find_input: None,
+            find: String::new(),
             json_view: None,
             struct_cols,
             struct_idx,
@@ -332,6 +337,21 @@ impl TableTab {
             fk_labels: Default::default(),
             _subs: subs,
         };
+        if this.shared.cfg.driver == Driver::Mongo {
+            let input = cx.new(|cx| {
+                InputState::new(window, cx).placeholder("{ status: \"paid\", total: { $gt: 100 } }")
+            });
+            this._subs.push(cx.subscribe_in(
+                &input,
+                window,
+                |tab, _, event: &InputEvent, _, cx| {
+                    if let InputEvent::PressEnter { .. } = event {
+                        tab.apply_find(cx);
+                    }
+                },
+            ));
+            this.find_input = Some(input);
+        }
         if this.shared.cfg.driver == Driver::Redis {
             let tab = cx.entity().downgrade();
             let on_changed = Rc::new(move |_: &mut Window, cx: &mut App| {
@@ -342,6 +362,78 @@ impl TableTab {
         }
         this.reload(cx);
         this
+    }
+
+    /// Runs the find bar's filter from the first page. Refused while edits
+    /// are staged, like any reload.
+    fn apply_find(&mut self, cx: &mut Context<Self>) {
+        let Some(input) = &self.find_input else {
+            return;
+        };
+        let find = input.read(cx).value().trim().to_string();
+        if find == self.find {
+            return;
+        }
+        if self.is_dirty(cx) {
+            self.error = Some("Commit (⌘S) or discard (⌘⇧⌫) your changes first".into());
+            cx.notify();
+            return;
+        }
+        self.find = find;
+        self.page = 0;
+        self.reload(cx);
+    }
+
+    fn render_find_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let input = self.find_input.as_ref()?;
+        let t = tokens(cx);
+        let mono = cx.theme().mono_font_family.clone();
+        Some(
+            h_flex()
+                .flex_none()
+                .gap(dp(8.))
+                .px(dp(12.))
+                .py(dp(6.))
+                .border_b_1()
+                .border_color(t.border)
+                .child(
+                    div()
+                        .text_size(dp(12.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(t.text_muted)
+                        .child("find"),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .font_family(mono)
+                        .child(Input::new(input).small().cleanable(true)),
+                )
+                .when(!self.find.is_empty(), |bar| {
+                    bar.child(
+                        div()
+                            .text_size(dp(11.5))
+                            .text_color(t.text_muted)
+                            .child("↵ applies · clear and ↵ to show all"),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
+    #[cfg(test)]
+    pub fn error_for_test(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    #[cfg(test)]
+    pub fn find_for_test(&mut self, find: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(input) = self.find_input.clone() {
+            input.update(cx, |input, cx| {
+                input.set_value(find.to_string(), window, cx)
+            });
+        }
+        self.apply_find(cx);
     }
 
     /// The Redis key editor shows the selected row's key (rows fetched
@@ -654,6 +746,7 @@ impl TableTab {
             // A followed foreign key always applies, so "any" only counts
             // without one.
             match_any: self.match_any && self.fixed.is_empty(),
+            find: self.find.clone(),
         }
     }
 
@@ -2640,6 +2733,9 @@ impl Render for TableTab {
             .on_action(cx.listener(|this, _: &CopyCell, window, cx| this.copy_cell(window, cx)))
             .on_action(cx.listener(|this, _: &SetNull, window, cx| this.set_null(window, cx)))
             .child(self.render_toolbar(cx))
+            .when(!self.show_structure, |d| {
+                d.children(self.render_find_bar(cx))
+            })
             .when(self.show_filters && !self.show_structure, |d| {
                 d.child(self.render_filters(cx))
             })

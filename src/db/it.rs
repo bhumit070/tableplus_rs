@@ -61,6 +61,7 @@ fn kv(pairs: &[(&str, Option<&str>)]) -> Vec<(String, Option<String>)> {
 
 async fn row_count(c: &Connection, obj: &DbObject) -> Option<u64> {
     let q = TableQuery {
+        find: String::new(),
         object: obj.clone(),
         filters: vec![],
         order: None,
@@ -118,6 +119,7 @@ async fn sql_scenario(driver: Driver) {
     c.commit(&t, &st.columns, &changes).await.expect("insert");
 
     let q = |filters: Vec<Filter>, order: Option<(String, bool)>| TableQuery {
+        find: String::new(),
         object: t.clone(),
         filters,
         order,
@@ -544,6 +546,7 @@ async fn redis_end_to_end() {
     assert_eq!(names, ["keys", "it:*"], "namespaces from key prefixes");
     // The namespace entry lists only its keys; a filter narrows within it.
     let mut ns_q = TableQuery {
+        find: String::new(),
         object: objects[1].clone(),
         filters: vec![],
         order: None,
@@ -564,6 +567,7 @@ async fn redis_end_to_end() {
     c.execute("DEL other").await.unwrap();
     let keys = objects[0].clone();
     let q = TableQuery {
+        find: String::new(),
         object: keys.clone(),
         filters: vec![Filter {
             column: "key".into(),
@@ -693,6 +697,7 @@ async fn mongo_end_to_end() {
     );
 
     let q = |filters: Vec<Filter>| TableQuery {
+        find: String::new(),
         object: t.clone(),
         filters,
         order: Some(("age".into(), true)),
@@ -1709,6 +1714,7 @@ async fn frozen_server_times_out_and_recovers() {
     let c = Connection::connect(&cfg(Driver::Redis)).await.unwrap();
     let keys = c.list_objects().await.unwrap().remove(0);
     let q = TableQuery {
+        find: String::new(),
         object: keys,
         filters: vec![],
         order: None,

@@ -508,6 +508,9 @@ pub struct TableQuery {
     pub order: Option<(String, bool)>, // (column, ascending)
     pub limit: usize,
     pub offset: usize,
+    /// MongoDB's find bar: a filter document (JSON5), ANDed with the
+    /// filters. Empty for everything else.
+    pub find: String,
 }
 
 /// A staged edit. `key` identifies the row: primary-key columns for SQL,

@@ -378,6 +378,22 @@ impl MongoConn {
             _ if q.match_any => doc! {"$or": clauses},
             _ => doc! {"$and": clauses},
         };
+        // The find bar's document applies on top of the filters.
+        let filter = match q.find.trim() {
+            "" => filter,
+            find => {
+                let Bson::Document(find) = parse_json5(find)
+                    .map_err(|error| anyhow!("the find filter isn't valid JSON: {error}"))?
+                else {
+                    bail!("the find filter must be a document, like {{ status: \"paid\" }}");
+                };
+                if filter.is_empty() {
+                    find
+                } else {
+                    doc! {"$and": [find, filter]}
+                }
+            }
+        };
         let coll = self.coll(&q.object.name);
         let mut find = coll
             .find(filter.clone())
