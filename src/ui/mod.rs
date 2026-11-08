@@ -60,6 +60,9 @@ impl<T: Disableable + Styled> DisabledWhen for T {}
 actions!(
     tabula,
     [
+        NextScope,
+        PrevScope,
+        CopyPickName,
         RunQuery,
         RunAll,
         CancelQuery,
@@ -337,6 +340,11 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-down", CellDownMore, Some("CellEditor > Input")),
         KeyBinding::new("escape", CancelCellEdit, Some("CellEditor > Input")),
         KeyBinding::new("tab", NextCell, Some("CellEditor > Input")),
+        // The ⌘P palette: Tab cycles the scope chips, ⌥↵ copies the name.
+        // They outrank the search input's own keys.
+        KeyBinding::new("tab", NextScope, Some("Picker > Input")),
+        KeyBinding::new("shift-tab", PrevScope, Some("Picker > Input")),
+        KeyBinding::new("alt-enter", CopyPickName, Some("Picker > Input")),
         KeyBinding::new("shift-tab", PrevCell, Some("CellEditor > Input")),
         // The enum dropdown that replaces the text input.
         KeyBinding::new("up", ChoiceUp, Some("CellChoices")),

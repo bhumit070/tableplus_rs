@@ -595,11 +595,6 @@ impl RedisKeyView {
     }
 
     #[cfg(test)]
-    pub fn remove_row_for_test(&mut self, index: usize) {
-        self.rows[index].removed = true;
-    }
-
-    #[cfg(test)]
     pub fn show_preview_for_test(&mut self, cx: &mut Context<Self>) {
         self.show_preview = true;
         cx.notify();

@@ -31,6 +31,7 @@ use super::table_tab::{TableTab, TableTabEvent};
 use super::theme::{caps, dp, kbd, tokens};
 use crate::db::{ConnectionConfig, DbObject, Driver, Filter, ObjectKind};
 use crate::runtime;
+use crate::saved;
 use anyhow::{Result, anyhow};
 use dirs::{download_dir, home_dir};
 use gpui::{Action, ClipboardItem, PathPromptOptions, transparent_black};
@@ -424,6 +425,23 @@ impl Session {
             Some("Views") => 1,
             _ => 2,
         });
+        // Columns: shown once searched for (`.` or the chip scopes to them).
+        for (index, (_, table, column)) in self.columns.iter().enumerate() {
+            items.push(PickItem {
+                detail: Some(table.clone()),
+                group: Some("Columns".into()),
+                icon: Some(IconName::Columns3),
+                ..PickItem::new(format!("col:{index}"), column.clone())
+            });
+        }
+        let saved_queries = saved::for_connection(&self.shared.cfg.id).unwrap_or_default();
+        for (index, query) in saved_queries.iter().enumerate() {
+            items.push(PickItem {
+                group: Some("Saved queries".into()),
+                icon: Some(IconName::Bookmark),
+                ..PickItem::new(format!("saved:{index}"), query.name.clone())
+            });
+        }
         for (i, (label, keys, _)) in goto_commands().iter().enumerate() {
             items.push(PickItem {
                 group: Some("Commands".into()),
@@ -433,9 +451,38 @@ impl Session {
             });
         }
         let me = cx.entity().downgrade();
+        let columns = self.columns.clone();
         let on_pick: OnPick = Rc::new(move |id, window, cx| {
-            if let Some(i) = id.strip_prefix("o:").and_then(|i| i.parse::<usize>().ok()) {
+            let index_after = |prefix: &str| {
+                id.strip_prefix(prefix)
+                    .and_then(|i| i.parse::<usize>().ok())
+            };
+            if let Some(i) = index_after("o:") {
                 me.update(cx, |s, cx| s.open_object(i, window, cx)).ok();
+            } else if let Some((schema, table, _)) =
+                index_after("col:").and_then(|i| columns.get(i))
+            {
+                // A column opens its table.
+                me.update(cx, |session, cx| {
+                    let found = session.objects.iter().position(|object| {
+                        object.name == *table
+                            && object.schema.as_deref().unwrap_or_default() == schema.as_str()
+                    });
+                    let found = found.or_else(|| {
+                        session
+                            .objects
+                            .iter()
+                            .position(|object| object.name == *table)
+                    });
+                    if let Some(index) = found {
+                        session.open_object(index, window, cx);
+                    }
+                })
+                .ok();
+            } else if let Some(query) = index_after("saved:").and_then(|i| saved_queries.get(i)) {
+                let sql = query.sql.clone();
+                me.update(cx, |session, cx| session.open_query(sql, window, cx))
+                    .ok();
             } else if let Some(i) = id
                 .strip_prefix("cmd:")
                 .and_then(|i| i.parse::<usize>().ok())
@@ -443,9 +490,9 @@ impl Session {
                 window.dispatch_action((goto_commands()[i].2)(), cx);
             }
         });
-        Picker::open(
+        Picker::open_scoped(
             "Go to",
-            "Go to table, view or command…",
+            "Go to table, column, saved query or command…",
             IconName::Search,
             items,
             on_pick,
@@ -817,6 +864,11 @@ impl Session {
     }
 
     #[cfg(test)]
+    #[cfg(test)]
+    pub fn column_count(&self) -> usize {
+        self.columns.len()
+    }
+
     pub fn object_index(&self, name: &str) -> Option<usize> {
         self.objects.iter().position(|o| o.name == name)
     }

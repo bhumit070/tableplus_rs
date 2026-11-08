@@ -1,15 +1,18 @@
 //! Searchable pick-one dialog in the command-palette look (design.md,
 //! screens 05 / 17): ⌘P go to, ⌘K databases, connections. Type to filter
 //! (matches in bold accent), ↑/↓ to move, Enter or click to pick. Items can
-//! carry a section, an icon and a shortcut.
+//! carry a section, an icon and a shortcut. The ⌘P palette is scoped:
+//! a chip per section (Tab cycles), and the prefixes `>` commands,
+//! `#` saved queries, `.` columns.
 
 use std::rc::Rc;
 
 use std::cell::Cell;
+use std::iter::once;
 
 use gpui::{
-    AnyElement, App, Context, Entity, FontWeight, Hsla, IntoElement, KeyDownEvent, ParentElement,
-    Render, SharedString, Styled, Subscription, Window, div, prelude::*, px,
+    AnyElement, App, ClipboardItem, Context, Entity, FontWeight, Hsla, IntoElement, KeyDownEvent,
+    ParentElement, Render, SharedString, Styled, Subscription, Window, div, prelude::*, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Icon, Sizable as _, WindowExt as _, h_flex, v_flex};
@@ -17,6 +20,7 @@ use gpui_kit_assets::IconName;
 
 use super::dialog;
 use super::theme::{caps, dp, kbd, tokens};
+use super::{CopyPickName, NextScope, PrevScope};
 
 /// Called with the picked item's id.
 pub type OnPick = Rc<dyn Fn(String, &mut Window, &mut App)>;
@@ -71,8 +75,17 @@ pub fn filter(all: &[PickItem], query: &str) -> Vec<PickItem> {
     starts
 }
 
+/// Typed first, these jump to a section.
+const PREFIXES: [(char, &str); 3] = [('>', "Commands"), ('#', "Saved queries"), ('.', "Columns")];
+
+/// Shown only when searched for, or in their own scope: there are many.
+const SEARCH_ONLY: &str = "Columns";
+
 pub struct Picker {
     all: Vec<PickItem>,
+    /// Scope chips (⌘P): 0 = all, then one per section in order.
+    scoped: bool,
+    scope: usize,
     query: Entity<InputState>,
     highlighted: usize,
     on_pick: OnPick,
@@ -88,6 +101,33 @@ impl Picker {
         icon: IconName,
         all: Vec<PickItem>,
         on_pick: OnPick,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        Self::open_with(title, placeholder, icon, all, on_pick, false, window, cx);
+    }
+
+    /// The ⌘P palette: like `open`, with scope chips and prefixes.
+    pub fn open_scoped(
+        title: impl Into<SharedString>,
+        placeholder: &str,
+        icon: IconName,
+        all: Vec<PickItem>,
+        on_pick: OnPick,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        Self::open_with(title, placeholder, icon, all, on_pick, true, window, cx);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open_with(
+        title: impl Into<SharedString>,
+        placeholder: &str,
+        icon: IconName,
+        all: Vec<PickItem>,
+        on_pick: OnPick,
+        scoped: bool,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -109,6 +149,8 @@ impl Picker {
             let highlighted = all.iter().position(|i| i.current).unwrap_or(0);
             Self {
                 all,
+                scoped,
+                scope: 0,
                 query,
                 highlighted,
                 on_pick,
@@ -144,8 +186,74 @@ impl Picker {
         });
     }
 
+    /// The sections, in the order they first appear.
+    fn scopes(&self) -> Vec<SharedString> {
+        let mut scopes: Vec<SharedString> = vec![];
+        for group in self.all.iter().filter_map(|item| item.group.clone()) {
+            if !scopes.contains(&group) {
+                scopes.push(group);
+            }
+        }
+        scopes
+    }
+
+    /// The section searched (a prefix wins over the chip) and the text.
+    fn scope_and_text(&self, cx: &App) -> (Option<SharedString>, String) {
+        let query = self.query.read(cx).value().to_string();
+        if self.scoped {
+            for (prefix, section) in PREFIXES {
+                if let Some(rest) = query.strip_prefix(prefix) {
+                    return (Some(section.into()), rest.to_string());
+                }
+            }
+        }
+        let chosen = self
+            .scope
+            .checked_sub(1)
+            .and_then(|index| self.scopes().get(index).cloned())
+            .filter(|_| self.scoped);
+        (chosen, query)
+    }
+
     fn matches(&self, cx: &App) -> Vec<PickItem> {
-        filter(&self.all, &self.query.read(cx).value())
+        let (scope, text) = self.scope_and_text(cx);
+        let searching = !text.trim().is_empty();
+        let in_scope: Vec<PickItem> = self
+            .all
+            .iter()
+            .filter(|item| match &scope {
+                Some(scope) => item.group.as_ref() == Some(scope),
+                None => searching || !self.scoped || item.group.as_deref() != Some(SEARCH_ONLY),
+            })
+            .cloned()
+            .collect();
+        filter(&in_scope, &text)
+    }
+
+    fn cycle_scope(&mut self, backwards: bool, cx: &mut Context<Self>) {
+        let count = self.scopes().len() + 1;
+        self.scope = if backwards {
+            (self.scope + count - 1) % count
+        } else {
+            (self.scope + 1) % count
+        };
+        self.highlighted = 0;
+        cx.notify();
+    }
+
+    /// ⌥↵: the highlighted item's qualified name (`schema.table`,
+    /// `table.column`) to the clipboard.
+    fn copy_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let matches = self.matches(cx);
+        let Some(item) = matches.get(self.highlighted.min(matches.len().saturating_sub(1))) else {
+            return;
+        };
+        let name = match &item.detail {
+            Some(qualifier) if !qualifier.is_empty() => format!("{qualifier}.{}", item.label),
+            _ => item.label.clone(),
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(name));
+        window.close_dialog(cx);
     }
 
     /// Closes the dialog, then picks match `ix` (clamped) unless it's
@@ -178,6 +286,63 @@ impl Picker {
     }
 }
 
+impl Picker {
+    /// All, then a chip per section; the searched one is filled.
+    fn render_scopes(&self, active: Option<SharedString>, cx: &mut Context<Self>) -> AnyElement {
+        let t = tokens(cx);
+        let names: Vec<SharedString> = once(SharedString::from("All"))
+            .chain(self.scopes())
+            .collect();
+        h_flex()
+            .gap(dp(6.))
+            .px(dp(10.))
+            .py(dp(8.))
+            .border_b_1()
+            .border_color(t.border)
+            .children(names.into_iter().enumerate().map(|(index, name)| {
+                let on = match &active {
+                    Some(active) => *active == name && index > 0,
+                    None => index == 0,
+                };
+                let prefix = PREFIXES
+                    .iter()
+                    .find(|(_, section)| *section == name.as_ref())
+                    .map(|(prefix, _)| prefix.to_string());
+                h_flex()
+                    .id(("scope", index))
+                    .debug_selector(move || format!("scope-{index}"))
+                    .gap(dp(4.))
+                    .h(dp(22.))
+                    .px(dp(9.))
+                    .rounded(dp(11.))
+                    .cursor_pointer()
+                    .text_size(dp(11.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .border_1()
+                    .map(|chip| {
+                        if on {
+                            chip.bg(t.accent.opacity(0.16))
+                                .border_color(t.accent.opacity(0.5))
+                                .text_color(t.accent)
+                        } else {
+                            chip.border_color(t.border)
+                                .text_color(t.text_secondary)
+                                .hover(|chip| chip.bg(t.hover))
+                        }
+                    })
+                    .child(name)
+                    .children(prefix.map(|prefix| div().text_color(t.text_faint).child(prefix)))
+                    .on_click(cx.listener(move |picker, _, _, cx| {
+                        picker.scope = index;
+                        picker.highlighted = 0;
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            }))
+            .into_any_element()
+    }
+}
+
 /// `label` with the first case-insensitive match of `q` in bold accent.
 fn highlighted_label(label: &str, q: &str, cx: &App) -> AnyElement {
     let t = tokens(cx);
@@ -205,8 +370,8 @@ impl Render for Picker {
         let t = tokens(cx);
         let matches = self.matches(cx);
         let highlighted = self.highlighted.min(matches.len().saturating_sub(1));
-        let q = self.query.read(cx).value().to_string();
-        let searching = !q.trim().is_empty();
+        let (scope, q) = self.scope_and_text(cx);
+        let searching = !q.trim().is_empty() || scope.is_some();
         let mut rows: Vec<AnyElement> = vec![];
         let mut last_group: Option<SharedString> = None;
         for (i, item) in matches.into_iter().enumerate() {
@@ -274,7 +439,20 @@ impl Render for Picker {
         }
         let empty = rows.is_empty();
         v_flex()
+            .key_context("Picker")
             .capture_key_down(cx.listener(Self::on_key))
+            .when(self.scoped, |picker| {
+                picker
+                    .on_action(
+                        cx.listener(|picker, _: &NextScope, _, cx| picker.cycle_scope(false, cx)),
+                    )
+                    .on_action(
+                        cx.listener(|picker, _: &PrevScope, _, cx| picker.cycle_scope(true, cx)),
+                    )
+                    .on_action(cx.listener(|picker, _: &CopyPickName, window, cx| {
+                        picker.copy_name(window, cx)
+                    }))
+            })
             .child(
                 h_flex()
                     .h(dp(46.))
@@ -288,6 +466,9 @@ impl Render for Picker {
                             .prefix(Icon::new(self.icon).text_color(t.text_muted)),
                     ),
             )
+            .when(self.scoped, |picker| {
+                picker.child(self.render_scopes(scope.clone(), cx))
+            })
             .child(
                 div()
                     .id("picker-list")
@@ -324,6 +505,11 @@ impl Render for Picker {
                             .child(kbd("↓", cx))
                             .child("move"),
                     )
+                    .when(self.scoped, |legend| {
+                        legend
+                            .child(h_flex().gap(dp(4.)).child(kbd("tab", cx)).child("scope"))
+                            .child(h_flex().gap(dp(4.)).child(kbd("⌥↵", cx)).child("copy name"))
+                    })
                     .child(h_flex().gap(dp(4.)).child(kbd("↵", cx)).child("open"))
                     .child(h_flex().gap(dp(4.)).child(kbd("esc", cx)).child("close")),
             )

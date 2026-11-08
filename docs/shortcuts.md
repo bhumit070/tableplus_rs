@@ -14,7 +14,9 @@ command is also in the menu bar.
 | / | On the connection list: search |
 | ↵ | On the connection list: reopen last session (when offered) |
 | ⌘K | Switch database |
-| ⌘P | Go to a table, view or collection, or run a command |
+| ⌘P | Go to a table, view, collection, column or saved query, or run a command |
+| Tab / ⇧Tab | In ⌘P: next / previous scope (All, Tables, Columns, Saved queries, Commands…) |
+| ⌥↵ | In ⌘P: copy the highlighted name, qualified (`schema.table`, `table.column`) |
 | ⌘⇧P | Process list |
 | ⌘R | Refresh the table (or the sidebar) |
 

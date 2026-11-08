@@ -2665,6 +2665,66 @@ mod tests {
         let _ = remove_file(file);
     }
 
+    /// ⌘P: `.` scopes to columns, Tab cycles the scope chips (All →
+    /// Tables), ↵ opens the table.
+    #[gpui::test]
+    fn palette_scopes(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = temp_dir().join(format!("tabula-ui-palette-{}.db", cfg.id));
+        write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute("create table orders (id integer primary key, total numeric)")
+                .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "columns", |cx| {
+            session.read_with(cx, |s, _| {
+                s.object_index("orders").is_some() && s.column_count() > 0
+            })
+        });
+        cx.dispatch_action(GoTo);
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("pick-row-col:1").is_none(),
+            "columns wait for a search"
+        );
+        cx.simulate_input(".tot");
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("pick-row-col:1").is_some(),
+            ". searches columns"
+        );
+        assert!(cx.debug_bounds("pick-row-o:0").is_none());
+        // Clear, then Tab: the Tables chip.
+        for _ in 0..4 {
+            cx.simulate_keystrokes("backspace");
+        }
+        cx.simulate_keystrokes("tab");
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("pick-row-o:0").is_some());
+        assert!(
+            cx.debug_bounds("pick-row-cmd:0").is_none(),
+            "commands are out of scope"
+        );
+        cx.simulate_keystrokes("enter");
+        wait_until(&mut cx, "table opened", |cx| {
+            session.read_with(cx, |s, _| s.active_table().is_some())
+        });
+        let _ = remove_file(file);
+    }
+
     /// The row menu builds (with its Copy as submenus), and "Filter by this
     /// value" narrows to the cell's value, or to NULL.
     #[gpui::test]
