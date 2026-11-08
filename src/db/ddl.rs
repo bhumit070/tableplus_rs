@@ -1,5 +1,7 @@
 //! CREATE / ALTER TABLE and CREATE / DROP INDEX statements for the
-//! structure editors, per dialect.
+//! structure editors, per dialect. SQL Server's differ the most: renames go
+//! through `sp_rename`, defaults are named constraints, and comments are
+//! `MS_Description` extended properties.
 
 use anyhow::{Result, bail};
 
@@ -34,7 +36,11 @@ impl ColDef {
 }
 
 fn table_name(driver: Driver, schema: Option<&str>, table: &str) -> String {
-    match schema.filter(|s| !s.is_empty() && driver == Driver::Postgres) {
+    let schema = match driver {
+        Driver::Mssql => schema.or(Some("dbo")),
+        _ => schema,
+    };
+    match schema.filter(|s| !s.is_empty() && matches!(driver, Driver::Postgres | Driver::Mssql)) {
         Some(s) => format!("{}.{}", ident(driver, s), ident(driver, table)),
         None => ident(driver, table),
     }
@@ -45,6 +51,7 @@ fn comment_literal(driver: Driver, text: &str) -> String {
     let quoted = text.replace('\'', "''");
     match driver {
         Driver::MySql => format!("'{}'", quoted.replace('\\', "\\\\")),
+        Driver::Mssql => format!("N'{quoted}'"),
         _ => format!("'{quoted}'"),
     }
 }
@@ -134,6 +141,9 @@ pub fn alter_table(
     table: &str,
     changes: &[ColChange],
 ) -> Result<Vec<String>> {
+    if driver == Driver::Mssql {
+        return mssql_alter_table(schema.unwrap_or("dbo"), table, changes);
+    }
     let t = table_name(driver, schema, table);
     let q = |s: &str| ident(driver, s);
     let mut out = vec![];
@@ -230,6 +240,129 @@ pub fn alter_table(
     Ok(out)
 }
 
+/// A column edit after trimming; errors when it lost its name or type.
+fn trimmed(from: &ColDef, to: &ColDef) -> Result<ColDef> {
+    let to = ColDef {
+        name: to.name.trim().to_string(),
+        ty: to.ty.trim().to_string(),
+        default: to
+            .default
+            .clone()
+            .map(|d| d.trim().to_string())
+            .filter(|d| !d.is_empty()),
+        ..to.clone()
+    };
+    if to.name.is_empty() || to.ty.is_empty() {
+        bail!("column {} needs a name and a type", from.name);
+    }
+    Ok(to)
+}
+
+/// SQL Server: `N'…'` for the system procedures' name arguments.
+fn mssql_text(text: &str) -> String {
+    format!("N'{}'", text.replace('\'', "''"))
+}
+
+/// Drops the column's default constraint, whatever the server named it.
+fn mssql_drop_default(schema: &str, table: &str, column: &str) -> String {
+    let t = table_name(Driver::Mssql, Some(schema), table);
+    let object = format!("object_id({})", mssql_text(&t));
+    format!(
+        "DECLARE @default sysname = (SELECT name FROM sys.default_constraints \
+         WHERE parent_object_id = {object} \
+         AND parent_column_id = columnproperty({object}, {}, 'ColumnId'));\n\
+         IF @default IS NOT NULL EXEC (N'ALTER TABLE {} DROP CONSTRAINT [' + @default + N']');",
+        mssql_text(column),
+        t.replace('\'', "''")
+    )
+}
+
+/// Sets (or with `None` removes) a column's `MS_Description`.
+fn mssql_comment(schema: &str, table: &str, column: &str, comment: Option<&str>) -> Vec<String> {
+    let t = table_name(Driver::Mssql, Some(schema), table);
+    let object = format!("object_id({})", mssql_text(&t));
+    let place = format!(
+        "N'SCHEMA', {}, N'TABLE', {}, N'COLUMN', {}",
+        mssql_text(schema),
+        mssql_text(table),
+        mssql_text(column)
+    );
+    let mut out = vec![format!(
+        "IF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 1 \
+         AND major_id = {object} AND minor_id = columnproperty({object}, {}, 'ColumnId') \
+         AND name = N'MS_Description') \
+         EXEC sp_dropextendedproperty N'MS_Description', {place};",
+        mssql_text(column)
+    )];
+    if let Some(text) = comment {
+        out.push(format!(
+            "EXEC sp_addextendedproperty N'MS_Description', {}, {place};",
+            mssql_text(text)
+        ));
+    }
+    out
+}
+
+fn mssql_alter_table(schema: &str, table: &str, changes: &[ColChange]) -> Result<Vec<String>> {
+    let driver = Driver::Mssql;
+    let t = table_name(driver, Some(schema), table);
+    let q = |s: &str| ident(driver, s);
+    let mut out = vec![];
+    for change in changes {
+        match change {
+            ColChange::Add(column) => {
+                out.push(format!(
+                    "ALTER TABLE {t} ADD {};",
+                    column_sql(driver, column)?
+                ));
+                if let Some(comment) = comment_of(column) {
+                    out.extend(
+                        mssql_comment(schema, table, column.name.trim(), Some(comment))
+                            .into_iter()
+                            .skip(1),
+                    );
+                }
+            }
+            // A column with a default can't be dropped before its default.
+            ColChange::Drop(name) => {
+                out.push(mssql_drop_default(schema, table, name));
+                out.push(format!("ALTER TABLE {t} DROP COLUMN {};", q(name)));
+            }
+            ColChange::Alter { from, to } => {
+                let to = trimmed(from, to)?;
+                if to.name != from.name {
+                    out.push(format!(
+                        "EXEC sp_rename {}, {}, N'COLUMN';",
+                        mssql_text(&format!("{t}.{}", q(&from.name))),
+                        mssql_text(&to.name)
+                    ));
+                }
+                let col = q(&to.name);
+                // ALTER COLUMN restates the type and the NULL setting.
+                if !to.ty.eq_ignore_ascii_case(&from.ty) || to.nullable != from.nullable {
+                    let null = if to.nullable { "NULL" } else { "NOT NULL" };
+                    out.push(format!(
+                        "ALTER TABLE {t} ALTER COLUMN {col} {} {null};",
+                        to.ty
+                    ));
+                }
+                if to.default != from.default {
+                    out.push(mssql_drop_default(schema, table, &to.name));
+                    if let Some(default) = &to.default {
+                        out.push(format!(
+                            "ALTER TABLE {t} ADD DEFAULT ({default}) FOR {col};"
+                        ));
+                    }
+                }
+                if comment_of(&to) != comment_of(from) {
+                    out.extend(mssql_comment(schema, table, &to.name, comment_of(&to)));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// `CREATE [UNIQUE] INDEX name ON table (columns);`
 pub fn create_index(
     driver: Driver,
@@ -263,6 +396,11 @@ pub fn drop_index(driver: Driver, schema: Option<&str>, table: &str, index_name:
             "DROP INDEX {} ON {};",
             ident(driver, index_name),
             ident(driver, table)
+        ),
+        Driver::Mssql => format!(
+            "DROP INDEX {} ON {};",
+            ident(driver, index_name),
+            table_name(driver, schema, table)
         ),
         _ => format!("DROP INDEX {};", table_name(driver, schema, index_name)),
     }
@@ -364,6 +502,9 @@ pub fn add_foreign_key(
     };
     let on_delete = match key.on_delete.trim() {
         "" => "NO ACTION",
+        // SQL Server has no RESTRICT; its NO ACTION refuses the delete the
+        // same way.
+        "RESTRICT" if driver == Driver::Mssql => "NO ACTION",
         action => action,
     };
     if !ON_DELETE.contains(&on_delete) {
@@ -391,7 +532,7 @@ pub fn drop_foreign_key(
     key_name: &str,
 ) -> Result<String> {
     let verb = match driver {
-        Driver::Postgres => "DROP CONSTRAINT",
+        Driver::Postgres | Driver::Mssql => "DROP CONSTRAINT",
         Driver::MySql => "DROP FOREIGN KEY",
         _ => bail!("SQLite can't drop a foreign key from an existing table"),
     };
@@ -403,11 +544,17 @@ pub fn drop_foreign_key(
 }
 
 /// The statements as one script; transactional where the server rolls DDL
-/// back on failure (Postgres, SQLite).
+/// back on failure (Postgres, SQLite, SQL Server). On SQL Server each
+/// statement is its own `GO` batch, so their `DECLARE`s don't clash, and
+/// XACT_ABORT undoes the lot when one fails.
 pub fn script(driver: Driver, stmts: &[String]) -> String {
     let body = stmts.join("\n");
     match driver {
         Driver::Postgres | Driver::Sqlite => format!("BEGIN;\n{body}\nCOMMIT;"),
+        Driver::Mssql => format!(
+            "SET XACT_ABORT ON;\nBEGIN TRANSACTION;\nGO\n{}\nGO\nCOMMIT;",
+            stmts.join("\nGO\n")
+        ),
         _ => body,
     }
 }
@@ -634,6 +781,57 @@ mod tests {
             alter_table(Driver::Postgres, None, "t", &[same])
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn sql_server_statements() {
+        let ms = Driver::Mssql;
+        let cols = [col("id", "int", false, None, true)];
+        assert_eq!(
+            create_table(ms, None, "people", &cols).unwrap(),
+            "CREATE TABLE [dbo].[people] (\n  [id] int NOT NULL,\n  PRIMARY KEY ([id])\n);"
+        );
+        let from = col("name", "nvarchar(40)", true, Some("N'x'"), false);
+        let to = ColDef {
+            name: "full_name".into(),
+            nullable: false,
+            default: None,
+            comment: Some("Shown on invoices".into()),
+            ..from.clone()
+        };
+        let statements = alter_table(
+            ms,
+            Some("sales"),
+            "people",
+            &[ColChange::Alter { from, to }],
+        )
+        .unwrap();
+        assert_eq!(
+            statements[0],
+            "EXEC sp_rename N'[sales].[people].[name]', N'full_name', N'COLUMN';"
+        );
+        assert_eq!(
+            statements[1],
+            "ALTER TABLE [sales].[people] ALTER COLUMN [full_name] nvarchar(40) NOT NULL;"
+        );
+        assert!(
+            statements[2].starts_with("DECLARE @default sysname"),
+            "{statements:?}"
+        );
+        assert!(
+            statements[4]
+                .starts_with("EXEC sp_addextendedproperty N'MS_Description', N'Shown on invoices'")
+        );
+        let script = script(ms, &statements);
+        assert!(script.starts_with("SET XACT_ABORT ON;\nBEGIN TRANSACTION;\nGO\n"));
+        assert_eq!(
+            crate::db::split::split_mssql(&script).len(),
+            statements.len() + 3
+        );
+        assert_eq!(
+            drop_index(ms, None, "people", "by_name"),
+            "DROP INDEX [by_name] ON [dbo].[people];"
         );
     }
 }

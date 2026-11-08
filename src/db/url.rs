@@ -1,5 +1,6 @@
 //! Reads a pasted connection URL into connection fields (design.md, screen
-//! 04): `postgres://`, `mysql://`, `redis://`, `mongodb://` and `sqlite:`.
+//! 04): `postgres://`, `mysql://`, `sqlserver://` (or `mssql://`),
+//! `redis://`, `mongodb://` and `sqlite:`.
 //! The password comes back as its own field so it only ever reaches the
 //! keychain, never the saved host.
 
@@ -45,6 +46,7 @@ pub fn parse(url: &str) -> Result<Parsed> {
     let (driver, tls_scheme) = match scheme.as_str() {
         "postgres" | "postgresql" => (Driver::Postgres, false),
         "mysql" | "mariadb" => (Driver::MySql, false),
+        "sqlserver" | "mssql" => (Driver::Mssql, false),
         "redis" => (Driver::Redis, false),
         "rediss" => (Driver::Redis, true),
         "mongodb" => (Driver::Mongo, false),
@@ -125,6 +127,9 @@ pub fn parse(url: &str) -> Result<Parsed> {
                 _ => {}
             },
             "ssl" | "tls" => p.ssl = v == "true" || v == "1",
+            // SQL Server's connection-string words.
+            "encrypt" => p.ssl = matches!(v.as_str(), "true" | "yes" | "mandatory" | "strict"),
+            "trustservercertificate" => p.ssl_verify = matches!(v.as_str(), "false" | "no"),
             _ => {}
         }
     }
@@ -248,6 +253,23 @@ mod tests {
                 ssl_verify: true,
                 ..Default::default()
             }
+        );
+    }
+
+    #[test]
+    fn sql_server_urls() {
+        let p = parse(
+            "sqlserver://sa:p%40ss@db.local:14330/shop?encrypt=true&trustServerCertificate=false",
+        )
+        .unwrap();
+        assert_eq!(p.driver, Some(Driver::Mssql));
+        assert_eq!((p.host.as_str(), p.port), ("db.local", Some(14330)));
+        assert_eq!((p.user.as_str(), p.password.as_str()), ("sa", "p@ss"));
+        assert_eq!(p.database, "shop");
+        assert!(p.ssl && p.ssl_verify);
+        assert_eq!(
+            parse("mssql://sa@localhost").unwrap().driver,
+            Some(Driver::Mssql)
         );
     }
 

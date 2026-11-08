@@ -110,17 +110,20 @@ impl SqlTarget {
 pub fn ident(driver: Driver, s: &str) -> String {
     match driver {
         Driver::MySql => format!("`{}`", s.replace('`', "``")),
+        Driver::Mssql => format!("[{}]", s.replace(']', "]]")),
         _ => format!("\"{}\"", s.replace('"', "\"\"")),
     }
 }
 
-/// A value as a SQL literal; MySQL also treats backslashes as escapes.
+/// A value as a SQL literal; MySQL also treats backslashes as escapes, and
+/// SQL Server needs `N'…'` to keep text outside the column's code page.
 pub fn literal(driver: Driver, v: &Option<String>) -> String {
     match v {
         None => "NULL".into(),
         Some(s) if driver == Driver::MySql => {
             format!("'{}'", s.replace('\\', "\\\\").replace('\'', "''"))
         }
+        Some(s) if driver == Driver::Mssql => format!("N'{}'", s.replace('\'', "''")),
         Some(s) => format!("'{}'", s.replace('\'', "''")),
     }
 }

@@ -539,6 +539,12 @@ fn screenshots() {
                     "localhost",
                 ),
                 (
+                    "billing",
+                    Driver::Mssql,
+                    crate::db::EnvTag::Staging,
+                    "sql.acme.internal",
+                ),
+                (
                     "redis-cache",
                     Driver::Redis,
                     crate::db::EnvTag::Development,
@@ -609,6 +615,7 @@ fn screenshots() {
     if std::env::var("TABULA_IT").is_ok() {
         redis_shots(&mut s);
         mongo_shots(&mut s);
+        mssql_shots(&mut s);
         process_shots(&mut s);
     }
 }
@@ -664,6 +671,54 @@ fn mongo_shots(s: &mut Shots) {
     s.snap("20-mongo-documents");
     s.in_window(|_, cx| tab.update(cx, |t, cx| t.set_doc_view_for_test(DocView::Json, cx)));
     s.snap("20-mongo-json");
+}
+
+/// 25: a SQL Server table: typed values (decimal, bit, datetime2,
+/// uniqueidentifier) read as text in the grid.
+fn mssql_shots(s: &mut Shots) {
+    let mut cfg = ConnectionConfig::new(Driver::Mssql);
+    cfg.name = "billing".into();
+    cfg.port = 51433;
+    cfg.user = "sa".into();
+    cfg.password = "Tabula-test1".into();
+    cfg.database = "master".into();
+    let setup = cfg.clone();
+    block_on(crate::runtime::spawn(async move {
+        let c = crate::db::Connection::connect(&setup).await?;
+        c.execute(
+            "drop table if exists shots_invoices\nGO\n\
+             create table shots_invoices (id int identity primary key, customer nvarchar(60) not null, \
+               total decimal(10,2), paid bit, issued datetime2(0), ref uniqueidentifier default newid())\nGO\n\
+             insert into shots_invoices (customer, total, paid, issued) values \
+               (N'Priya Raman', 129.00, 1, '2026-11-01 10:00'), (N'Marcus Lee', 48.50, 0, '2026-11-02 11:30'), \
+               (N'Ana Souza', 312.75, 1, '2026-11-03 09:15')",
+        )
+        .await?;
+        c.close().await;
+        Ok(())
+    }))
+    .expect("the SQL Server container is up");
+    let app = s.app.clone();
+    s.in_window(|w, cx| app.update(cx, |a, cx| a.connect(cfg, w, cx, |_, _, _| {})));
+    s.wait("sql server", |cx| {
+        app.read(cx)
+            .sessions
+            .last()
+            .is_some_and(|session| session.read(cx).object_index("shots_invoices").is_some())
+    });
+    let session =
+        s.cx.update(|cx| app.read(cx).sessions.last().unwrap().clone());
+    s.in_window(|w, cx| {
+        session.update(cx, |session, cx| {
+            let index = session.object_index("shots_invoices").unwrap();
+            session.open_object(index, w, cx)
+        })
+    });
+    let tab = s.cx.update(|cx| session.read(cx).active_table().unwrap());
+    s.wait("invoices", |cx| {
+        tab.read(cx).loaded_rows(cx) == 3 && !tab.read(cx).is_loading(cx)
+    });
+    s.snap("25-mssql-table");
 }
 
 /// 19: a hash with staged edits, and a JSON string with a TTL.

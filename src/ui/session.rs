@@ -750,7 +750,10 @@ impl Session {
             detail: Some("—".into()),
             ..PickItem::new(d, d)
         }));
-        let can_create = matches!(self.shared.cfg.driver, Driver::Postgres | Driver::MySql);
+        let can_create = matches!(
+            self.shared.cfg.driver,
+            Driver::Postgres | Driver::MySql | Driver::Mssql
+        );
         if can_create {
             items.push(PickItem {
                 icon: Some(IconName::Plus),
@@ -1131,6 +1134,7 @@ impl Session {
                 let text = match s.shared.cfg.driver {
                     crate::db::Driver::Mongo => format!("db.{}.find({{}}).limit(100)", o.name),
                     crate::db::Driver::Redis => "SCAN 0 MATCH * COUNT 100".to_string(),
+                    crate::db::Driver::Mssql => format!("SELECT TOP 100 * FROM {};", o.title()),
                     _ => format!("SELECT * FROM {} LIMIT 100;", o.title()),
                 };
                 s.open_query(text, w, cx);
@@ -1198,7 +1202,12 @@ impl Session {
     /// Backup…: pick what to include, then where to save the dump.
     pub fn backup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use crate::db::backup::Scope;
-        if !self.is_sql() {
+        // SQL Server writes its backups on the server (BACKUP DATABASE), not
+        // to a file here.
+        if !matches!(
+            self.shared.cfg.driver,
+            Driver::Postgres | Driver::MySql | Driver::Sqlite
+        ) {
             window.push_notification("Backups are available for Postgres, MySQL and SQLite", cx);
             return;
         }
@@ -1423,8 +1432,11 @@ impl Session {
     }
 
     pub fn new_database(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.shared.cfg.driver, Driver::Postgres | Driver::MySql) {
-            window.push_notification("New databases are for Postgres and MySQL", cx);
+        if !matches!(
+            self.shared.cfg.driver,
+            Driver::Postgres | Driver::MySql | Driver::Mssql
+        ) {
+            window.push_notification("New databases are for Postgres, MySQL and SQL Server", cx);
             return;
         }
         if self.blocked(window, cx) {
@@ -1461,8 +1473,10 @@ impl Session {
 
     /// Drop Database…: pick one (not the current), then type its name.
     pub fn drop_database(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.shared.cfg.driver, Driver::Postgres | Driver::MySql)
-            || self.blocked(window, cx)
+        if !matches!(
+            self.shared.cfg.driver,
+            Driver::Postgres | Driver::MySql | Driver::Mssql
+        ) || self.blocked(window, cx)
         {
             return;
         }

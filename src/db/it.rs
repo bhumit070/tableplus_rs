@@ -2,7 +2,7 @@
 //! run when TABULA_IT=1 and expect the throwaway containers from
 //! compose.yaml (`docker compose up -d --wait`) on these ports:
 //!   pg 55432 (postgres/test), mysql 53306 (root/test, db app),
-//!   redis 56379, mongo 57017.
+//!   mssql 51433 (sa/Tabula-test1), redis 56379, mongo 57017.
 
 use super::*;
 use std::sync::Arc;
@@ -28,6 +28,12 @@ fn cfg(driver: Driver) -> ConnectionConfig {
             c.user = "root".into();
             c.password = "test".into();
             c.database = "app".into();
+        }
+        Driver::Mssql => {
+            c.port = 51433;
+            c.user = "sa".into();
+            c.password = "Tabula-test1".into();
+            c.database = "master".into();
         }
         Driver::Redis => c.port = 56379,
         Driver::Mongo => {
@@ -82,6 +88,9 @@ async fn sql_scenario(driver: Driver) {
         }
         Driver::MySql => {
             "drop table if exists it_people; create table it_people (id int auto_increment primary key, name varchar(100) not null, age int, active boolean default true, meta json)"
+        }
+        Driver::Mssql => {
+            "drop table if exists it_people; create table it_people (id int identity primary key, name nvarchar(100) not null, age int, active bit default 1, meta nvarchar(max))"
         }
         _ => {
             "drop table if exists it_people; create table it_people (id integer primary key autoincrement, name text not null, age int, active boolean default 1, meta text)"
@@ -244,7 +253,7 @@ async fn sql_scenario(driver: Driver) {
             query.filters[0].op
         );
     }
-    if driver != Driver::Sqlite {
+    if !matches!(driver, Driver::Sqlite | Driver::Mssql) {
         let (_, total) = c
             .fetch_table(&q(
                 vec![only("name", FilterOp::Regex, "^[A-Z]da$", "")],
@@ -291,13 +300,22 @@ async fn sql_scenario(driver: Driver) {
     assert_eq!(r[1].affected, Some(1));
 
     // Editor transactions run on one connection (GitHub review #1):
-    // ROLLBACK really undoes the DELETE, on every backend.
-    c.execute("BEGIN; DELETE FROM it_people; ROLLBACK")
+    // ROLLBACK really undoes the DELETE, on every backend. (A bare BEGIN
+    // opens a block in T-SQL.)
+    let begin = if driver == Driver::Mssql {
+        "BEGIN TRAN"
+    } else {
+        "BEGIN"
+    };
+    c.execute(&format!("{begin}; DELETE FROM it_people; ROLLBACK"))
         .await
         .unwrap();
     assert_eq!(row_count(&c, &t).await, Some(2), "rolled back");
     // A batch that leaves a transaction open is rolled back and reported.
-    let err = c.execute("BEGIN; DELETE FROM it_people").await.unwrap_err();
+    let err = c
+        .execute(&format!("{begin}; DELETE FROM it_people"))
+        .await
+        .unwrap_err();
     assert!(
         format!("{err:#}").contains("BEGIN without COMMIT"),
         "{err:#}"
@@ -308,12 +326,16 @@ async fn sql_scenario(driver: Driver) {
         "open transaction not applied"
     );
     // COMMIT keeps changes made inside the transaction.
-    c.execute("BEGIN; UPDATE it_people SET age = 40 WHERE age IS NULL; COMMIT")
-        .await
-        .unwrap();
+    c.execute(&format!(
+        "{begin}; UPDATE it_people SET age = 40 WHERE age IS NULL; COMMIT"
+    ))
+    .await
+    .unwrap();
     // A failing statement mid-transaction rolls the batch back.
     let err = c
-        .execute("BEGIN; DELETE FROM it_people; SELECT * FROM no_such_table")
+        .execute(&format!(
+            "{begin}; DELETE FROM it_people; SELECT * FROM no_such_table"
+        ))
         .await
         .unwrap_err();
     assert!(format!("{err:#}").contains("statement 3 of 3"), "{err:#}");
@@ -420,6 +442,109 @@ async fn mysql_end_to_end() {
     if it_enabled() {
         sql_scenario(Driver::MySql).await;
     }
+}
+
+#[tokio::test]
+async fn mssql_end_to_end() {
+    if it_enabled() {
+        sql_scenario(Driver::Mssql).await;
+    }
+}
+
+/// What only T-SQL has: GO batches, DECLARE, several result sets from one
+/// statement, and each type read as text that writes back unchanged.
+#[tokio::test]
+async fn mssql_batches_and_types() {
+    if !it_enabled() {
+        return;
+    }
+    let c = Connection::connect(&cfg(Driver::Mssql)).await.unwrap();
+    let r = c
+        .execute(
+            "drop table if exists it_types\nGO\n\
+             create table it_types (id int primary key, flag bit, small tinyint, price decimal(10,2), \
+               born date, at datetime2(3), old datetime, zoned datetimeoffset(0), \
+               tag uniqueidentifier, note nvarchar(40), raw varbinary(8))\nGO\n\
+             insert into it_types values (1, 1, 200, 12.5, '2026-11-08', '2026-11-08 09:30:05.250', \
+               '2026-11-08 09:30:05.997', '2026-11-08 09:30:05 +05:30', \
+               '6F9619FF-8B86-D011-B42D-00C04FC964FF', N'naïve ☕', 0xCAFE)",
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.len(), 3);
+    assert_eq!(r[2].affected, Some(1));
+    let r = c.execute("select * from it_types").await.unwrap();
+    let row: Vec<_> = r[0].rows[0]
+        .iter()
+        .map(|v| v.as_deref().unwrap_or("NULL"))
+        .collect();
+    assert_eq!(
+        row,
+        [
+            "1",
+            "1",
+            "200",
+            "12.50",
+            "2026-11-08",
+            "2026-11-08 09:30:05.25",
+            "2026-11-08 09:30:05.997",
+            "2026-11-08 09:30:05 +05:30",
+            "6F9619FF-8B86-D011-B42D-00C04FC964FF",
+            "naïve ☕",
+            "0xcafe",
+        ]
+    );
+    // Every value, written back as shown, finds the row again.
+    let objects = c.list_objects().await.unwrap();
+    let table = obj(&objects, "it_types");
+    let st = c.structure(&table).await.unwrap();
+    assert_eq!(st.columns[1].data_type, "bit");
+    assert_eq!(st.columns[3].data_type, "decimal(10,2)");
+    assert_eq!(st.columns[9].data_type, "nvarchar(40)");
+    let key: Vec<_> = r[0].columns[1..]
+        .iter()
+        .zip(&r[0].rows[0][1..])
+        .map(|(column, value)| (column.clone(), value.clone()))
+        .collect();
+    let change = Change::Update {
+        key,
+        set: kv(&[("note", Some("updated ✓"))]),
+    };
+    c.commit(&table, &st.columns, &[change])
+        .await
+        .expect("every value matches itself");
+    // DECLARE keeps its batch whole; a procedure returns two result sets.
+    let r = c
+        .execute(
+            "declare @n int = 41; select @n + 1 as answer\nGO\n\
+             create or alter procedure it_two as begin select 1 as a; select 2 as b; end\nGO\n\
+             exec it_two",
+        )
+        .await
+        .unwrap();
+    assert_eq!(r[0].rows[0][0].as_deref(), Some("42"));
+    assert_eq!(r[2].columns, ["a"]);
+    assert_eq!(r[3].columns, ["b"]);
+    let names: Vec<_> = c
+        .list_objects()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|o| (o.name, o.kind))
+        .collect();
+    assert!(
+        names.contains(&("it_two".into(), ObjectKind::Function)),
+        "{names:?}"
+    );
+    // An error names the server's message and line.
+    let e = c.execute("select * from no_such_table").await.unwrap_err();
+    assert!(
+        format!("{e:#}").contains("Invalid object name 'no_such_table'"),
+        "{e:#}"
+    );
+    c.execute("drop procedure it_two; drop table it_types")
+        .await
+        .unwrap();
 }
 
 /// The key editor: read each type, stage edits, TTL, rename, delete.
@@ -907,6 +1032,20 @@ async fn mysql_cancel() {
 }
 
 #[tokio::test]
+async fn mssql_cancel() {
+    if !it_enabled() {
+        return;
+    }
+    cancel_scenario(
+        Driver::Mssql,
+        "waitfor delay '00:00:30'",
+        "select count(*) from sys.dm_exec_requests r cross apply sys.dm_exec_sql_text(r.sql_handle) t \
+         where t.text = 'waitfor delay ''00:00:30''' and r.session_id <> @@spid",
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn sqlite_cancel() {
     // A slow recursive query; SQLite just abandons it.
     let c = Connection::connect(&cfg(Driver::Sqlite)).await.unwrap();
@@ -930,7 +1069,7 @@ async fn sqlite_cancel() {
 /// and the table's CREATE statement.
 async fn fk_scenario(driver: Driver) {
     let c = Connection::connect(&cfg(driver)).await.expect("connect");
-    let int = if driver == Driver::MySql {
+    let int = if matches!(driver, Driver::MySql | Driver::Mssql) {
         "int"
     } else {
         "integer"
@@ -988,6 +1127,13 @@ async fn postgres_foreign_keys() {
 async fn mysql_foreign_keys() {
     if it_enabled() {
         fk_scenario(Driver::MySql).await;
+    }
+}
+
+#[tokio::test]
+async fn mssql_foreign_keys() {
+    if it_enabled() {
+        fk_scenario(Driver::Mssql).await;
     }
 }
 
@@ -1056,7 +1202,7 @@ async fn mysql_enum_values() {
 async fn check_in_scenario(driver: Driver) {
     let cfg = cfg(driver);
     let c = Connection::connect(&cfg).await.expect("connect");
-    let ty = if driver == Driver::MySql {
+    let ty = if matches!(driver, Driver::MySql | Driver::Mssql) {
         "varchar(20)"
     } else {
         "text"
@@ -1093,6 +1239,7 @@ async fn check_in_values() {
     if it_enabled() {
         check_in_scenario(Driver::Postgres).await;
         check_in_scenario(Driver::MySql).await;
+        check_in_scenario(Driver::Mssql).await;
     }
 }
 
@@ -1149,6 +1296,7 @@ async fn fk_matches() {
     if it_enabled() {
         fk_matches_scenario(Driver::Postgres).await;
         fk_matches_scenario(Driver::MySql).await;
+        fk_matches_scenario(Driver::Mssql).await;
     }
 }
 
@@ -1208,9 +1356,10 @@ async fn process_scenario(driver: Driver, sleep_sql: &'static str, query_col: &s
         .await
         .expect("cancelled promptly")
         .unwrap();
-    // Postgres reports the cancel as an error; MySQL's SLEEP returns 1.
+    // Postgres reports the cancel as an error, SQL Server's KILL ends the
+    // session; MySQL's SLEEP returns 1.
     match driver {
-        Driver::Postgres => assert!(res.is_err()),
+        Driver::Postgres | Driver::Mssql => assert!(res.is_err()),
         _ => assert_eq!(res.unwrap()[0].rows[0][0].as_deref(), Some("1")),
     }
     // Our own session is never listed.
@@ -1229,6 +1378,13 @@ async fn postgres_processes() {
 async fn mysql_processes() {
     if it_enabled() {
         process_scenario(Driver::MySql, "select sleep(20)", "query").await;
+    }
+}
+
+#[tokio::test]
+async fn mssql_processes() {
+    if it_enabled() {
+        process_scenario(Driver::Mssql, "waitfor delay '00:00:20'", "query").await;
     }
 }
 
@@ -1308,20 +1464,28 @@ async fn mysql_read_only() {
     }
 }
 
+/// SQL Server has no read-only session: the driver refuses instead.
+#[tokio::test]
+async fn mssql_read_only() {
+    if it_enabled() {
+        read_only_scenario(Driver::Mssql).await;
+    }
+}
+
 /// Table editor DDL runs as generated on each server.
 async fn ddl_scenario(driver: Driver) {
     use ddl::{ColChange, ColDef};
     let c = Connection::connect(&cfg(driver)).await.unwrap();
     c.execute("drop table if exists it_ddl").await.unwrap();
-    let int = if driver == Driver::MySql {
+    let int = if matches!(driver, Driver::MySql | Driver::Mssql) {
         "int"
     } else {
         "integer"
     };
-    let text = if driver == Driver::MySql {
-        "varchar(50)"
-    } else {
-        "text"
+    let text = match driver {
+        Driver::MySql => "varchar(50)",
+        Driver::Mssql => "nvarchar(50)",
+        _ => "text",
     };
     let col = |n: &str, t: &str, nullable, d: Option<&str>, pk| ColDef {
         name: n.into(),
@@ -1369,7 +1533,11 @@ async fn ddl_scenario(driver: Driver) {
         let bad = ddl::script(
             driver,
             &[
-                "ALTER TABLE it_ddl ADD COLUMN extra int;".into(),
+                if driver == Driver::Mssql {
+                    "ALTER TABLE it_ddl ADD extra int;".into()
+                } else {
+                    "ALTER TABLE it_ddl ADD COLUMN extra int;".into()
+                },
                 "ALTER TABLE it_ddl DROP COLUMN no_such_column;".into(),
             ],
         );
@@ -1490,6 +1658,22 @@ async fn database_stats_per_server() {
     assert_eq!(ten.objects, Some(2));
     redis.execute("FLUSHDB").await.unwrap();
 
+    let mssql = Connection::connect(&cfg(Driver::Mssql)).await.unwrap();
+    let stats = mssql.database_stats().await.unwrap();
+    let master = stats.iter().find(|stats| stats.name == "master").unwrap();
+    assert!(master.size_bytes.unwrap() > 0, "{stats:?}");
+    mssql.execute("drop table if exists it_estimate; create table it_estimate (id int primary key); insert into it_estimate values (1), (2)").await.unwrap();
+    let estimates = mssql.approx_row_counts().await.unwrap();
+    assert!(
+        estimates
+            .iter()
+            .any(|(schema, name, rows)| name == "it_estimate"
+                && *rows == 2
+                && schema.as_deref() == Some("dbo")),
+        "{estimates:?}"
+    );
+    mssql.execute("drop table it_estimate").await.unwrap();
+
     let mongo = Connection::connect(&cfg(Driver::Mongo)).await.unwrap();
     mongo
         .execute("db.stats_probe.insertOne({a: 1})")
@@ -1515,6 +1699,7 @@ async fn binary_scenario(driver: Driver) {
     let c = Connection::connect(&cfg(driver)).await.unwrap();
     let blob = match driver {
         Driver::Postgres => "bytea",
+        Driver::Mssql => "varbinary(max)",
         _ => "blob",
     };
     c.execute(&format!(
@@ -1558,6 +1743,13 @@ async fn mysql_binary() {
     }
 }
 
+#[tokio::test]
+async fn mssql_binary() {
+    if it_enabled() {
+        binary_scenario(Driver::Mssql).await;
+    }
+}
+
 /// Stored routines list as functions and open as their definition.
 async fn routine_scenario(driver: Driver) {
     let c = Connection::connect(&cfg(driver)).await.unwrap();
@@ -1565,6 +1757,7 @@ async fn routine_scenario(driver: Driver) {
         Driver::Postgres => {
             "create or replace function it_double(n int) returns int language sql as 'select n * 2'"
         }
+        Driver::Mssql => "create function it_double(@n int) returns int as begin return @n * 2 end",
         _ => "create function it_double(n int) returns int deterministic return n * 2",
     };
     c.execute("drop function if exists it_double").await.ok();
@@ -1599,6 +1792,13 @@ async fn mysql_routines() {
 }
 
 #[tokio::test]
+async fn mssql_routines() {
+    if it_enabled() {
+        routine_scenario(Driver::Mssql).await;
+    }
+}
+
+#[tokio::test]
 async fn sqlite_ddl() {
     ddl_scenario(Driver::Sqlite).await;
 }
@@ -1614,6 +1814,13 @@ async fn postgres_ddl() {
 async fn mysql_ddl() {
     if it_enabled() {
         ddl_scenario(Driver::MySql).await;
+    }
+}
+
+#[tokio::test]
+async fn mssql_ddl() {
+    if it_enabled() {
+        ddl_scenario(Driver::Mssql).await;
     }
 }
 
@@ -1865,6 +2072,36 @@ async fn mysql_object_ops() {
 }
 
 #[tokio::test]
+async fn mssql_object_ops() {
+    if it_enabled() {
+        object_ops(Driver::Mssql).await;
+    }
+}
+
+#[tokio::test]
+async fn mssql_create_drop_database() {
+    if !it_enabled() {
+        return;
+    }
+    let mut c = Connection::connect(&cfg(Driver::Mssql)).await.unwrap();
+    let name = format!("_tabula_db_{}", &Uuid::new_v4().simple().to_string()[..8]);
+    c.create_database(&name).await.unwrap();
+    assert!(c.databases().await.unwrap().contains(&name));
+    assert!(
+        c.drop_database("master").await.is_err(),
+        "not the current one"
+    );
+    // Switching opens a new pool on that database.
+    c.use_database(&name).await.unwrap();
+    assert_eq!(c.current_database(), name);
+    let r = c.execute("select db_name()").await.unwrap();
+    assert_eq!(r[0].rows[0][0].as_deref(), Some(name.as_str()));
+    c.use_database("master").await.unwrap();
+    c.drop_database(&name).await.unwrap();
+    assert!(!c.databases().await.unwrap().contains(&name));
+}
+
+#[tokio::test]
 async fn postgres_create_drop_database() {
     if !it_enabled() {
         return;
@@ -1888,6 +2125,7 @@ async fn unreachable_server_says_why() {
     for d in [
         Driver::Postgres,
         Driver::MySql,
+        Driver::Mssql,
         Driver::Redis,
         Driver::Mongo,
     ] {
@@ -1978,6 +2216,7 @@ async fn server_versions() {
             Driver::Sqlite,
             Driver::Postgres,
             Driver::MySql,
+            Driver::Mssql,
             Driver::Redis,
             Driver::Mongo,
         ]

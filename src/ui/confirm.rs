@@ -19,6 +19,7 @@ use gpui_component::{ActiveTheme as _, Icon, Sizable as _, WindowExt as _, h_fle
 use gpui_kit_assets::IconName;
 
 use super::theme::{dp, env_color, env_short, tokens};
+use crate::db::split::statements;
 use crate::db::{ConnectionConfig, EnvTag, SafeMode};
 
 const SNOOZE: Duration = Duration::from_secs(10 * 60);
@@ -109,8 +110,7 @@ impl ConfirmWrite {
         cx: &mut App,
         go: Rc<dyn Fn(&mut Window, &mut App)>,
     ) {
-        let backslashes = cfg.driver == crate::db::Driver::MySql;
-        let statements = crate::db::split::split_statements(&sql, backslashes);
+        let statements = statements(cfg.driver, &sql);
         let view = cx.new(|cx| Self {
             cfg: cfg.clone(),
             what: what.to_string(),

@@ -4,13 +4,20 @@
 
 use super::Driver;
 
-/// bytea, blob and its sizes, binary, varbinary.
+/// bytea, blob and its sizes, binary, varbinary, SQL Server's image.
 pub fn is_binary_type(data_type: &str) -> bool {
     let lower = data_type.trim().to_ascii_lowercase();
     let base = lower.split(['(', ' ']).next().unwrap_or_default();
     matches!(
         base,
-        "bytea" | "blob" | "tinyblob" | "mediumblob" | "longblob" | "binary" | "varbinary"
+        "bytea"
+            | "blob"
+            | "tinyblob"
+            | "mediumblob"
+            | "longblob"
+            | "binary"
+            | "varbinary"
+            | "image"
     )
 }
 

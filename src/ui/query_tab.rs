@@ -32,7 +32,8 @@ use super::row_panel;
 use super::theme::{dp, kbd, tokens};
 use super::{DisabledWhen as _, QueryHistory, RunQuery, Shared, SwitchDatabase, saved_changed};
 use crate::db::explain::{self, PlanNode};
-use crate::db::split::{split_statements, statement_at};
+use crate::db::format::format_sql;
+use crate::db::split::{go_batches, separator, statement_at, statements};
 use crate::db::suggest::{Unknown, closest, replace_word, unknown_name};
 use crate::db::target::with_limit;
 use crate::db::{BatchFailed, Cancel, ColumnInfo, DbObject, Driver, ObjectKind, QueryResult};
@@ -126,6 +127,31 @@ fn map_columns(
         .map(|c| pks.contains(&c.as_str()))
         .collect();
     Ok((editable, pk))
+}
+
+/// The SQL engines: statements, limits, formatting and editable results.
+fn is_sql(driver: Driver) -> bool {
+    !matches!(driver, Driver::Redis | Driver::Mongo)
+}
+
+/// Engines whose plans the plan view reads. SQL Server's come as SHOWPLAN
+/// XML, which it doesn't read yet.
+fn explains(driver: Driver) -> bool {
+    matches!(driver, Driver::Postgres | Driver::MySql | Driver::Sqlite)
+}
+
+/// ⌘⇧F for `driver`: T-SQL batch by batch, so each `GO` stays on its own
+/// line.
+fn format_for(driver: Driver, text: &str) -> String {
+    match driver {
+        Driver::Mssql => go_batches(text)
+            .iter()
+            .filter(|batch| !batch.trim().is_empty())
+            .map(|batch| format_sql(batch, false))
+            .collect::<Vec<_>>()
+            .join("\nGO\n"),
+        _ => format_sql(text, driver == Driver::MySql),
+    }
 }
 
 fn placeholder(d: Driver) -> &'static str {
@@ -254,9 +280,9 @@ impl QueryTab {
         let sel = e.selected_value();
         let text = if !sel.trim().is_empty() {
             sel.to_string()
-        } else if matches!(driver, Driver::Postgres | Driver::MySql | Driver::Sqlite) {
+        } else if is_sql(driver) {
             let all = e.value().to_string();
-            statement_at(&all, e.cursor(), driver == Driver::MySql).unwrap_or(all)
+            statement_at(&all, e.cursor(), driver).unwrap_or(all)
         } else {
             // Redis and MongoDB: the editor as written.
             e.value().to_string()
@@ -312,7 +338,7 @@ impl QueryTab {
             return;
         }
         let driver = self.shared.cfg.driver;
-        if !matches!(driver, Driver::Postgres | Driver::MySql | Driver::Sqlite) {
+        if !explains(driver) {
             window.push_notification("EXPLAIN is available for Postgres, MySQL and SQLite", cx);
             return;
         }
@@ -323,7 +349,7 @@ impl QueryTab {
         } else {
             sel
         };
-        let stmts = crate::db::split::split_statements(&text, driver == Driver::MySql);
+        let stmts = statements(driver, &text);
         let Some(stmt) = stmts.into_iter().find(|s| !s.trim().is_empty()) else {
             return;
         };
@@ -691,20 +717,19 @@ impl QueryTab {
         self.mark_failed(None, cx);
         cx.notify();
         let driver = self.shared.cfg.driver;
-        let stmts = match driver {
-            Driver::Postgres | Driver::MySql | Driver::Sqlite => {
-                split_statements(&text, driver == Driver::MySql)
-            }
-            _ => vec![],
+        let stmts = if is_sql(driver) {
+            statements(driver, &text)
+        } else {
+            vec![]
         };
         // The toolbar limit: added to plain SELECTs that have none. History
         // keeps the text as typed.
         let to_run = match self.limit {
             Some(n) if !stmts.is_empty() => stmts
                 .iter()
-                .map(|s| with_limit(s, n).unwrap_or_else(|| s.clone()))
+                .map(|s| with_limit(s, n, driver).unwrap_or_else(|| s.clone()))
                 .collect::<Vec<_>>()
-                .join(";\n"),
+                .join(separator(driver)),
             _ => text.clone(),
         };
         let conn = self.shared.conn.clone();
@@ -895,17 +920,17 @@ impl QueryTab {
         if matches!(self.shared.cfg.driver, Driver::Redis | Driver::Mongo) {
             return;
         }
-        let mysql = self.shared.cfg.driver == Driver::MySql;
+        let driver = self.shared.cfg.driver;
         self.editor.update(cx, |e, cx| {
             let sel = e.selected_value().to_string();
             if sel.trim().is_empty() {
                 let all = e.value().to_string();
-                let f = crate::db::format::format_sql(&all, mysql);
+                let f = format_for(driver, &all);
                 if f != all {
                     e.replace_all(f, window, cx);
                 }
             } else {
-                e.replace(crate::db::format::format_sql(&sel, mysql), window, cx);
+                e.replace(format_for(driver, &sel), window, cx);
             }
         });
     }
@@ -983,7 +1008,7 @@ impl QueryTab {
         let full = self.editor.read(cx).value().to_string();
         let range = index.and_then(|i| {
             let base = full.find(&self.last_run)?;
-            let stmts = split_statements(&self.last_run, driver == Driver::MySql);
+            let stmts = statements(driver, &self.last_run);
             let mut from = 0;
             let mut found = None;
             for (n, stmt) in stmts.iter().enumerate() {
@@ -1049,9 +1074,7 @@ impl QueryTab {
         self.target = None;
         self.edit_note = None;
         let driver = self.shared.cfg.driver;
-        if res.columns.is_empty()
-            || !matches!(driver, Driver::Postgres | Driver::MySql | Driver::Sqlite)
-        {
+        if res.columns.is_empty() || !is_sql(driver) {
             return;
         }
         let Some((schema, name)) = crate::db::target::single_table(&res.statement, driver) else {
@@ -1808,7 +1831,7 @@ impl Render for QueryTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = tokens(cx);
         let driver = self.shared.cfg.driver;
-        let sql = matches!(driver, Driver::Postgres | Driver::MySql | Driver::Sqlite);
+        let sql = is_sql(driver);
         // A label with its shortcut after it, faint (design.md, Shortcut hint).
         let hinted = |label: &str, keys: &str| {
             h_flex()
@@ -1864,7 +1887,7 @@ impl Render for QueryTab {
                     .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
             )
             .child(sep())
-            .when(sql, |d| {
+            .when(explains(driver), |d| {
                 d.child(
                     Button::new("explain")
                         .cursor_pointer()
@@ -1876,7 +1899,9 @@ impl Render for QueryTab {
                             cx.listener(|this, _, window, cx| this.explain(false, window, cx)),
                         ),
                 )
-                .child(
+            })
+            .when(sql, |d| {
+                d.child(
                     Button::new("format")
                         .cursor_pointer()
                         .child(hinted("Format", "⌘⇧F"))
@@ -1942,7 +1967,11 @@ impl Render for QueryTab {
                         .outline()
                         .small()
                         .dropdown_caret(true)
-                        .tooltip("Adds LIMIT to SELECTs that have none")
+                        .tooltip(if driver == Driver::Mssql {
+                            "Adds TOP to SELECTs that have none"
+                        } else {
+                            "Adds LIMIT to SELECTs that have none"
+                        })
                         .dropdown_menu(move |menu, _, _| {
                             LIMITS.iter().fold(menu, |menu, &choice| {
                                 let me = me.clone();

@@ -2,7 +2,7 @@
 name = "tabula"
 version = "0.1.0"
 edition = "2024"
-description = "Database client for PostgreSQL, MySQL, SQLite, Redis and MongoDB"
+description = "Database client for PostgreSQL, MySQL, SQL Server, SQLite, Redis and MongoDB"
 
 [dependencies]
 anyhow = "1.0.104"
@@ -35,7 +35,9 @@ russh = { version = "0.65", default-features = false, features = ["ring", "rsa",
 rmcp = { version = "3.9", features = ["server", "macros", "transport-streamable-http-server"] }
 axum = "0.8"
 schemars = "1.2.3"
-tokio-util = "0.7.20"
+tokio-util = { version = "0.7.20", features = ["compat"] }
+# SQL Server (sqlx dropped its MSSQL driver). rustls, like the other drivers.
+tiberius = { version = "0.13", default-features = false, features = ["tds80", "rustls", "chrono"] }
 
 [dev-dependencies]
 # The MCP tests talk to the server over HTTP like an AI tool does.

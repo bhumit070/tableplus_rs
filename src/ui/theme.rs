@@ -284,13 +284,14 @@ pub fn redis_type_color(kind: &str, t: &Tokens) -> Hsla {
 }
 
 /// An engine's badge colour (design.md, screen 03): Postgres blue, MySQL
-/// orange, SQLite teal, Redis red, MongoDB green.
+/// orange, SQL Server violet, SQLite teal, Redis red, MongoDB green.
 pub fn engine_color(driver: Driver, cx: &App) -> Hsla {
     let t = tokens(cx);
     match driver {
         Driver::Postgres => t.info,
         Driver::MySql if cx.theme().mode.is_dark() => rgb(0xF29D4B).into(),
         Driver::MySql => rgb(0xC2762B).into(),
+        Driver::Mssql => t.keyword,
         Driver::Sqlite => t.number,
         Driver::Redis => t.danger,
         Driver::Mongo => t.success,
@@ -302,6 +303,7 @@ pub fn engine_initials(driver: Driver) -> &'static str {
     match driver {
         Driver::Postgres => "PG",
         Driver::MySql => "MY",
+        Driver::Mssql => "MS",
         Driver::Sqlite => "SQ",
         Driver::Redis => "RD",
         Driver::Mongo => "MG",

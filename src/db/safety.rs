@@ -1,7 +1,7 @@
 //! Production safe mode: decides whether editor text only reads data, so it
 //! can run without a confirmation prompt. When unsure, it says "writes".
 
-use super::split::split_statements;
+use super::split::statements;
 use super::{ConnectionConfig, Driver, SafeMode};
 
 /// What to do before running something.
@@ -39,9 +39,13 @@ pub fn is_read_only(driver: Driver, text: &str) -> bool {
     match driver {
         Driver::Redis => redis_read_only(text),
         Driver::Mongo => mongo_read_only(text),
+        Driver::Mssql => {
+            let stmts = statements(driver, text);
+            !stmts.is_empty() && stmts.iter().all(|s| mssql_read_only(s))
+        }
         _ => {
             let mysql = driver == Driver::MySql;
-            let stmts = split_statements(text, mysql);
+            let stmts = statements(driver, text);
             !stmts.is_empty() && stmts.iter().all(|s| sql_read_only(s, mysql))
         }
     }
@@ -134,6 +138,47 @@ fn sql_read_only(stmt: &str, backslash_escapes: bool) -> bool {
         "pragma" => !stmt.contains('='),
         _ => false,
     }
+}
+
+/// Words that make a T-SQL statement write, or do something else than
+/// read: `EXEC` can run anything, `NEXT VALUE FOR` advances a sequence.
+const MSSQL_NOT_READING: &[&str] = &[
+    "into",
+    "exec",
+    "execute",
+    "set",
+    "use",
+    "grant",
+    "revoke",
+    "deny",
+    "backup",
+    "restore",
+    "dbcc",
+    "kill",
+    "shutdown",
+    "reconfigure",
+    "bulk",
+    "openrowset",
+    "opendatasource",
+    "openquery",
+    "next",
+    "begin",
+    "commit",
+    "rollback",
+    "save",
+    "writetext",
+    "updatetext",
+];
+
+/// T-SQL needs no `;` between statements, so `select 1 delete from t` is
+/// one "statement": every word counts, not only the first.
+fn mssql_read_only(stmt: &str) -> bool {
+    let w = words(stmt, false);
+    let Some(first) = w.first() else { return true };
+    matches!(first.as_str(), "select" | "with")
+        && !w.iter().any(|word| {
+            DATA_CHANGING.contains(&word.as_str()) || MSSQL_NOT_READING.contains(&word.as_str())
+        })
 }
 
 const REDIS_READS: &[&str] = &[
@@ -293,6 +338,24 @@ mod tests {
         assert_eq!(gate_query(&c, read), Gate::Run);
         assert!(matches!(gate_query(&c, write), Gate::Block(_)));
         assert!(matches!(gate_write(&c), Gate::Block(_)));
+    }
+
+    #[test]
+    fn tsql_reads_need_every_word_to_read() {
+        let ms = Driver::Mssql;
+        assert!(ro(
+            ms,
+            "select top 10 * from dbo.users where name like 'a%'"
+        ));
+        assert!(ro(
+            ms,
+            "with x as (select 1 as a) select a from x\nGO\nselect 2"
+        ));
+        assert!(!ro(ms, "select 1 delete from users"), "no `;` needed");
+        assert!(!ro(ms, "select * into copy from users"));
+        assert!(!ro(ms, "exec sp_who"));
+        assert!(!ro(ms, "declare @n int = 1; select @n"));
+        assert!(!ro(ms, "select next value for seq"));
     }
 
     #[test]

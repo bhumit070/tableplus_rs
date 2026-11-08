@@ -28,6 +28,7 @@ use anyhow::{Error, anyhow};
 use redis::RedisError;
 use serde_json::from_str;
 use sqlx::{Error as SqlxError, MySqlConnection, PgConnection, query, raw_sql};
+use tiberius::error::Error as TdsError;
 use tokio::{select, time::timeout};
 
 enum Pool {
@@ -62,7 +63,7 @@ fn my_ssl_mode(cfg: &ConnectionConfig) -> MySqlSslMode {
 }
 
 /// How long a server may take to accept a connection.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Opens (and closes) one connection, so failures carry the server's own
 /// reason — refused, bad password, unknown database, TLS — with the address.
@@ -93,9 +94,15 @@ pub(super) fn explain_lost(e: Error) -> Error {
             e,
             SqlxError::PoolTimedOut | SqlxError::PoolClosed | SqlxError::Io(_)
         )
-    }) || e.downcast_ref::<RedisError>().is_some_and(|e| {
-        e.is_timeout() || e.is_io_error() || e.is_connection_dropped() || e.is_connection_refusal()
-    });
+    }) || e
+        .downcast_ref::<TdsError>()
+        .is_some_and(|e| matches!(e, TdsError::Io { .. }))
+        || e.downcast_ref::<RedisError>().is_some_and(|e| {
+            e.is_timeout()
+                || e.is_io_error()
+                || e.is_connection_dropped()
+                || e.is_connection_refusal()
+        });
     if lost {
         e.context(format!(
             "{LOST_CONNECTION} (it may be down or unreachable). Try again or reconnect"
@@ -206,7 +213,7 @@ fn balanced(s: &str) -> Option<&str> {
 }
 
 /// Strips whole-expression parentheses: "((a))" → "a".
-fn unwrap_parens(mut s: &str) -> &str {
+pub(super) fn unwrap_parens(mut s: &str) -> &str {
     loop {
         let t = s.trim();
         match balanced(t) {
@@ -304,9 +311,13 @@ fn literals(s: &str) -> Option<Vec<String>> {
     (!out.is_empty()).then_some(out)
 }
 
-/// One `col IN (…)` or `col = ANY (ARRAY[…])` and nothing else.
+/// One `col IN (…)` or `col = ANY (ARRAY[…])` and nothing else. SQL
+/// Server stores `IN (…)` as `([col]='a' OR [col]='b')`, read here too.
 fn in_list(expr: &str) -> Option<(String, Vec<String>)> {
     let expr = unwrap_parens(expr);
+    if split_top(expr, " or ").is_some() {
+        return or_list(expr);
+    }
     if let Some((lhs, rhs)) = split_top(expr, " in ") {
         let rhs = rhs.trim();
         let inner = balanced(rhs).filter(|i| i.len() + 2 == rhs.len())?;
@@ -318,6 +329,29 @@ fn in_list(expr: &str) -> Option<(String, Vec<String>)> {
     let open = lower.find("array[")? + "array[".len();
     let close = rhs.rfind(']')?;
     Some((column_name(lhs)?, literals(&rhs[open..close])?))
+}
+
+/// `a = 'x' OR a = 'y' OR …`, all on the same column.
+fn or_list(expr: &str) -> Option<(String, Vec<String>)> {
+    let (mut column, mut values) = (None::<String>, vec![]);
+    let mut rest = expr;
+    loop {
+        let (part, more) = match split_top(rest, " or ") {
+            Some((part, more)) => (part, Some(more)),
+            None => (rest, None),
+        };
+        let (lhs, rhs) = split_top(unwrap_parens(part), "=")?;
+        let name = column_name(lhs)?;
+        if column.get_or_insert_with(|| name.clone()) != &name {
+            return None;
+        }
+        values.extend(literals(unwrap_parens(rhs))?);
+        match more {
+            Some(more) => rest = more,
+            None => break,
+        }
+    }
+    Some((column?, values))
 }
 
 fn pg_row(row: &PgRow) -> Vec<Option<String>> {
@@ -431,16 +465,16 @@ macro_rules! run_raw {
 
 /// What a batch of editor statements did to its connection.
 #[derive(Default, Debug, PartialEq)]
-struct SessionEffects {
+pub(super) struct SessionEffects {
     /// A transaction was started and not yet ended.
     tx_open: bool,
     /// Session state changed (SET, USE, temp tables…), so the connection
     /// must not go back to the shared pool.
-    dirty: bool,
+    pub(super) dirty: bool,
 }
 
 impl SessionEffects {
-    fn observe(&mut self, stmt: &str) {
+    pub(super) fn observe(&mut self, stmt: &str) {
         let lower = stmt.to_ascii_lowercase();
         let words: Vec<&str> = lower.split_whitespace().take(3).collect();
         match words.as_slice() {
@@ -2004,6 +2038,13 @@ mod tests {
             check_in_lists(pg_varchar),
             [("state".to_string(), vec!["a".into(), "b".into()])]
         );
+        // SQL Server keeps IN (…) as a chain of ORs.
+        let mssql = "CONSTRAINT [ck_status] CHECK (([status]=N'pending' OR [status]='it''s'))";
+        assert_eq!(
+            check_in_lists(mssql),
+            [("status".to_string(), vec!["pending".into(), "it's".into()])]
+        );
+        assert!(check_in_lists("CHECK (([a]='x' OR [b]='y'))").is_empty());
         // Anything more than a plain list isn't an enum.
         assert!(check_in_lists("CHECK (status in ('a') or x > 1)").is_empty());
         assert!(check_in_lists("CHECK (lower(status) in ('a'))").is_empty());

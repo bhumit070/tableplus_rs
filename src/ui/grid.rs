@@ -83,6 +83,8 @@ fn kind_of_type(ty: &str) -> Option<Kind> {
         }
         "bool" | "boolean" => Kind::Bool,
         "tinyint" | "bit" if t.ends_with("(1)") => Kind::Bool,
+        // SQL Server's bit has no width.
+        "bit" if t == "bit" => Kind::Bool,
         "json" | "jsonb" => Kind::Json,
         "int" | "int2" | "int4" | "int8" | "integer" | "smallint" | "bigint" | "tinyint"
         | "mediumint" | "serial" | "bigserial" | "smallserial" | "numeric" | "decimal" | "real"

@@ -41,6 +41,9 @@ fn int_range(ty: &str) -> Option<(i128, i128)> {
     let unsigned = t.contains("unsigned");
     let b = base(ty);
     let bits = match b.as_str() {
+        // SQL Server's tinyint is 0–255, MySQL's -128–127 unless unsigned:
+        // without the driver here, a bare tinyint takes both.
+        "tinyint" if t == "tinyint" => return Some((-128, 255)),
         "tinyint" if !t.ends_with("(1)") => 8,
         "smallint" | "int2" | "smallserial" => 16,
         "mediumint" => 24,

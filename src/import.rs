@@ -48,6 +48,7 @@ fn driver(name: &str) -> Option<Driver> {
     match name.to_ascii_lowercase().as_str() {
         "postgresql" | "postgres" | "redshift" | "cockroachdb" => Some(Driver::Postgres),
         "mysql" | "mariadb" => Some(Driver::MySql),
+        "sqlserver" | "mssql" | "microsoft sql server" => Some(Driver::Mssql),
         "sqlite" | "libsql" => Some(Driver::Sqlite),
         "redis" => Some(Driver::Redis),
         "mongodb" | "mongo" => Some(Driver::Mongo),
@@ -318,10 +319,12 @@ mod tests {
                     "ServerAddress": "bastion.example.test", "ServerPort": "2222",
                     "ServerUser": "ops", "ServerPassword": "tunnel-pw", "isUsePrivateKey": 0})
             ),
-            conn("SQLServer", json!({})),
+            conn("SQLServer", json!({"DatabasePort": "1433"})),
+            conn("Cassandra", json!({})),
         ]);
         let r = parse(file.to_string().as_bytes(), None, &[]).unwrap();
-        assert_eq!(r.added.len(), 3);
+        assert_eq!(r.added.len(), 4);
+        assert_eq!((r.added[3].driver, r.added[3].port), (Driver::Mssql, 1433));
         let pg = &r.added[0];
         assert_eq!(
             (pg.driver, pg.port, pg.tag, pg.ssl),
@@ -342,7 +345,7 @@ mod tests {
         assert_eq!(ssh.secret, "tunnel-pw");
         assert!(r.ssh_key.is_empty());
         assert!(r.added[0].ssh.is_none());
-        assert_eq!(r.unsupported, vec!["SQLServer"]);
+        assert_eq!(r.unsupported, vec!["Cassandra"]);
         // The SSH password counts too, and failures are per connection.
         assert!(r.summary().contains("2 with passwords saved"));
         let r = ImportReport {

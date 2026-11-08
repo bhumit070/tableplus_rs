@@ -71,6 +71,7 @@ impl TableEditor {
 pub(super) fn default_type(d: Driver) -> &'static str {
     match d {
         Driver::MySql => "varchar(255)",
+        Driver::Mssql => "nvarchar(255)",
         _ => "text",
     }
 }
@@ -118,10 +119,10 @@ impl TableEditor {
     fn apply_start(&mut self, start: Start, window: &mut Window, cx: &mut Context<Self>) {
         self.start = start;
         let driver = self.shared.cfg.driver;
-        let int = if driver == Driver::Postgres {
-            "bigint"
-        } else {
-            "integer"
+        let int = match driver {
+            Driver::Postgres => "bigint",
+            Driver::Mssql => "int",
+            _ => "integer",
         };
         let id = ColDef {
             name: "id".into(),
@@ -134,6 +135,7 @@ impl TableEditor {
         let (stamp, now) = match driver {
             Driver::Postgres => ("timestamptz", "now()"),
             Driver::MySql => ("datetime", "CURRENT_TIMESTAMP"),
+            Driver::Mssql => ("datetime2", "sysdatetime()"),
             _ => ("text", "CURRENT_TIMESTAMP"),
         };
         let stamp = |name: &str| ColDef {
@@ -447,6 +449,18 @@ pub(super) fn common_types(driver: Driver) -> &'static [&'static str] {
             "datetime",
             "date",
             "json",
+        ],
+        Driver::Mssql => &[
+            "int",
+            "bigint",
+            "nvarchar(255)",
+            "nvarchar(max)",
+            "bit",
+            "decimal(12,2)",
+            "datetime2",
+            "date",
+            "uniqueidentifier",
+            "varbinary(max)",
         ],
         _ => &["integer", "text", "real", "numeric", "blob"],
     }

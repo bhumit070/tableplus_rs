@@ -158,6 +158,7 @@ impl Processes {
             (Show::All, _) => true,
             (Show::Active, Driver::Postgres) => state == "active",
             (Show::Active, Driver::MySql) => command != "Sleep",
+            (Show::Active, Driver::Mssql) => state != "sleeping",
             (Show::IdleInTransaction, Driver::Postgres) => state.starts_with("idle in transaction"),
             _ => true,
         }
@@ -388,14 +389,15 @@ impl Render for Processes {
         let shown = self.grid.read(cx).delegate().rows.len();
         let total = self.all.rows.len();
         let me = cx.entity();
-        // Postgres knows "idle in transaction"; MySQL only busy or asleep.
+        // Postgres knows "idle in transaction"; MySQL and SQL Server only
+        // busy or asleep.
         let filters: &[(Show, &str)] = match driver {
             Driver::Postgres => &[
                 (Show::Active, "Active"),
                 (Show::IdleInTransaction, "Idle in tx"),
                 (Show::All, "All"),
             ],
-            Driver::MySql => &[(Show::Active, "Active"), (Show::All, "All")],
+            Driver::MySql | Driver::Mssql => &[(Show::Active, "Active"), (Show::All, "All")],
             _ => &[],
         };
         let filter_index = filters

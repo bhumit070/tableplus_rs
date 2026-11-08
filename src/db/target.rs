@@ -185,8 +185,9 @@ pub fn single_table(stmt: &str, driver: Driver) -> Option<(Option<String>, Strin
 
 /// `stmt` with `LIMIT n` added, when it's a plain SELECT (or WITH … SELECT)
 /// that doesn't already limit itself; `None` leaves it alone. The limit
-/// goes on its own line, so a trailing `-- comment` can't swallow it.
-pub fn with_limit(stmt: &str, n: usize) -> Option<String> {
+/// goes on its own line, so a trailing `-- comment` can't swallow it. SQL
+/// Server has no LIMIT: there it's `SELECT TOP (n)`, on plain SELECTs only.
+pub fn with_limit(stmt: &str, n: usize, driver: Driver) -> Option<String> {
     let toks = top_level_tokens(stmt);
     let first = toks.iter().find(|t| matches!(t, Tok::Word(_)))?;
     let reads =
@@ -199,8 +200,48 @@ pub fn with_limit(stmt: &str, n: usize) -> Option<String> {
     if !reads || limited {
         return None;
     }
+    if driver == Driver::Mssql {
+        let at = after_select(stmt)?;
+        return Some(format!("{} TOP ({n}){}", &stmt[..at], &stmt[at..]));
+    }
     let body = stmt.trim_end().trim_end_matches(';').trim_end();
     Some(format!("{body}\nLIMIT {n}"))
+}
+
+/// The byte offset just past a leading `SELECT [DISTINCT | ALL]`, after
+/// any comments; `None` when the statement doesn't start with SELECT.
+fn after_select(stmt: &str) -> Option<usize> {
+    let mut rest = stmt;
+    loop {
+        let trimmed = rest.trim_start();
+        if let Some(line) = trimmed.strip_prefix("--") {
+            rest = line.split_once('\n').map_or("", |(_, after)| after);
+        } else if let Some(block) = trimmed.strip_prefix("/*") {
+            rest = block.split_once("*/").map_or("", |(_, after)| after);
+        } else {
+            rest = trimmed;
+            break;
+        }
+    }
+    let word_at = |text: &str, word: &str| {
+        text.get(..word.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(word))
+            && !text[word.len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    };
+    if !word_at(rest, "select") {
+        return None;
+    }
+    let mut at = stmt.len() - rest.len() + "select".len();
+    let next = stmt[at..].trim_start();
+    for word in ["distinct", "all"] {
+        if word_at(next, word) {
+            at = stmt.len() - next.len() + word.len();
+        }
+    }
+    Some(at)
 }
 
 #[cfg(test)]
@@ -273,16 +314,23 @@ mod tests {
     #[test]
     fn adds_a_limit_only_where_it_fits() {
         assert_eq!(
-            with_limit("select * from t;", 100).as_deref(),
+            with_limit("select * from t;", 100, Driver::Postgres).as_deref(),
             Some("select * from t\nLIMIT 100")
         );
         assert_eq!(
-            with_limit("SELECT a FROM t -- note", 5).as_deref(),
+            with_limit("SELECT a FROM t -- note", 5, Driver::Postgres).as_deref(),
             Some("SELECT a FROM t -- note\nLIMIT 5")
         );
-        assert!(with_limit("with x as (select 1) select * from x", 5).is_some());
+        assert!(with_limit("with x as (select 1) select * from x", 5, Driver::Postgres).is_some());
         // A limit inside a subquery doesn't count.
-        assert!(with_limit("select * from (select * from t limit 3) s", 5).is_some());
+        assert!(
+            with_limit(
+                "select * from (select * from t limit 3) s",
+                5,
+                Driver::Postgres
+            )
+            .is_some()
+        );
         for sql in [
             "select * from t limit 10",
             "select * from t offset 5",
@@ -293,7 +341,29 @@ mod tests {
             "with x as (select 1) delete from t",
             "insert into t select * from u",
         ] {
-            assert_eq!(with_limit(sql, 5), None, "{sql}");
+            assert_eq!(with_limit(sql, 5, Driver::Postgres), None, "{sql}");
         }
+    }
+
+    #[test]
+    fn sql_server_gets_top() {
+        let ms = Driver::Mssql;
+        assert_eq!(
+            with_limit("-- note\nselect * from t", 5, ms).as_deref(),
+            Some("-- note\nselect TOP (5) * from t")
+        );
+        assert_eq!(
+            with_limit("SELECT DISTINCT a FROM t", 5, ms).as_deref(),
+            Some("SELECT DISTINCT TOP (5) a FROM t")
+        );
+        assert_eq!(with_limit("select top 3 * from t", 5, ms), None);
+        assert_eq!(
+            with_limit("with x as (select 1 a) select a from x", 5, ms),
+            None
+        );
+        assert_eq!(
+            single_table("select top (10) * from [dbo].[Users] u", ms),
+            Some((Some("dbo".into()), "Users".into()))
+        );
     }
 }

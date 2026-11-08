@@ -649,7 +649,18 @@ impl Render for ConnForm {
             .gap(dp(16.))
             .child(dialog::section(
                 "Engine",
-                h_flex().gap(dp(8.)).children(engines),
+                // Two rows of three: six names don't fit on one line.
+                {
+                    let mut engines = engines.into_iter();
+                    let mut rows = v_flex().gap(dp(8.));
+                    loop {
+                        let row: Vec<AnyElement> = engines.by_ref().take(3).collect();
+                        if row.is_empty() {
+                            break rows;
+                        }
+                        rows = rows.child(h_flex().gap(dp(8.)).children(row));
+                    }
+                },
                 cx,
             ))
             .child(
@@ -762,7 +773,11 @@ impl Render for ConnForm {
                                 })),
                         )
                         .when(
-                            self.ssl && matches!(driver, Driver::Postgres | Driver::MySql),
+                            self.ssl
+                                && matches!(
+                                    driver,
+                                    Driver::Postgres | Driver::MySql | Driver::Mssql
+                                ),
                             |f| {
                                 f.child(
                                     Checkbox::new("ssl-verify")

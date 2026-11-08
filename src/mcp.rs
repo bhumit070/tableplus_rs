@@ -194,7 +194,7 @@ struct ObjectArgs {
     database: Option<String>,
     /// Table, view, collection or function name ("keys" for Redis).
     object: String,
-    /// Schema (Postgres), when the name is in more than one.
+    /// Schema (Postgres, SQL Server), when the name is in more than one.
     #[serde(default)]
     schema: Option<String>,
 }
@@ -817,7 +817,7 @@ impl ServerHandler for Tabula {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("tabula", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Tabula's saved database connections (PostgreSQL, MySQL, SQLite, Redis, MongoDB). \
+                "Tabula's saved database connections (PostgreSQL, MySQL, SQL Server, SQLite, Redis, MongoDB). \
                  Start with list_connections, then list_objects / describe_object / read_rows. \
                  Writes follow each connection's safe mode and may wait for the user to confirm in Tabula.",
             )

@@ -1,4 +1,4 @@
-//! Database layer: one `Connection` enum that hides the five drivers behind a
+//! Database layer: one `Connection` enum that hides the six drivers behind a
 //! common, string-based API the UI can render directly.
 
 pub mod backup;
@@ -10,6 +10,7 @@ pub mod format;
 #[cfg(test)]
 mod it;
 mod mongo;
+mod mssql;
 pub mod redis_key;
 mod redis_kv;
 pub mod safety;
@@ -69,15 +70,18 @@ impl Connection {
 pub enum Driver {
     Postgres,
     MySql,
+    /// Microsoft SQL Server (and Azure SQL), via tiberius.
+    Mssql,
     Sqlite,
     Redis,
     Mongo,
 }
 
 impl Driver {
-    pub const ALL: [Driver; 5] = [
+    pub const ALL: [Driver; 6] = [
         Driver::Postgres,
         Driver::MySql,
+        Driver::Mssql,
         Driver::Sqlite,
         Driver::Redis,
         Driver::Mongo,
@@ -87,6 +91,7 @@ impl Driver {
         match self {
             Driver::Postgres => "PostgreSQL",
             Driver::MySql => "MySQL / MariaDB",
+            Driver::Mssql => "SQL Server",
             Driver::Sqlite => "SQLite",
             Driver::Redis => "Redis",
             Driver::Mongo => "MongoDB",
@@ -97,6 +102,7 @@ impl Driver {
         match self {
             Driver::Postgres => "Pg",
             Driver::MySql => "My",
+            Driver::Mssql => "Ms",
             Driver::Sqlite => "Lt",
             Driver::Redis => "Rd",
             Driver::Mongo => "Mg",
@@ -107,6 +113,7 @@ impl Driver {
         match self {
             Driver::Postgres => 5432,
             Driver::MySql => 3306,
+            Driver::Mssql => 1433,
             Driver::Sqlite => 0,
             Driver::Redis => 6379,
             Driver::Mongo => 27017,
@@ -289,7 +296,7 @@ pub struct DbObject {
 impl DbObject {
     pub fn title(&self) -> String {
         match &self.schema {
-            Some(s) if s != "public" && s != "main" => format!("{s}.{}", self.name),
+            Some(s) if s != "public" && s != "main" && s != "dbo" => format!("{s}.{}", self.name),
             _ => self.name.clone(),
         }
     }
@@ -421,7 +428,16 @@ impl FilterKind {
             FilterKind::Number
         } else if has(&["date", "time", "year"]) {
             FilterKind::Date
-        } else if has(&["char", "text", "string", "uuid", "citext", "enum", "clob"]) || t.is_empty()
+        } else if has(&[
+            "char",
+            "text",
+            "string",
+            "uuid",
+            "citext",
+            "enum",
+            "clob",
+            "uniqueidentifier",
+        ]) || t.is_empty()
         {
             FilterKind::Text
         } else {
@@ -489,7 +505,8 @@ impl FilterOp {
             }
             FilterKind::Text => {
                 ops.extend([Contains, NotContains, StartsWith, EndsWith, Like]);
-                if driver != Driver::Sqlite {
+                // SQLite and SQL Server (before 2025) have no regex operator.
+                if !matches!(driver, Driver::Sqlite | Driver::Mssql) {
                     ops.push(Regex);
                 }
             }
@@ -553,6 +570,7 @@ pub enum Change {
 
 enum Conn {
     Sql(sql::SqlConn),
+    Mssql(mssql::MssqlConn),
     Redis(redis_kv::RedisConn),
     Mongo(mongo::MongoConn),
 }
@@ -584,6 +602,7 @@ impl Connection {
             Driver::Postgres | Driver::MySql | Driver::Sqlite => {
                 Conn::Sql(sql::SqlConn::connect(cfg).await?)
             }
+            Driver::Mssql => Conn::Mssql(Box::pin(mssql::MssqlConn::connect(cfg)).await?),
             Driver::Redis => Conn::Redis(redis_kv::RedisConn::connect(cfg).await?),
             Driver::Mongo => Conn::Mongo(mongo::MongoConn::connect(cfg).await?),
         };
@@ -605,6 +624,7 @@ impl Connection {
         let text = match driver {
             Driver::Postgres => "show server_version",
             Driver::MySql => "select version()",
+            Driver::Mssql => "select cast(serverproperty('ProductVersion') as nvarchar(128))",
             Driver::Sqlite => "select sqlite_version()",
             Driver::Redis => "INFO server",
             Driver::Mongo => "{\"buildInfo\": 1}",
@@ -638,6 +658,7 @@ impl Connection {
         self.bounded("Listing tables", async {
             match &self.inner {
                 Conn::Sql(c) => c.list_objects().await,
+                Conn::Mssql(c) => Box::pin(c.list_objects()).await,
                 Conn::Redis(c) => c.list_objects().await,
                 Conn::Mongo(c) => c.list_objects().await,
             }
@@ -651,6 +672,7 @@ impl Connection {
         self.bounded("Loading column names", async {
             match &self.inner {
                 Conn::Sql(c) => c.all_columns().await,
+                Conn::Mssql(c) => Box::pin(c.all_columns()).await,
                 Conn::Redis(_) | Conn::Mongo(_) => Ok(vec![]),
             }
         })
@@ -678,6 +700,7 @@ impl Connection {
         self.bounded("Listing databases", async {
             match &self.inner {
                 Conn::Sql(c) => c.databases().await,
+                Conn::Mssql(c) => Box::pin(c.databases()).await,
                 Conn::Redis(c) => c.databases().await,
                 Conn::Mongo(c) => c.databases().await,
             }
@@ -692,6 +715,7 @@ impl Connection {
         self.bounded("Reading row estimates", async {
             match &self.inner {
                 Conn::Sql(c) => c.approx_row_counts().await,
+                Conn::Mssql(c) => Box::pin(c.approx_row_counts()).await,
                 Conn::Redis(_) => Ok(vec![]),
                 Conn::Mongo(c) => c.approx_row_counts().await,
             }
@@ -704,6 +728,7 @@ impl Connection {
         self.bounded("Reading the definition", async {
             match &self.inner {
                 Conn::Sql(c) => c.routine_definition(obj).await,
+                Conn::Mssql(c) => Box::pin(c.routine_definition(obj)).await,
                 _ => bail!("only SQL servers have stored routines"),
             }
         })
@@ -716,6 +741,7 @@ impl Connection {
         self.bounded("Reading database sizes", async {
             match &self.inner {
                 Conn::Sql(c) => c.database_stats().await,
+                Conn::Mssql(c) => Box::pin(c.database_stats()).await,
                 Conn::Redis(c) => c.database_stats().await,
                 Conn::Mongo(c) => c.database_stats().await,
             }
@@ -727,6 +753,7 @@ impl Connection {
     pub async fn use_database(&mut self, name: &str) -> Result<()> {
         match &mut self.inner {
             Conn::Sql(c) => c.use_database(name).await,
+            Conn::Mssql(c) => Box::pin(c.use_database(name)).await,
             Conn::Redis(c) => c.use_database(name).await,
             Conn::Mongo(c) => c.use_database(name),
         }
@@ -735,6 +762,7 @@ impl Connection {
     pub fn current_database(&self) -> String {
         match &self.inner {
             Conn::Sql(c) => c.current_database(),
+            Conn::Mssql(c) => c.current_database(),
             Conn::Redis(c) => c.current_database(),
             Conn::Mongo(c) => c.current_database(),
         }
@@ -744,6 +772,7 @@ impl Connection {
         self.bounded("Loading the structure", async {
             match &self.inner {
                 Conn::Sql(c) => c.structure(obj).await,
+                Conn::Mssql(c) => Box::pin(c.structure(obj)).await,
                 Conn::Redis(c) => c.structure(obj),
                 Conn::Mongo(c) => c.structure(obj).await,
             }
@@ -770,6 +799,13 @@ impl Connection {
                 )
                 .await
             }
+            Conn::Mssql(c) => {
+                self.bounded(
+                    "Looking up rows",
+                    Box::pin(c.fk_matches(obj, key, labels, text, limit)),
+                )
+                .await
+            }
             _ => Ok(vec![]),
         }
     }
@@ -780,6 +816,7 @@ impl Connection {
             .bounded("Loading rows", async {
                 Ok(match &self.inner {
                     Conn::Sql(c) => c.fetch_table(q).await?,
+                    Conn::Mssql(c) => Box::pin(c.fetch_table(q)).await?,
                     Conn::Redis(c) => c.fetch_table(q).await?,
                     Conn::Mongo(c) => c.fetch_table(q).await?,
                 })
@@ -804,6 +841,7 @@ impl Connection {
         let run = async {
             match &self.inner {
                 Conn::Sql(c) => c.execute(text, cancel).await,
+                Conn::Mssql(c) => Box::pin(c.execute(text, cancel)).await,
                 Conn::Redis(c) => c.execute(text).await,
                 Conn::Mongo(c) => c.execute(text).await,
             }
@@ -819,6 +857,7 @@ impl Connection {
     pub fn preview(&self, obj: &DbObject, columns: &[ColumnInfo], changes: &[Change]) -> String {
         match &self.inner {
             Conn::Sql(c) => c.preview(obj, columns, changes),
+            Conn::Mssql(c) => c.preview(obj, columns, changes),
             Conn::Redis(_) => redis_kv::preview(changes),
             Conn::Mongo(_) => mongo::preview(obj, changes),
         }
@@ -829,6 +868,7 @@ impl Connection {
     pub fn filter_preview(&self, q: &TableQuery) -> Option<String> {
         match &self.inner {
             Conn::Sql(c) => Some(c.where_preview(q)).filter(|w| !w.is_empty()),
+            Conn::Mssql(c) => Some(c.where_preview(q)).filter(|w| !w.is_empty()),
             _ => None,
         }
     }
@@ -842,6 +882,7 @@ impl Connection {
     ) -> Result<()> {
         match &self.inner {
             Conn::Sql(c) => c.commit(obj, columns, changes).await,
+            Conn::Mssql(c) => Box::pin(c.commit(obj, columns, changes)).await,
             Conn::Redis(c) => c.commit(changes).await,
             Conn::Mongo(c) => c.commit(obj, changes).await,
         }
@@ -900,6 +941,7 @@ impl Connection {
         self.bounded("Listing processes", async {
             match &self.inner {
                 Conn::Sql(c) => c.processes().await,
+                Conn::Mssql(c) => Box::pin(c.processes()).await,
                 Conn::Redis(c) => c.processes().await,
                 Conn::Mongo(_) => bail!("not available for MongoDB yet"),
             }
@@ -915,6 +957,8 @@ impl Connection {
             (Driver::Postgres, true) => format!("select pg_terminate_backend({id})"),
             (Driver::MySql, false) => format!("kill query {id}"),
             (Driver::MySql, true) => format!("kill {id}"),
+            // SQL Server can only end the whole session.
+            (Driver::Mssql, _) => format!("kill {id}"),
             (Driver::Redis, _) => format!("CLIENT KILL ID {id}"),
             _ => String::new(),
         }
@@ -923,6 +967,7 @@ impl Connection {
     pub async fn kill(&self, id: &str, whole: bool) -> Result<()> {
         match &self.inner {
             Conn::Sql(c) => c.kill(id, whole).await,
+            Conn::Mssql(c) => Box::pin(c.kill(id)).await,
             Conn::Redis(c) => c.kill(id).await,
             Conn::Mongo(_) => bail!("not available for MongoDB yet"),
         }
@@ -931,42 +976,57 @@ impl Connection {
     pub async fn drop_object(&self, obj: &DbObject) -> Result<()> {
         match &self.inner {
             Conn::Sql(c) => c.drop_object(obj).await,
+            Conn::Mssql(c) => Box::pin(c.drop_object(obj)).await,
             Conn::Redis(_) => bail!("not supported for Redis"),
             Conn::Mongo(c) => c.drop_object(obj).await,
         }
     }
 
-    fn sql(&self) -> Result<&sql::SqlConn> {
+    pub async fn create_database(&self, name: &str) -> Result<()> {
         match &self.inner {
-            Conn::Sql(c) => Ok(c),
+            Conn::Sql(c) => c.create_database(name).await,
+            Conn::Mssql(c) => Box::pin(c.create_database(name)).await,
             _ => bail!("available for SQL databases only"),
         }
     }
 
-    pub async fn create_database(&self, name: &str) -> Result<()> {
-        self.sql()?.create_database(name).await
-    }
-
     pub async fn drop_database(&self, name: &str) -> Result<()> {
-        self.sql()?.drop_database(name).await
+        match &self.inner {
+            Conn::Sql(c) => c.drop_database(name).await,
+            Conn::Mssql(c) => Box::pin(c.drop_database(name)).await,
+            _ => bail!("available for SQL databases only"),
+        }
     }
 
     pub async fn rename_object(&self, obj: &DbObject, new_name: &str) -> Result<()> {
-        self.sql()?.rename_object(obj, new_name).await
+        match &self.inner {
+            Conn::Sql(c) => c.rename_object(obj, new_name).await,
+            Conn::Mssql(c) => Box::pin(c.rename_object(obj, new_name)).await,
+            _ => bail!("available for SQL databases only"),
+        }
     }
 
     pub async fn duplicate_table(&self, obj: &DbObject, new_name: &str, data: bool) -> Result<()> {
-        self.sql()?.duplicate_table(obj, new_name, data).await
+        match &self.inner {
+            Conn::Sql(c) => c.duplicate_table(obj, new_name, data).await,
+            Conn::Mssql(c) => Box::pin(c.duplicate_table(obj, new_name, data)).await,
+            _ => bail!("available for SQL databases only"),
+        }
     }
 
     /// Returns what was done, for the notification.
     pub async fn maintain(&self, obj: &DbObject) -> Result<String> {
-        self.sql()?.maintain(obj).await
+        match &self.inner {
+            Conn::Sql(c) => c.maintain(obj).await,
+            Conn::Mssql(c) => Box::pin(c.maintain(obj)).await,
+            _ => bail!("available for SQL databases only"),
+        }
     }
 
     pub async fn truncate(&self, obj: &DbObject) -> Result<()> {
         match &self.inner {
             Conn::Sql(c) => c.truncate(obj).await,
+            Conn::Mssql(c) => Box::pin(c.truncate(obj)).await,
             Conn::Redis(_) => bail!("not supported for Redis"),
             Conn::Mongo(c) => c.truncate(obj).await,
         }
@@ -975,6 +1035,7 @@ impl Connection {
     pub async fn close(&self) {
         match &self.inner {
             Conn::Sql(c) => c.close().await,
+            Conn::Mssql(c) => Box::pin(c.close()).await,
             Conn::Redis(_) | Conn::Mongo(_) => {}
         }
     }
