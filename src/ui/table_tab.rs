@@ -11,7 +11,7 @@ use gpui::{
     ParentElement, Render, Styled, Subscription, Window, div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{EditorState, Input, InputEvent, InputState};
 use gpui_component::menu::DropdownMenu as _;
 use gpui_component::menu::PopupMenuItem;
 use gpui_component::notification::Notification;
@@ -32,6 +32,7 @@ use super::grid::{Grid, data_table};
 use super::index_editor::confirm_drop as confirm_drop_index;
 use super::index_editor::{IndexDialog, render_list as render_index_list};
 use super::loading;
+use super::mongo_views::{DocView, json_editor, page_json, render_documents, render_json};
 use super::redis_key_view::RedisKeyView;
 use super::row_panel;
 use super::structure_editor::StructureEditor;
@@ -86,6 +87,10 @@ pub struct TableTab {
     columns_editor: Option<Entity<StructureEditor>>,
     /// Redis: the selected key's editor, beside the key list.
     redis_key: Option<Entity<RedisKeyView>>,
+    /// MongoDB: Documents (cards), Table or JSON.
+    doc_view: DocView,
+    /// The JSON view's editor and the text it was made from.
+    json_view: Option<(Entity<EditorState>, String)>,
     struct_cols: Entity<TableState<Grid>>,
     struct_idx: Entity<TableState<Grid>>,
     struct_fks: Entity<TableState<Grid>>,
@@ -299,6 +304,8 @@ impl TableTab {
             structure: None,
             columns_editor: None,
             redis_key: None,
+            doc_view: DocView::default(),
+            json_view: None,
             struct_cols,
             struct_idx,
             struct_fks,
@@ -351,6 +358,23 @@ impl TableTab {
             .zip(key_column)
             .and_then(|(row, column)| grid.cell_string(row, column));
         view.update(cx, |view, cx| view.show_key(key, window, cx));
+    }
+
+    #[cfg(test)]
+    pub fn set_doc_view_for_test(&mut self, view: DocView, cx: &mut Context<Self>) {
+        self.show_structure = false;
+        self.doc_view = view;
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub fn doc_view(&self) -> DocView {
+        self.doc_view
+    }
+
+    #[cfg(test)]
+    pub fn page_json_for_test(&self, cx: &App) -> String {
+        page_json(self.table.read(cx).delegate())
     }
 
     #[cfg(test)]
@@ -2129,9 +2153,25 @@ impl TableTab {
                     .bg(t.surface)
                     .border_1()
                     .border_color(t.border)
-                    .child(self.segment("view-data", "Data", data, cx, |t| {
-                        t.show_structure = false;
-                    }))
+                    .map(|group| {
+                        if self.shared.cfg.driver != Driver::Mongo {
+                            return group.child(self.segment("view-data", "Data", data, cx, |t| {
+                                t.show_structure = false;
+                            }));
+                        }
+                        let views = [
+                            ("view-documents", "Documents", DocView::Documents),
+                            ("view-table", "Table", DocView::Table),
+                            ("view-json", "JSON", DocView::Json),
+                        ];
+                        views.into_iter().fold(group, |group, (id, label, view)| {
+                            let active = data && self.doc_view == view;
+                            group.child(self.segment(id, label, active, cx, move |t| {
+                                t.show_structure = false;
+                                t.doc_view = view;
+                            }))
+                        })
+                    })
                     .child(
                         self.segment("view-structure", "Structure", structure, cx, |t| {
                             t.show_structure = true;
@@ -2538,7 +2578,21 @@ impl Render for TableTab {
                 .into_any_element()
         } else {
             let grid = cell_edit::editable(data_table(&self.table, cx), cx);
-            if let Some(key_view) = self.redis_key.clone() {
+            let mongo = self.shared.cfg.driver == Driver::Mongo;
+            if mongo && self.doc_view == DocView::Documents {
+                render_documents(&self.table.clone(), cx)
+            } else if mongo && self.doc_view == DocView::Json {
+                let text = page_json(self.table.read(cx).delegate());
+                let stale = self
+                    .json_view
+                    .as_ref()
+                    .is_none_or(|(_, shown)| *shown != text);
+                if stale {
+                    self.json_view = Some((json_editor(text.clone(), window, cx), text));
+                }
+                let (editor, _) = self.json_view.as_ref().expect("just made");
+                render_json(editor)
+            } else if let Some(key_view) = self.redis_key.clone() {
                 let t = tokens(cx);
                 h_flex()
                     .size_full()

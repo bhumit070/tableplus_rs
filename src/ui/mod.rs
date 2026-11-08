@@ -12,6 +12,7 @@ pub mod history_view;
 pub mod home;
 pub mod index_editor;
 pub mod loading;
+pub mod mongo_views;
 pub mod onboarding;
 pub mod passwords;
 pub mod picker;

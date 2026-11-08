@@ -1173,6 +1173,7 @@ mod tests {
     use super::*;
     use crate::db::{ConnectionConfig, Driver, EnvTag};
     use crate::settings::{Appearance, Settings};
+    use crate::ui::mongo_views::DocView;
     use crate::ui::onboarding::Step;
     use chrono::NaiveTime;
     use futures::executor::block_on;
@@ -2293,6 +2294,77 @@ mod tests {
         block_on(crate::runtime::spawn(async move {
             let c = crate::db::Connection::connect(&cfg).await?;
             c.execute("FLUSHDB").await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+    }
+
+    /// A MongoDB collection opens on Documents; JSON shows the page with
+    /// staged edits; ⌘S saves them. Needs the MongoDB container (TABULA_IT=1).
+    #[gpui::test]
+    fn mongo_document_views(cx: &mut TestAppContext) {
+        if std::env::var("TABULA_IT").is_err() {
+            return;
+        }
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Mongo);
+        cfg.port = 57017;
+        cfg.database = "tabula_ui_docs".into();
+        let setup = cfg.clone();
+        block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute("db.orders.drop()").await.ok();
+            c.execute(r#"db.orders.insertMany([{_id: 1, status: "paid", items: {count: 2}}])"#)
+                .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| {
+            a.connect(cfg.clone(), w, cx, |_, _, _| {})
+        });
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "collections", |cx| {
+            session.read_with(cx, |s, _| s.object_index("orders").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let index = s.object_index("orders").unwrap();
+            s.open_object(index, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "documents", |cx| {
+            tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 1 && !t.is_loading(cx))
+        });
+        assert_eq!(tab.read_with(&cx, |t, _| t.doc_view()), DocView::Documents);
+        cx.run_until_parked();
+        let status = tab.read_with(&cx, |t, _| {
+            t.column_names().iter().position(|c| c == "status").unwrap()
+        });
+        tab.update_in(&mut cx, |t, _, cx| {
+            t.stage_cell(0, status, "shipped", cx);
+            t.set_doc_view_for_test(DocView::Json, cx);
+        });
+        cx.run_until_parked();
+        let json = tab.read_with(&cx, |t, cx| t.page_json_for_test(cx));
+        assert!(json.contains("\"status\": \"shipped\""), "{json}");
+        assert!(
+            json.contains("\"count\": 2"),
+            "nested objects stay objects: {json}"
+        );
+        tab.update_in(&mut cx, |t, w, cx| t.commit(&Commit, w, cx));
+        wait_until(&mut cx, "saved", |cx| {
+            tab.read_with(cx, |t, cx| {
+                !t.is_dirty(cx) && !t.is_loading(cx) && t.page_json_for_test(cx).contains("shipped")
+            })
+        });
+        block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&cfg).await?;
+            c.execute("db.dropDatabase()").await.ok();
             c.close().await;
             Ok(())
         }))

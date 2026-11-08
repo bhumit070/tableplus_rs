@@ -130,8 +130,12 @@ actually involved.
   entries read only. Edits stage with the grid's colours; *Preview* shows
   the commands and *Save* runs them in one `MULTI`. Big keys show their
   first 500 elements.
-- **MongoDB:** collections shown as tables, with columns from the union of
-  top-level fields.
+- **MongoDB:** three views of a collection, switched in the toolbar:
+  **Documents** (the default; one card per document, nested objects and
+  arrays shown formatted; click a value to edit it), **Table** (columns
+  from the union of top-level fields) and **JSON** (the page as raw JSON,
+  numbers and booleans kept). Edits made in any view stage together and
+  save as `$set` by `_id`.
 
 ## Query editor
 

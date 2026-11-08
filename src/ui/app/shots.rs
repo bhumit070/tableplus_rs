@@ -16,6 +16,7 @@ use gpui_component::{Root, Theme, ThemeMode};
 use super::*;
 use crate::db::{ConnectionConfig, Driver};
 use crate::settings::Settings;
+use crate::ui::mongo_views::DocView;
 use crate::ui::onboarding::Step;
 use crate::ui::passwords::gate_always;
 use chrono::Utc;
@@ -570,7 +571,61 @@ fn screenshots() {
     // Redis needs its container (TABULA_IT=1).
     if std::env::var("TABULA_IT").is_ok() {
         redis_shots(&mut s);
+        mongo_shots(&mut s);
     }
+}
+
+/// 20: documents as cards (one edit staged), and the page as JSON.
+fn mongo_shots(s: &mut Shots) {
+    let mut cfg = ConnectionConfig::new(Driver::Mongo);
+    cfg.name = "catalog".into();
+    cfg.port = 57017;
+    cfg.database = "tabula_shots".into();
+    let setup = cfg.clone();
+    block_on(crate::runtime::spawn(async move {
+        let c = crate::db::Connection::connect(&setup).await?;
+        c.execute("db.orders.drop()").await.ok();
+        c.execute(
+            r#"db.orders.insertMany([
+              {_id: 10356, customer: {name: "Priya Raman", email: "priya@example.com"}, status: "paid", total: 129.0, items: [{sku: "KB-01", qty: 1}, {sku: "MS-02", qty: 2}], created: "2026-11-01T10:00:00Z"},
+              {_id: 10357, customer: {name: "Marcus Lee", email: "marcus@example.com"}, status: "pending", total: 48.5, items: [{sku: "CB-07", qty: 3}], created: "2026-11-02T11:30:00Z"},
+              {_id: 10358, customer: {name: "Ana Souza", email: "ana@example.com"}, status: "shipped", total: 312.75, items: [{sku: "MN-27", qty: 1}], created: "2026-11-03T09:15:00Z", note: "gift wrap"}
+            ])"#,
+        )
+        .await?;
+        c.close().await;
+        Ok(())
+    }))
+    .expect("the MongoDB container is up");
+    let app = s.app.clone();
+    s.in_window(|w, cx| app.update(cx, |a, cx| a.connect(cfg, w, cx, |_, _, _| {})));
+    s.wait("mongo", |cx| {
+        app.read(cx)
+            .sessions
+            .last()
+            .is_some_and(|session| session.read(cx).object_index("orders").is_some())
+    });
+    let session =
+        s.cx.update(|cx| app.read(cx).sessions.last().unwrap().clone());
+    s.in_window(|w, cx| {
+        session.update(cx, |session, cx| {
+            let index = session.object_index("orders").unwrap();
+            session.open_object(index, w, cx)
+        })
+    });
+    let tab = s.cx.update(|cx| session.read(cx).active_table().unwrap());
+    s.wait("documents", |cx| {
+        tab.read(cx).loaded_rows(cx) == 3 && !tab.read(cx).is_loading(cx)
+    });
+    s.in_window(|_, cx| {
+        tab.update(cx, |t, cx| {
+            let status = t.column_names().iter().position(|c| c == "status").unwrap();
+            t.stage_cell(1, status, "paid", cx);
+        })
+    });
+    s.snap("20-mongo-documents");
+    s.in_window(|_, cx| tab.update(cx, |t, cx| t.set_doc_view_for_test(DocView::Json, cx)));
+    s.snap("20-mongo-json");
 }
 
 /// 19: a hash with staged edits, and a JSON string with a TTL.

@@ -114,6 +114,8 @@ time: **More info → Run anyway**.
 - **Admin:** process list with cancel / kill (⌘⇧P), backup / restore
   (`pg_dump` / `psql`, `mysqldump` / `mysql`, SQLite file copy), create /
   drop databases, rename / duplicate / vacuum tables.
+- **MongoDB:** Documents (cards), Table and JSON views of a collection;
+  edits in any of them save as `$set` by `_id`.
 - **Redis:** keys grouped by namespace (`user:*`) in the sidebar; the
   selected key opens in a typed editor (hash, list, set, zset, string,
   stream) with its TTL counting down, staged edits saved in one `MULTI`.

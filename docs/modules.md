@@ -64,6 +64,7 @@ also starts with a `//!` comment saying the same in more detail.
 | `row_panel.rs` | ~180 | Row detail panel (⌘⇧I). |
 | `table_editor.rs` | ~700 | New Table dialog: templates, type menu, live CREATE TABLE. |
 | `index_editor.rs` | ~550 | Structure › Indexes: the index list with its right-click menu, and the + Index dialog. |
+| `mongo_views.rs` | ~230 | MongoDB's Documents (cards) and JSON views, read from the grid so staged edits show everywhere. |
 | `redis_key_view.rs` | ~800 | The Redis key editor beside the key list: header with TTL countdown, Rename, Delete; typed item editors; staged Save. |
 | `structure_editor.rs` | ~690 | Structure › Columns edited in place: staged column changes, Preview DDL / Discard / Apply. |
 | `processes.rs` | ~240 | Process list (⌘⇧P). |

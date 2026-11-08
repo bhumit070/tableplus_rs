@@ -560,6 +560,27 @@ pub fn move_edit<H: CellEditHost>(
     start_edit(host, nr, nc, EditStart::Keep, window, cx);
 }
 
+/// Edits a cell in the JSON / long-text dialog, whatever its text (the
+/// MongoDB document cards edit this way).
+pub fn edit_in_dialog<H: CellEditHost>(
+    host: &mut H,
+    r: usize,
+    c: usize,
+    window: &mut Window,
+    cx: &mut Context<H>,
+) {
+    finish_edit(host, window, cx);
+    let g = host.grid().read(cx).delegate();
+    if !g.can_edit(r, c) {
+        return;
+    }
+    let Some(current) = g.value(r, c).cloned() else {
+        return;
+    };
+    let column = g.columns.get(c).cloned().unwrap_or_default();
+    edit_multiline(host, r, c, column, current.unwrap_or_default(), window, cx);
+}
+
 fn edit_multiline<H: CellEditHost>(
     host: &mut H,
     r: usize,
