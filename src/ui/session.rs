@@ -864,11 +864,11 @@ impl Session {
     }
 
     #[cfg(test)]
-    #[cfg(test)]
     pub fn column_count(&self) -> usize {
         self.columns.len()
     }
 
+    #[cfg(test)]
     pub fn object_index(&self, name: &str) -> Option<usize> {
         self.objects.iter().position(|o| o.name == name)
     }
