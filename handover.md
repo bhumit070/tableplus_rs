@@ -143,6 +143,16 @@ Since that push (local, **not pushed**, ask first):
 | `8acf826` | 20 MongoDB find bar (`TableQuery.find`, JSON5 filter document) |
 | `18a152a` | 05 ⌘P scope chips (Tab cycles), columns and saved queries, prefixes `>` `#` `.`, ⌥↵ copies the qualified name |
 | `0937707` | Fix: `object_index` back to test-only |
+| `6bba6af` | 06 ⌘K sizes and counts per database (`Connection::database_stats`), filled in after the picker opens (`Picker::set_details`) |
+| `0323cda` | 19 Redis key types as coloured badges in the grid (`Kind::KeyType`, `theme::redis_type_color`) |
+| `1b015de` | 08 Foreign keys: list with Copy / Drop, + Foreign key dialog (`ui/foreign_key_editor.rs`); SQLite read-only |
+| `7b52ca1` | Rows referencing this: `Structure.referenced_by` (inbound keys, reversed); row menu submenu and row panel section |
+| `0072b09` | 02 Sidebar approximate row counts (`approx_row_counts`) and Saved queries section (`SavedChanged` global) |
+| `4322ba4` | Redis TTLs as durations in the grid (`Kind::Ttl`, `grid::duration`) |
+| `53e29db` | 16 Process list: state pills, >1 min red, lock waits amber (grid `tint` hook) |
+| `1dfe8a2` | 08 Column comments on Postgres / MySQL (ColumnInfo / ColDef `comment`) |
+| `0ea32b3` | `db::binary`: hex written as bytes on every engine; MySQL non-UTF-8 binary read as `0x…` |
+| `0275e9d` | 13 Binary cells: Save Value to File / Load File into Cell |
 
 Redis / MongoDB screenshots (19-redis-hash, 19-redis-string, 20-mongo-documents,
 20-mongo-json) only render with `TABULA_IT=1` and the containers up. Each
@@ -182,23 +192,20 @@ Key new files: `src/ui/theme.rs` (tokens, `dp`, pills, `kbd`, `caps`,
    result tabs with status dots, read-only reason badge, EXPLAIN tree with
    exclusive-cost bars (design answer #21), merged History / Saved dialog.
    Status bar: add Ln / Col.
-7. New features: done. Still open in their screens: database sizes and
-   table counts in the switcher (06); the Redis sidebar key tree with
-   type badges (19; the keys grid + key editor cover editing); MongoDB
-   field autocomplete in the find bar and sort / projection chips (20);
-   ⌘↵ "open in new tab" in the palette (05); index right-click only (no
-   FK actions yet, 08); column comments (08). "Rows referencing this" in
-   the row panel needs inbound foreign keys; the process grid has no
-   per-type cell colours yet.
+7. New features: done. Still open: the Redis sidebar key tree (19; the
+   keys grid with type badges + key editor cover it); MongoDB field
+   autocomplete in the find bar and sort / projection chips (20); ⌘↵
+   "open in new tab" in the palette (05).
 8. States (22): done. Gap: the connection-lost state doesn't dim the
    grid (gpui's `opacity` and an absolute wash both fail to cover
    `DataTable` rows); the banner and status bar carry it instead.
 
-Smaller leftovers: array chip editor and binary save/load (cell editors #11,
-#13); sidebar approximate row counts and Saved queries / Functions sections;
-the 2px left bar on deleted / new rows is hidden under the row-header column;
-design.md "Review questions" decisions not yet applied (e.g. row panel
-overlay below 1440px, checkbox column dropped — already not present).
+Smaller leftovers: the array chip editor (cell editor #11; arrays edit as
+`{a,b}` text); the sidebar's Functions section; the 2px left bar on
+deleted / new rows is hidden under the row-header column; design.md
+"Review questions" decisions not yet applied (e.g. row panel overlay below
+1440px). The MySQL binary read treats binary-typed values that are valid
+UTF-8 as text (information_schema reports its text columns as binary).
 
 Keep docs in step: README.md, `docs/` (features, shortcuts, architecture/ui,
 modules, development). The docs site deploys on push.
