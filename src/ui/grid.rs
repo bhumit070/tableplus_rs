@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, Context, Entity, FontWeight, Hsla, IntoElement, ParentElement, Styled, Window,
-    div, prelude::*, px,
+    AnyElement, App, Context, Entity, FontWeight, Hsla, IntoElement, ParentElement, SharedString,
+    Styled, Window, div, prelude::*, px,
 };
 use gpui_component::input::Input;
 use gpui_component::menu::PopupMenu;
@@ -22,7 +22,7 @@ use gpui_kit_assets::IconName;
 use super::cell_edit::CellEditor;
 use super::cell_value::{Temporal, check, date_part, now_for, temporal, with_date};
 use super::loading;
-use super::theme::{Tokens, dp, enum_color, tokens};
+use super::theme::{Tokens, dp, enum_color, redis_type_color, tokens};
 use super::{CellDown, CellDownMore, CellUp, CellUpMore};
 use crate::db::{Change, ColumnInfo, QueryResult};
 use chrono::{Local, NaiveDate};
@@ -57,6 +57,8 @@ pub enum Kind {
     Array,
     /// Bytes: shown as their type and size, not as hex.
     Binary,
+    /// A Redis key's type: a pill in that type's colour.
+    KeyType,
 }
 
 /// The kind of a column from its database type; `None` when the type isn't
@@ -72,6 +74,7 @@ fn kind_of_type(ty: &str) -> Option<Kind> {
     let base = t.split(['(', ' ']).next().unwrap_or_default();
     Some(match base {
         "set" => Kind::Array,
+        "redis" => Kind::KeyType,
         "bytea" | "blob" | "tinyblob" | "mediumblob" | "longblob" | "binary" | "varbinary" => {
             Kind::Binary
         }
@@ -169,7 +172,7 @@ fn truthy(v: &str) -> Option<bool> {
 }
 
 /// A NULL / DEFAULT marker: never an empty-looking cell.
-fn marker(text: &'static str, fg: Hsla, bg: Hsla) -> Div {
+fn marker(text: impl Into<SharedString>, fg: Hsla, bg: Hsla) -> Div {
     div()
         .flex_none()
         .px(dp(5.))
@@ -181,7 +184,7 @@ fn marker(text: &'static str, fg: Hsla, bg: Hsla) -> Div {
         .text_color(fg)
         .text_size(dp(10.5))
         .font_weight(FontWeight::MEDIUM)
-        .child(text)
+        .child(text.into())
 }
 
 /// The pill an enum value is shown as: a coloured dot and the value.
@@ -1397,6 +1400,10 @@ impl TableDelegate for Grid {
                 .into_any_element(),
             Some(v) => match kind {
                 Kind::Enum => enum_pill(v, cx).into_any_element(),
+                Kind::KeyType => {
+                    let color = redis_type_color(v, &t);
+                    marker(v.to_uppercase(), color, color.opacity(0.14)).into_any_element()
+                }
                 Kind::Array => {
                     let items = array_items(v);
                     let more = items.len().saturating_sub(3);

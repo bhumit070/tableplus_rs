@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, EntityId, FontWeight, Hsla, IntoElement,
+    AnyElement, App, AppContext as _, Context, Entity, EntityId, FontWeight, IntoElement,
     ParentElement, Render, Styled, Subscription, Window, div, prelude::*, transparent_black,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
@@ -22,7 +22,7 @@ use gpui_kit_assets::IconName;
 use super::confirm::ConfirmWrite;
 use super::grid::human_size;
 use super::row_panel::pretty_json;
-use super::theme::{Tokens, dp, tokens};
+use super::theme::{dp, redis_type_color, tokens};
 use super::{Shared, prompt_text};
 use crate::db::redis_key::{KEY_ITEMS_CAP, KeyDetail, KeyEdit, preview};
 use crate::runtime;
@@ -67,19 +67,6 @@ pub struct RedisKeyView {
     saving: bool,
     on_changed: OnChanged,
     _subscriptions: Vec<Subscription>,
-}
-
-/// hash blue, string green, list amber, set violet, zset teal, stream red.
-pub fn type_colour(kind: &str, t: &Tokens) -> Hsla {
-    match kind {
-        "hash" => t.info,
-        "string" => t.success,
-        "list" => t.warning,
-        "set" => t.keyword,
-        "zset" => t.number,
-        "stream" => t.danger,
-        _ => t.text_muted,
-    }
 }
 
 /// "4m 12s", "2h 05m", "3d 4h".
@@ -603,7 +590,7 @@ impl RedisKeyView {
     fn render_header(&self, detail: &KeyDetail, cx: &mut Context<Self>) -> AnyElement {
         let t = tokens(cx);
         let mono = cx.theme().mono_font_family.clone();
-        let colour = type_colour(&detail.kind, &t);
+        let colour = redis_type_color(&detail.kind, &t);
         let unit = match detail.kind.as_str() {
             "string" => "chars",
             "hash" => "fields",

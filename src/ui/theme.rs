@@ -269,6 +269,20 @@ pub fn enum_color(value: &str, cx: &App) -> Hsla {
     palette[hash as usize % palette.len()]
 }
 
+/// A Redis key type's colour (design.md, screen 19): hash blue, string
+/// green, list amber, set violet, zset teal, stream red.
+pub fn redis_type_color(kind: &str, t: &Tokens) -> Hsla {
+    match kind {
+        "hash" => t.info,
+        "string" => t.success,
+        "list" => t.warning,
+        "set" => t.keyword,
+        "zset" => t.number,
+        "stream" => t.danger,
+        _ => t.text_muted,
+    }
+}
+
 /// An engine's badge colour (design.md, screen 03): Postgres blue, MySQL
 /// orange, SQLite teal, Redis red, MongoDB green.
 pub fn engine_color(driver: Driver, cx: &App) -> Hsla {

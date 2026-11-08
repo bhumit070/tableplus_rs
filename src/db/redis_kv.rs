@@ -346,7 +346,8 @@ impl RedisConn {
         Ok(Structure {
             columns: vec![
                 col("key", "string", true),
-                col("type", "string", false),
+                // Shown as a coloured badge (grid Kind::KeyType).
+                col("type", "redis type", false),
                 col("ttl", "integer", false),
                 col("value", "any", false),
             ],
