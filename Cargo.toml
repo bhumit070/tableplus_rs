@@ -20,7 +20,7 @@ rust_decimal = "1.43.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "sqlite", "chrono", "uuid", "json", "rust_decimal"] }
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "net"] }
 uuid = { version = "1.29.0", features = ["v4", "serde"] }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["font-kit", "runtime_shaders", "x11", "wayland"] }
 plist = "1.10.3"
@@ -32,8 +32,14 @@ sha1 = "0.11.0"
 sha2 = "0.11.1"
 lsp-types = "0.97"
 russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
+rmcp = { version = "3.9", features = ["server", "macros", "transport-streamable-http-server"] }
+axum = "0.8"
+schemars = "1.2.3"
+tokio-util = "0.7.20"
 
 [dev-dependencies]
+# The MCP tests talk to the server over HTTP like an AI tool does.
+rmcp = { version = "3.9", features = ["client", "transport-streamable-http-client-reqwest"] }
 csv = "1.4.0"
 rand = { version = "0.10", features = ["thread_rng"] }
 gpui = { package = "gpui-pre", version = "0.3.11", features = ["test-support"] }

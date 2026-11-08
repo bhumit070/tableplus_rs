@@ -206,6 +206,21 @@ fn delete(entry: &Entry) -> Result<()> {
     }
 }
 
+/// Keychain account for the MCP server's access token.
+const MCP_TOKEN: &str = "mcp-token";
+
+/// The MCP server's token, when one was saved.
+pub fn mcp_token() -> Result<Option<String>> {
+    if cfg!(test) {
+        return Ok(None);
+    }
+    Ok(Some(password(MCP_TOKEN)?).filter(|token| !token.is_empty()))
+}
+
+pub fn set_mcp_token(token: &str) -> Result<()> {
+    set_password(MCP_TOKEN, token)
+}
+
 /// Removes a deleted connection's secrets.
 pub fn delete_password(id: &str) -> Result<()> {
     if cfg!(test) {

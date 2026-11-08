@@ -22,12 +22,14 @@ use gpui_kit_assets::IconName;
 
 use super::dialog;
 use super::key_bindings;
+use super::mcp_service;
 use super::theme::{caps, dp, kbd, keychain_name, tokens};
 use crate::db::SafeMode;
+use crate::mcp;
 use crate::menus;
 use crate::settings::{self, Appearance, EDITOR_RANGE, PAGE_SIZES, Settings, UI_RANGE};
 use crate::ui::DisabledWhen as _;
-use gpui::{AsKeystroke, MenuItem, px};
+use gpui::{AsKeystroke, ClipboardItem, MenuItem, px};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
@@ -36,15 +38,17 @@ enum Section {
     Editor,
     DataGrid,
     SafeMode,
+    Mcp,
     Shortcuts,
 }
 
-const SECTIONS: [(Section, &str, IconName); 6] = [
+const SECTIONS: [(Section, &str, IconName); 7] = [
     (Section::General, "General", IconName::Settings),
     (Section::Appearance, "Appearance", IconName::Palette),
     (Section::Editor, "Editor", IconName::SquareCode),
     (Section::DataGrid, "Data grid", IconName::Table),
     (Section::SafeMode, "Safe mode", IconName::Shield),
+    (Section::Mcp, "MCP", IconName::Bot),
     (Section::Shortcuts, "Shortcuts", IconName::Keyboard),
 ];
 
@@ -77,6 +81,12 @@ impl SettingsView {
     }
 
     /// For screenshots: show the shortcut list.
+    #[cfg(test)]
+    pub fn show_mcp(&mut self, cx: &mut Context<Self>) {
+        self.section = Section::Mcp;
+        cx.notify();
+    }
+
     #[cfg(test)]
     pub fn show_shortcuts(&mut self, cx: &mut Context<Self>) {
         self.section = Section::Shortcuts;
@@ -309,8 +319,139 @@ impl SettingsView {
                         .child("Read-only: refuses writes; the server session is read-only where possible."),
                 )
                 .into_any_element(),
+            Section::Mcp => self.render_mcp(s, cx),
             Section::Shortcuts => self.render_shortcuts(window, cx),
         }
+    }
+
+    /// Settings › MCP: on / off, where it listens, and what to paste into
+    /// an AI tool.
+    fn render_mcp(&self, s: Settings, cx: &mut Context<Self>) -> AnyElement {
+        let t = tokens(cx);
+        let mono = cx.theme().mono_font_family.clone();
+        let state = mcp_service::state(cx);
+        let port = state.and_then(|state| state.port);
+        let token = state.and_then(|state| state.token.clone());
+        let error = state.and_then(|state| state.error.clone());
+        let starting = state.is_some_and(|state| state.starting);
+        let token_unsaved = state.is_some_and(|state| state.token_unsaved);
+        let status = match (s.mcp_enabled, port, &error) {
+            (false, _, _) => "Off".to_string(),
+            (true, _, Some(error)) => format!("Couldn't start: {error}"),
+            (true, Some(port), None) => format!("Running at {}", mcp::url(port)),
+            (true, None, None) if starting => "Starting…".to_string(),
+            (true, None, None) => "Not running".to_string(),
+        };
+        let copy_button = |id: &'static str, label: &'static str, text: Option<String>| {
+            Button::new(id)
+                .cursor_pointer()
+                .icon(IconName::Copy)
+                .label(label)
+                .outline()
+                .small()
+                .disabled_when(text.is_none())
+                .on_click(move |_, window, cx| {
+                    if let Some(text) = &text {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                        window.push_notification(format!("{label} copied"), cx);
+                    }
+                })
+        };
+        let ready = port.zip(token.clone());
+        let url = port.map(mcp::url);
+        let command = ready.as_ref().map(|(port, token)| {
+            format!(
+                "claude mcp add --transport http tabula {} --header \"Authorization: Bearer {token}\"",
+                mcp::url(*port)
+            )
+        });
+        let json_config = ready.as_ref().map(|(port, token)| {
+            format!(
+                "{{\n  \"mcpServers\": {{\n    \"tabula\": {{\n      \"type\": \"http\",\n      \"url\": \"{}\",\n      \"headers\": {{ \"Authorization\": \"Bearer {token}\" }}\n    }}\n  }}\n}}",
+                mcp::url(*port)
+            )
+        });
+        v_flex()
+            .gap(dp(16.))
+            .child(row(
+                "Run the MCP server",
+                "Lets AI tools (Claude Code, Cursor, …) use your saved connections: list and read tables, run queries, change rows.",
+                Checkbox::new("mcp-enabled")
+                    .cursor_pointer()
+                    .checked(s.mcp_enabled)
+                    .on_click(|on: &bool, window, cx| {
+                        let on = *on;
+                        settings::update(cx, |s| s.mcp_enabled = on);
+                        mcp_service::apply(window, cx);
+                    }),
+                cx,
+            ))
+            .child(
+                div()
+                    .debug_selector(|| "mcp-status".into())
+                    .font_family(mono.clone())
+                    .text_size(dp(12.))
+                    .text_color(if error.is_some() { t.danger } else { t.text_secondary })
+                    .child(status),
+            )
+            .when(s.mcp_enabled && port.is_some(), |section| {
+                section
+                    .child(
+                        h_flex()
+                            .gap(dp(8.))
+                            .flex_wrap()
+                            .child(copy_button("mcp-copy-url", "URL", url))
+                            .child(copy_button("mcp-copy-token", "Token", token))
+                            .child(copy_button("mcp-copy-command", "Claude Code command", command.clone()))
+                            .child(copy_button("mcp-copy-json", "JSON config", json_config))
+                            .child(
+                                Button::new("mcp-regenerate")
+                                    .cursor_pointer()
+                                    .icon(IconName::RefreshCw)
+                                    .label("Regenerate token")
+                                    .ghost()
+                                    .small()
+                                    .on_click(|_, window, cx| mcp_service::regenerate_token(window, cx)),
+                            ),
+                    )
+                    .when_some(command, |section, command| {
+                        // The token stays hidden on screen; Copy has it.
+                        let shown = command
+                            .split("Bearer ")
+                            .next()
+                            .map(|start| format!("{start}Bearer ••••••\""))
+                            .unwrap_or_default();
+                        section.child(
+                            div()
+                                .p(dp(10.))
+                                .rounded(dp(6.))
+                                .border_1()
+                                .border_color(t.border)
+                                .bg(t.canvas)
+                                .font_family(mono)
+                                .text_size(dp(11.5))
+                                .text_color(t.text_secondary)
+                                .child(shown),
+                        )
+                    })
+            })
+            .child(
+                v_flex()
+                    .gap(dp(6.))
+                    .text_size(dp(12.))
+                    .text_color(t.text_muted)
+                    .child("Listens on this computer only (127.0.0.1), and every request needs the token. Paste the URL and token, or the command, into your AI tool once.")
+                    .child("Writes follow each connection's safe mode: read-only refuses them, and confirm modes ask here before anything runs. Passwords are never sent.")
+                    .child("Anything the tool reads goes to its model provider: only enable this for connections you're happy to share that way.")
+                    .when(token_unsaved && s.mcp_enabled, |notes| {
+                        notes.child(
+                            div()
+                                .text_color(t.warning)
+                                .child("The token isn't saved (Save passwords is off): tools need the new one after Tabula restarts."),
+                        )
+                    }),
+            )
+            .into_any_element()
     }
 
     fn render_shortcuts(&self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -403,6 +544,8 @@ fn row(
         .child(
             v_flex()
                 .flex_1()
+                // Lets long notes wrap instead of pushing the control out.
+                .min_w_0()
                 .gap(dp(3.))
                 .child(
                     div()

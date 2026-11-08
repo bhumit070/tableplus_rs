@@ -1,11 +1,15 @@
 // A windowed app on Windows: no console window behind it.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+// macOS ld notes that debug builds' unwind table outgrew its compact
+// format (it falls back to the full one): informational, not a problem.
+#![allow(linker_messages)]
 
 mod csv_import;
 mod db;
 mod export;
 mod history;
 mod import;
+mod mcp;
 mod restore;
 mod rncryptor;
 mod runtime;

@@ -54,6 +54,10 @@ pub struct Settings {
     pub default_safe_mode: SafeMode,
     /// The row detail panel's width in pixels (dragged, 280–480).
     pub row_panel_width: f32,
+    /// Run the MCP server for AI tools (Settings › MCP).
+    pub mcp_enabled: bool,
+    /// The port it last ran on, tried first so tools' configs keep working.
+    pub mcp_port: u16,
 }
 
 impl Default for Settings {
@@ -71,6 +75,8 @@ impl Default for Settings {
             page_size: PAGE_SIZES[1],
             default_safe_mode: SafeMode::Auto,
             row_panel_width: 340.,
+            mcp_enabled: false,
+            mcp_port: 0,
         }
     }
 }

@@ -216,6 +216,22 @@ fn screenshots() {
     s.snap("21-settings");
     s.in_window(|_, cx| settings.update(cx, |v, cx| v.show_shortcuts(cx)));
     s.snap("21-settings-shortcuts");
+    // Settings › MCP, running.
+    s.in_window(|w, cx| {
+        crate::settings::update(cx, |settings| settings.mcp_enabled = true);
+        crate::ui::mcp_service::apply(w, cx);
+        settings.update(cx, |v, cx| v.show_mcp(cx));
+    });
+    s.wait("mcp server", |cx| {
+        crate::ui::mcp_service::state(cx)
+            .and_then(|state| state.port)
+            .is_some()
+    });
+    s.snap("21-settings-mcp");
+    s.in_window(|w, cx| {
+        crate::settings::update(cx, |settings| settings.mcp_enabled = false);
+        crate::ui::mcp_service::apply(w, cx);
+    });
     s.in_window(|w, cx| w.close_dialog(cx));
     let home = s.cx.update(|cx| s.app.read(cx).home.clone());
     s.in_window(|w, cx| home.update(cx, |h, cx| h.open_form(None, w, cx)));

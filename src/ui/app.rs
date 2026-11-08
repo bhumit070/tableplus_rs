@@ -23,6 +23,7 @@ use gpui_kit_assets::IconName;
 use tokio::sync::RwLock;
 
 use super::home::Home;
+use super::mcp_service;
 use super::onboarding::Onboarding;
 use super::picker::{OnPick, PickItem, Picker};
 use super::session::Session;
@@ -88,6 +89,8 @@ impl AppView {
         if settings::get(cx).restore_sessions && onboarding.is_none() && !cfg!(test) {
             cx.defer_in(window, |this, window, cx| this.offer_restore(window, cx));
         }
+        // The MCP server, when Settings › MCP has it on.
+        window.defer(cx, |window, cx| mcp_service::apply(window, cx));
         Self {
             home,
             sessions: Vec::new(),
@@ -2961,6 +2964,47 @@ mod tests {
         let saved = cx.update(|_, cx| crate::settings::get(cx).row_panel_width);
         assert!((395. ..=405.).contains(&saved), "saved width {saved}");
         let _ = remove_file(file);
+    }
+
+    /// Turning MCP on starts the server; a write it asks about opens the
+    /// usual confirmation, and confirming answers "yes" to the tool.
+    #[gpui::test]
+    fn mcp_server_starts_and_confirms(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let (_app, mut cx) = open(cx);
+        cx.update(|window, cx| {
+            crate::settings::update(cx, |settings| settings.mcp_enabled = true);
+            crate::ui::mcp_service::apply(window, cx);
+        });
+        wait_until(&mut cx, "server", |cx| {
+            cx.update(|_, cx| {
+                crate::ui::mcp_service::state(cx)
+                    .and_then(|state| state.port)
+                    .is_some()
+            })
+        });
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        cx.update(|window, cx| {
+            crate::ui::mcp_service::show_confirmation(
+                crate::mcp::ConfirmRequest {
+                    cfg: ConnectionConfig::new(Driver::Sqlite),
+                    what: "Run query".into(),
+                    statements: "delete from orders".into(),
+                    reply,
+                },
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert!(cx.update(|w, cx| w.has_active_dialog(cx)), "asks first");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(block_on(answer), Ok(true));
+        cx.update(|window, cx| {
+            crate::settings::update(cx, |settings| settings.mcp_enabled = false);
+            crate::ui::mcp_service::apply(window, cx);
+        });
     }
 
     /// A saved query shows in the sidebar as soon as it's saved.
