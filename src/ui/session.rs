@@ -1377,8 +1377,6 @@ impl Session {
         });
         super::table_editor::TableEditor::open(
             self.shared.clone(),
-            None,
-            vec![],
             self.schema.clone(),
             on_done,
             window,
@@ -1396,59 +1394,19 @@ impl Session {
         let on_done: super::table_editor::OnDone = Rc::new(move |window, cx| {
             me.update(cx, |s, cx| s.load_objects(window, cx)).ok();
         });
-        super::table_editor::TableEditor::open(
-            self.shared.clone(),
-            None,
-            vec![],
-            None,
-            on_done,
-            window,
-            cx,
-        )
+        super::table_editor::TableEditor::open(self.shared.clone(), None, on_done, window, cx)
     }
 
-    /// Edit Columns… from the sidebar: loads the columns, then opens the editor.
+    /// Edit Columns… from the sidebar: the table's tab, on Structure ›
+    /// Columns, where columns are edited in place.
     fn edit_columns(&mut self, obj: DbObject, window: &mut Window, cx: &mut Context<Self>) {
-        let conn = self.shared.conn.clone();
-        let o = obj.clone();
-        let task = runtime::spawn(async move { conn.read().await.structure(&o).await });
-        cx.spawn_in(window, async move |this, cx| {
-            let res = task.await;
-            this.update_in(cx, |s, window, cx| match res {
-                Ok(st) => {
-                    let me = cx.entity().downgrade();
-                    let o2 = obj.clone();
-                    let on_done: super::table_editor::OnDone = Rc::new(move |window, cx| {
-                        me.update(cx, |s, cx| s.reload_table_tabs(&o2, window, cx))
-                            .ok();
-                    });
-                    super::table_editor::TableEditor::open(
-                        s.shared.clone(),
-                        Some(obj),
-                        st.columns,
-                        None,
-                        on_done,
-                        window,
-                        cx,
-                    );
-                }
-                Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// After a structure change: open tabs of `obj` reload their columns.
-    fn reload_table_tabs(&mut self, obj: &DbObject, window: &mut Window, cx: &mut Context<Self>) {
-        for t in &self.tabs {
-            if let TabItem::Table(e) = t
-                && e.read(cx).object == *obj
-            {
-                e.update(cx, |t, cx| t.reload_structure(cx));
-            }
+        let Some(index) = self.objects.iter().position(|object| *object == obj) else {
+            return;
+        };
+        self.open_object(index, window, cx);
+        if let Some(TabItem::Table(tab)) = self.tabs.get(self.active) {
+            tab.update(cx, |tab, cx| tab.show_columns(cx));
         }
-        self.load_objects(window, cx);
     }
 
     fn confirm_destructive(

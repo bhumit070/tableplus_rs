@@ -1,8 +1,8 @@
-//! New table / Edit columns dialog (design.md screen 18): one row per
-//! column (name, type with a menu of common types, NULL, default, primary
-//! key) and the DDL it makes, live. A new table can start blank, with
-//! id + timestamps, or as a copy of another table's columns. Edits of an
-//! existing table become ALTER statements; nothing runs before Apply.
+//! New table dialog (design.md screen 18): one row per column (name, type
+//! with a menu of common types, NULL, default, primary key) and the
+//! CREATE TABLE it makes, live. A new table can start blank, with id +
+//! timestamps, or as a copy of another table's columns. Existing tables
+//! are edited in place (`structure_editor.rs`).
 
 use std::rc::Rc;
 
@@ -23,22 +23,18 @@ use gpui_kit_assets::IconName;
 
 use super::theme::{dp, tokens};
 use super::{SearchList, Shared, dialog, search_list};
-use crate::db::ddl::{self, ColChange, ColDef};
-use crate::db::{ColumnInfo, DbObject, Driver, ObjectKind};
+use crate::db::ddl::{self, ColDef};
+use crate::db::{DbObject, Driver, ObjectKind};
 use crate::runtime;
-use crate::ui::DisabledWhen as _;
 use anyhow::Result;
 use gpui::EntityId;
 
 struct Row {
-    /// The column as it is now; `None` for a new one.
-    orig: Option<ColDef>,
     name: Entity<InputState>,
     ty: Entity<InputState>,
     default: Entity<InputState>,
     nullable: bool,
     pk: bool,
-    dropped: bool,
 }
 
 /// Called after the change ran, to reload the sidebar / tab.
@@ -58,8 +54,6 @@ pub struct TableEditor {
     /// "Copy of…": the tables to copy from, once listed.
     copy_from: Option<Entity<SelectState<SearchList>>>,
     copy_tables: Vec<DbObject>,
-    /// Editing this table; `None` = creating one.
-    object: Option<DbObject>,
     schema: Option<String>,
     table_name: Entity<InputState>,
     rows: Vec<Row>,
@@ -74,7 +68,7 @@ impl TableEditor {
     }
 }
 
-fn default_type(d: Driver) -> &'static str {
+pub(super) fn default_type(d: Driver) -> &'static str {
     match d {
         Driver::MySql => "varchar(255)",
         _ => "text",
@@ -82,11 +76,9 @@ fn default_type(d: Driver) -> &'static str {
 }
 
 impl TableEditor {
-    /// `object` = edit its columns; `None` = new table in `schema`.
+    /// A new table in `schema`.
     pub fn open(
         shared: Rc<Shared>,
-        object: Option<DbObject>,
-        columns: Vec<ColumnInfo>,
         schema: Option<String>,
         on_done: OnDone,
         window: &mut Window,
@@ -98,29 +90,22 @@ impl TableEditor {
                 start: Start::Blank,
                 copy_from: None,
                 copy_tables: vec![],
-                schema: object.as_ref().and_then(|o| o.schema.clone()).or(schema),
+                schema,
                 shared,
-                object,
                 table_name,
                 rows: vec![],
                 error: None,
                 running: false,
                 on_done,
             };
-            if ed.object.is_some() {
-                for c in &columns {
-                    ed.push_row(Some(ColDef::from_info(c)), window, cx);
-                }
-            } else {
-                ed.apply_start(Start::Blank, window, cx);
-            }
+            ed.apply_start(Start::Blank, window, cx);
             ed
         });
         let first = Cell::new(true);
         let result = view.clone();
         let width = dialog::width(880., cx);
         window.open_dialog(cx, move |d, window, cx| {
-            if first.replace(false) && view.read(cx).object.is_none() {
+            if first.replace(false) {
                 let name = view.read(cx).table_name.clone();
                 name.update(cx, |n, cx| n.focus(window, cx));
             }
@@ -174,7 +159,7 @@ impl TableEditor {
     fn set_columns(&mut self, columns: Vec<ColDef>, window: &mut Window, cx: &mut Context<Self>) {
         self.rows.clear();
         for column in columns {
-            self.push_row(None, window, cx);
+            self.push_row(window, cx);
             let row = self.rows.last_mut().expect("just pushed");
             row.pk = column.pk;
             row.nullable = column.nullable;
@@ -258,82 +243,56 @@ impl TableEditor {
         .detach();
     }
 
-    fn push_row(&mut self, orig: Option<ColDef>, window: &mut Window, cx: &mut Context<Self>) {
+    fn push_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let driver = self.shared.cfg.driver;
-        let o = orig.clone().unwrap_or(ColDef {
-            name: String::new(),
-            ty: String::new(),
-            nullable: true,
-            default: None,
-            pk: false,
-        });
-        let input = |v: &str, ph: &str, window: &mut Window, cx: &mut Context<Self>| {
-            let (v, ph) = (v.to_string(), ph.to_string());
-            cx.new(|cx| InputState::new(window, cx).default_value(v).placeholder(ph))
+        let input = |placeholder: &str, window: &mut Window, cx: &mut Context<Self>| {
+            let placeholder = placeholder.to_string();
+            cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
         };
         let row = Row {
-            name: input(&o.name, "column", window, cx),
-            ty: input(&o.ty, default_type(driver), window, cx),
-            default: input(o.default.as_deref().unwrap_or(""), "no default", window, cx),
-            nullable: o.nullable,
-            pk: o.pk,
-            dropped: false,
-            orig,
+            name: input("column", window, cx),
+            ty: input(default_type(driver), window, cx),
+            default: input("no default", window, cx),
+            nullable: true,
+            pk: false,
         };
         self.rows.push(row);
     }
 
-    fn defs(&self, cx: &App) -> Vec<(Option<ColDef>, ColDef, bool)> {
+    /// The named rows as columns (an empty type means the default one).
+    fn defs(&self, cx: &App) -> Vec<ColDef> {
         let driver = self.shared.cfg.driver;
         self.rows
             .iter()
-            .map(|r| {
-                let v = |e: &Entity<InputState>| e.read(cx).value().trim().to_string();
-                let ty = v(&r.ty);
-                let def = ColDef {
-                    name: v(&r.name),
-                    ty: if ty.is_empty() && r.orig.is_none() {
+            .map(|row| {
+                let value = |input: &Entity<InputState>| input.read(cx).value().trim().to_string();
+                let ty = value(&row.ty);
+                ColDef {
+                    name: value(&row.name),
+                    ty: if ty.is_empty() {
                         default_type(driver).into()
                     } else {
                         ty
                     },
-                    nullable: r.nullable,
-                    default: Some(v(&r.default)).filter(|d| !d.is_empty()),
-                    pk: r.pk,
-                };
-                (r.orig.clone(), def, r.dropped)
+                    nullable: row.nullable,
+                    default: Some(value(&row.default)).filter(|default| !default.is_empty()),
+                    pk: row.pk,
+                }
             })
+            .filter(|column| !column.name.is_empty())
             .collect()
     }
 
-    /// The statements Apply would run.
+    /// The CREATE TABLE statement Create table would run.
     fn statements(&self, cx: &App) -> Result<Vec<String>> {
-        let driver = self.shared.cfg.driver;
-        let schema = self.schema.as_deref();
-        let defs = self.defs(cx);
-        match &self.object {
-            None => {
-                let cols: Vec<ColDef> = defs
-                    .into_iter()
-                    .filter(|(_, d, dropped)| !dropped && !d.name.is_empty())
-                    .map(|(_, d, _)| d)
-                    .collect();
-                let name = self.table_name.read(cx).value().trim().to_string();
-                Ok(vec![ddl::create_table(driver, schema, &name, &cols)?])
-            }
-            Some(obj) => {
-                let mut changes = vec![];
-                for (orig, def, dropped) in defs {
-                    match (orig, dropped) {
-                        (Some(o), true) => changes.push(ColChange::Drop(o.name)),
-                        (Some(o), false) => changes.push(ColChange::Alter { from: o, to: def }),
-                        (None, false) if !def.name.is_empty() => changes.push(ColChange::Add(def)),
-                        _ => {}
-                    }
-                }
-                ddl::alter_table(driver, schema, &obj.name, &changes)
-            }
-        }
+        let name = self.table_name.read(cx).value().trim().to_string();
+        let columns = self.defs(cx);
+        Ok(vec![ddl::create_table(
+            self.shared.cfg.driver,
+            self.schema.as_deref(),
+            &name,
+            &columns,
+        )?])
     }
 
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -443,11 +402,6 @@ impl TableEditor {
     }
 
     #[cfg(test)]
-    pub fn drop_row(&mut self, i: usize) {
-        self.rows[i].dropped = true;
-    }
-
-    #[cfg(test)]
     pub fn set_row(
         &mut self,
         i: usize,
@@ -457,7 +411,7 @@ impl TableEditor {
         cx: &mut Context<Self>,
     ) {
         while self.rows.len() <= i {
-            self.push_row(None, window, cx);
+            self.push_row(window, cx);
         }
         let (n, t) = (self.rows[i].name.clone(), self.rows[i].ty.clone());
         n.update(cx, |x, cx| x.set_value(name.to_string(), window, cx));
@@ -466,7 +420,7 @@ impl TableEditor {
 }
 
 /// Types offered by each row's type menu, most used first.
-fn common_types(driver: Driver) -> &'static [&'static str] {
+pub(super) fn common_types(driver: Driver) -> &'static [&'static str] {
     match driver {
         Driver::Postgres => &[
             "bigint",
@@ -500,7 +454,6 @@ impl Render for TableEditor {
         let t = tokens(cx);
         let mono = cx.theme().mono_font_family.clone();
         let driver = self.shared.cfg.driver;
-        let creating = self.object.is_none();
         let header = |label: &'static str, width: f32| {
             div()
                 .w(dp(width))
@@ -514,7 +467,7 @@ impl Render for TableEditor {
         let ddl_text = match self.statements(cx) {
             Ok(statements) if statements.is_empty() => "-- no changes".to_string(),
             Ok(statements) => statements.join("\n"),
-            Err(_) if creating && !named => "-- name the table to see its CREATE TABLE".to_string(),
+            Err(_) if !named => "-- name the table to see its CREATE TABLE".to_string(),
             Err(e) => format!("-- {e:#}"),
         };
         let me = cx.entity();
@@ -525,50 +478,40 @@ impl Render for TableEditor {
         };
         v_flex()
             .gap(dp(14.))
-            .child(dialog::title(
-                match &self.object {
-                    Some(object) => format!("Edit columns · {}", object.title()),
-                    None => "New table".to_string(),
-                },
-                None,
-                cx,
-            ))
-            .when(creating, |column| {
-                column.child(
-                    h_flex()
-                        .gap(dp(12.))
-                        .items_end()
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .gap(dp(6.))
-                                .child(header("NAME", 80.))
-                                .child(Input::new(&self.table_name)),
-                        )
-                        .child(
-                            v_flex()
-                                .gap(dp(6.))
-                                .child(header("START FROM", 120.))
-                                .child(
-                                    dialog::segmented(
-                                        "table-start",
-                                        &["Blank", "id + timestamps", "Copy of…"],
-                                        start_index,
-                                        Rc::new(move |index, window, cx| {
-                                            let start =
-                                                [Start::Blank, Start::Timestamps, Start::CopyOf]
-                                                    [index];
-                                            me.update(cx, |editor, cx| {
-                                                editor.apply_start(start, window, cx)
-                                            })
-                                        }),
-                                        cx,
-                                    )
-                                    .w(dp(360.)),
-                                ),
-                        ),
-                )
-            })
+            .child(dialog::title("New table", None, cx))
+            .child(
+                h_flex()
+                    .gap(dp(12.))
+                    .items_end()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .gap(dp(6.))
+                            .child(header("NAME", 80.))
+                            .child(Input::new(&self.table_name)),
+                    )
+                    .child(
+                        v_flex()
+                            .gap(dp(6.))
+                            .child(header("START FROM", 120.))
+                            .child(
+                                dialog::segmented(
+                                    "table-start",
+                                    &["Blank", "id + timestamps", "Copy of…"],
+                                    start_index,
+                                    Rc::new(move |index, window, cx| {
+                                        let start =
+                                            [Start::Blank, Start::Timestamps, Start::CopyOf][index];
+                                        me.update(cx, |editor, cx| {
+                                            editor.apply_start(start, window, cx)
+                                        })
+                                    }),
+                                    cx,
+                                )
+                                .w(dp(360.)),
+                            ),
+                    ),
+            )
             .when_some(
                 self.copy_from
                     .clone()
@@ -612,7 +555,6 @@ impl Render for TableEditor {
                                 let ty = row.ty.clone();
                                 h_flex()
                                     .gap(dp(8.))
-                                    .when(row.dropped, |line| line.opacity(0.45))
                                     .child(div().w(dp(200.)).child(Input::new(&row.name).small()))
                                     .child(
                                         h_flex()
@@ -677,7 +619,6 @@ impl Render for TableEditor {
                                             Checkbox::new(("pk", index))
                                                 .cursor_pointer()
                                                 .checked(row.pk)
-                                                .disabled_when(self.object.is_some())
                                                 .on_click(cx.listener(
                                                     move |editor, on: &bool, _, cx| {
                                                         if let Some(row) = editor.row_mut(key) {
@@ -694,18 +635,10 @@ impl Render for TableEditor {
                                     .child(
                                         Button::new(("drop-col", index))
                                             .cursor_pointer()
-                                            .icon(if row.dropped {
-                                                IconName::Undo
-                                            } else {
-                                                IconName::Trash
-                                            })
+                                            .icon(IconName::Trash)
                                             .ghost()
                                             .xsmall()
-                                            .tooltip(if row.dropped {
-                                                "Keep column"
-                                            } else {
-                                                "Remove column"
-                                            })
+                                            .tooltip("Remove column")
                                             .on_click(cx.listener(move |editor, _, _, cx| {
                                                 let Some(index) = editor
                                                     .rows
@@ -714,12 +647,7 @@ impl Render for TableEditor {
                                                 else {
                                                     return;
                                                 };
-                                                if editor.rows[index].orig.is_none() {
-                                                    editor.rows.remove(index);
-                                                } else {
-                                                    editor.rows[index].dropped =
-                                                        !editor.rows[index].dropped;
-                                                }
+                                                editor.rows.remove(index);
                                                 cx.notify();
                                             })),
                                     )
@@ -735,16 +663,11 @@ impl Render for TableEditor {
                         .ghost()
                         .small()
                         .on_click(cx.listener(|editor, _, window, cx| {
-                            editor.push_row(None, window, cx);
+                            editor.push_row(window, cx);
                             cx.notify();
                         })),
                 ),
             )
-            .when(driver == Driver::Sqlite && !creating, |column| {
-                column.child(div().text_size(dp(12.)).text_color(t.text_muted).child(
-                    "SQLite can add, rename and remove columns; other changes need a new table.",
-                ))
-            })
             .child(
                 div()
                     .id("table-editor-ddl")
@@ -779,7 +702,7 @@ impl Render for TableEditor {
                         .into_any_element(),
                     Button::new("apply-ddl")
                         .cursor_pointer()
-                        .label(if creating { "Create table" } else { "Apply" })
+                        .label("Create table")
                         .primary()
                         .loading(self.running)
                         .on_click(cx.listener(|editor, _, window, cx| editor.apply(window, cx)))

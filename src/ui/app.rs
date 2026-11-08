@@ -3152,8 +3152,8 @@ mod tests {
         }
     }
 
-    /// New Table creates it (sidebar updates); Edit Columns adds and drops
-    /// columns on the open tab.
+    /// New Table creates it (sidebar updates); Structure › Columns adds
+    /// and drops columns in place on the open tab.
     #[gpui::test]
     fn table_editor(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -3191,19 +3191,25 @@ mod tests {
             tab.read_with(&cx, |t, _| t.column_names()),
             ["id", "title", "legacy"]
         );
-        let ed = tab
-            .update_in(&mut cx, |t, w, cx| t.edit_columns_for_test(w, cx))
+        // Structure › Columns edits in place: stage, discard, stage, apply.
+        let columns = tab
+            .update_in(&mut cx, |t, w, cx| t.columns_editor_for_test(w, cx))
             .unwrap();
-        ed.update_in(&mut cx, |e, w, cx| {
-            e.drop_row(2);
-            e.set_row(3, "year", "integer", w, cx);
-            e.apply_for_test(w, cx);
+        columns.update_in(&mut cx, |editor, w, cx| {
+            editor.remove_row_for_test(2);
+            editor.set_row_for_test(3, "year", "integer", w, cx);
+        });
+        assert_eq!(columns.read_with(&cx, |e, cx| e.change_count(cx)), 2);
+        columns.update_in(&mut cx, |editor, w, cx| editor.discard_for_test(w, cx));
+        assert_eq!(columns.read_with(&cx, |e, cx| e.change_count(cx)), 0);
+        columns.update_in(&mut cx, |editor, w, cx| {
+            editor.remove_row_for_test(2);
+            editor.set_row_for_test(3, "year", "integer", w, cx);
+            editor.apply_for_test(w, cx);
         });
         wait_until(&mut cx, "altered", |cx| {
             tab.read_with(cx, |t, _| t.column_names() == ["id", "title", "year"])
         });
-        cx.update(|w, cx| w.close_dialog(cx));
-        cx.executor().advance_clock(Duration::from_secs(1));
         cx.run_until_parked();
 
         // Start from "id + timestamps", and "Copy of…" another table.

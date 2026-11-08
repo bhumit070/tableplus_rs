@@ -50,7 +50,8 @@ flowchart TB
 | `HistoryView` | `ui/history_view.rs` | Query history and saved queries in one dialog, with a preview and Open / Insert / Save as. |
 | `ExportDialog` | `ui/copy.rs` | Export: format, rows, options, preview, destination, progress toast. |
 | `Grid` | `ui/grid.rs` | The `TableDelegate` behind every data grid: fetched rows plus staged edits, deletions and new rows. |
-| `TableEditor` | `ui/table_editor.rs` | New Table / Edit Columns dialog. |
+| `TableEditor` | `ui/table_editor.rs` | New Table dialog. |
+| `StructureEditor` | `ui/structure_editor.rs` | Structure › Columns edited in place, owned by its `TableTab`; rebuilt when the structure is read again. |
 | `Processes` | `ui/processes.rs` | Process list dialog, polling every few seconds. |
 | `Picker` | `ui/picker.rs` | Searchable pick-one dialog in the palette look (⌘K, ⌘N, ⌘P, schemas). |
 | `RowPanel` | `ui/row_panel.rs` | Row detail side panel (⌘⇧I). |

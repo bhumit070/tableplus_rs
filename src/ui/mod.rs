@@ -19,6 +19,7 @@ pub mod query_tab;
 pub mod row_panel;
 pub mod session;
 pub mod settings_view;
+pub mod structure_editor;
 pub mod table_editor;
 pub mod table_tab;
 pub mod theme;

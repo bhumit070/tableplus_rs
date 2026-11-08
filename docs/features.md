@@ -99,11 +99,18 @@ actually involved.
 - **Foreign keys:** a → in a foreign-key cell opens the referenced row.
 - **Structure view:** columns, indexes, foreign keys and the table's
   `CREATE TABLE` statement.
-- **New Table / Edit Columns:** add, rename, retype or drop columns, change
-  NULL and defaults, with the DDL shown live as you edit; each type field
-  has a menu of the engine's common types. A new table starts blank, with
-  `id` + `created_at` / `updated_at`, or as a copy of another table's
-  columns. Nothing runs until Create table / Apply.
+- **Editing columns in place:** Structure › Columns is editable: add,
+  rename, retype or remove columns and change NULL and defaults right in
+  the list (the sidebar's *Edit Columns…* opens it). Changes stage like
+  data edits: amber with "was …" under what changed, green for new, red
+  for removed. A bar counts them, with *Preview DDL*, *Discard* and
+  *Apply*; Apply runs them as one script (transactional on Postgres and
+  SQLite) through safe mode. Each type field has a menu of the engine's
+  common types. SQLite can add, rename and remove columns only.
+- **New Table:** name, columns (type menu, NULL, default, key) and the
+  `CREATE TABLE` shown live. It starts blank, with `id` + `created_at` /
+  `updated_at`, or as a copy of another table's columns. Nothing runs
+  until Create table.
 - **Sidebar actions:** open, copy name, new query, rename, duplicate,
   vacuum / optimize, truncate and drop.
 - **PostgreSQL schemas:** tables are grouped by schema, and the schema in

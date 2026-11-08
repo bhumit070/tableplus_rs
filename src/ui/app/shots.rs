@@ -308,6 +308,24 @@ fn screenshots() {
     s.in_window(|w, cx| tab.update(cx, |t, cx| t.clear_filters(w, cx)));
     s.wait("rows again", |cx| tab.read(cx).loaded_rows(cx) > 0);
 
+    // Structure › Columns with staged schema changes and the DDL.
+    let columns = s
+        .in_window(|w, cx| tab.update(cx, |t, cx| t.columns_editor_for_test(w, cx)))
+        .expect("orders is editable");
+    s.in_window(|w, cx| {
+        columns.update(cx, |editor, cx| {
+            editor.set_row_for_test(4, "currency_code", "TEXT", w, cx);
+            editor.remove_row_for_test(6);
+            editor.set_row_for_test(7, "note", "text", w, cx);
+            editor.show_ddl_for_test(cx);
+        })
+    });
+    s.snap("08-structure");
+    s.in_window(|w, cx| {
+        columns.update(cx, |editor, cx| editor.discard_for_test(w, cx));
+        tab.update(cx, |t, cx| t.show_data_for_test(cx));
+    });
+
     s.in_window(|w, cx| w.dispatch_action(Box::new(crate::ui::ExportData), cx));
     s.snap("12-export");
     s.in_window(|w, cx| w.close_dialog(cx));

@@ -61,7 +61,8 @@ also starts with a `//!` comment saying the same in more detail.
 | `csv_import_view.rs` | ~470 | The Import CSV dialog: file summary, options, column mapping with validation. |
 | `dialog.rs` | ~240 | The shared dialog look (surface, title, footer) and its controls: section labels, tiles, radio rows. |
 | `row_panel.rs` | ~180 | Row detail panel (⌘⇧I). |
-| `table_editor.rs` | ~480 | New Table / Edit Columns dialog. |
+| `table_editor.rs` | ~700 | New Table dialog: templates, type menu, live CREATE TABLE. |
+| `structure_editor.rs` | ~690 | Structure › Columns edited in place: staged column changes, Preview DDL / Discard / Apply. |
 | `processes.rs` | ~240 | Process list (⌘⇧P). |
 | `onboarding.rs` | ~720 | First-run onboarding: Welcome, Look & feel, Connections, You're set. |
 | `passwords.rs` | ~200 | The "Passwords" step shown before Tabula first uses the keychain; "Don't save passwords" turns it off. |

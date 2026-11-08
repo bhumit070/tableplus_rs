@@ -93,8 +93,9 @@ time: **More info → Run anyway**.
   JSON pretty-printed.
 - **Foreign keys:** a → in a foreign-key cell opens the referenced row.
 - **Structure:** columns, indexes, foreign keys and the table's SQL
-  (`CREATE TABLE …`). **New Table** and **Edit Columns** (add, rename,
-  retype, NULL, default, drop) preview the DDL before running it.
+  (`CREATE TABLE …`). Columns are edited in place (add, rename, retype,
+  NULL, default, drop), staged like data edits until you Apply;
+  **New Table** previews its DDL before running it.
 - **Copy & export:** copy rows as JSON / INSERT / UPDATE, a column as an
   `IN (…)` list, everything as CSV / Markdown / INSERT; export (⌘⇧E) to CSV,
   TSV, JSON, JSON Lines, Markdown, HTML or SQL — table exports include every
