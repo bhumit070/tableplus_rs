@@ -59,6 +59,8 @@ pub enum Kind {
     Binary,
     /// A Redis key's type: a pill in that type's colour.
     KeyType,
+    /// A Redis TTL in seconds: shown as a duration, -1 (no expiry) as "—".
+    Ttl,
 }
 
 /// The kind of a column from its database type; `None` when the type isn't
@@ -75,6 +77,7 @@ fn kind_of_type(ty: &str) -> Option<Kind> {
     Some(match base {
         "set" => Kind::Array,
         "redis" => Kind::KeyType,
+        "ttl" => Kind::Ttl,
         "bytea" | "blob" | "tinyblob" | "mediumblob" | "longblob" | "binary" | "varbinary" => {
             Kind::Binary
         }
@@ -152,6 +155,17 @@ pub fn array_items(v: &str) -> Vec<String> {
 fn hex_len(v: &str) -> Option<usize> {
     let hex = v.strip_prefix("\\x").or_else(|| v.strip_prefix("0x"))?;
     (hex.len() % 2 == 0 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hex.len() / 2)
+}
+
+/// "4m 12s", "2h 05m", "3d 4h": a TTL as people read it.
+pub(super) fn duration(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    match seconds {
+        0..60 => format!("{seconds}s"),
+        60..3600 => format!("{}m {:02}s", seconds / 60, seconds % 60),
+        3600..86400 => format!("{}h {:02}m", seconds / 3600, seconds % 3600 / 60),
+        _ => format!("{}d {}h", seconds / 86400, seconds % 86400 / 3600),
+    }
 }
 
 /// 24100 → "23.5 KB".
@@ -1400,6 +1414,15 @@ impl TableDelegate for Grid {
                 .into_any_element(),
             Some(v) => match kind {
                 Kind::Enum => enum_pill(v, cx).into_any_element(),
+                Kind::Ttl => match v.parse::<i64>() {
+                    // No expiry: a dash, as the column is sized for numbers.
+                    Ok(-1) => div().text_color(t.text_faint).child("—").into_any_element(),
+                    Ok(seconds) if seconds >= 0 => div()
+                        .text_color(t.warning)
+                        .child(duration(seconds))
+                        .into_any_element(),
+                    _ => div().child(v.to_string()).into_any_element(),
+                },
                 Kind::KeyType => {
                     let color = redis_type_color(v, &t);
                     marker(v.to_uppercase(), color, color.opacity(0.14)).into_any_element()

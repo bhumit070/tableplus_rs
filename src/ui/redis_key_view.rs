@@ -20,7 +20,7 @@ use gpui_component::{ActiveTheme as _, Icon, Sizable as _, WindowExt as _, h_fle
 use gpui_kit_assets::IconName;
 
 use super::confirm::ConfirmWrite;
-use super::grid::human_size;
+use super::grid::{duration, human_size};
 use super::row_panel::pretty_json;
 use super::theme::{dp, redis_type_color, tokens};
 use super::{Shared, prompt_text};
@@ -67,17 +67,6 @@ pub struct RedisKeyView {
     saving: bool,
     on_changed: OnChanged,
     _subscriptions: Vec<Subscription>,
-}
-
-/// "4m 12s", "2h 05m", "3d 4h".
-fn countdown(seconds: i64) -> String {
-    let seconds = seconds.max(0);
-    match seconds {
-        0..60 => format!("{seconds}s"),
-        60..3600 => format!("{}m {:02}s", seconds / 60, seconds % 60),
-        3600..86400 => format!("{}h {:02}m", seconds / 3600, seconds % 3600 / 60),
-        _ => format!("{}d {}h", seconds / 86400, seconds % 86400 / 3600),
-    }
 }
 
 impl RedisKeyView {
@@ -607,7 +596,7 @@ impl RedisKeyView {
             .map(|ttl| ttl - self.read_at.elapsed().as_secs() as i64);
         let ttl_label = match left {
             Some(seconds) if seconds <= 0 => "expired".to_string(),
-            Some(seconds) => format!("expires in {}", countdown(seconds)),
+            Some(seconds) => format!("expires in {}", duration(seconds)),
             None => "no expiry".to_string(),
         };
         let view = cx.entity();

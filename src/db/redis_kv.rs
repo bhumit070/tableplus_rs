@@ -348,7 +348,8 @@ impl RedisConn {
                 col("key", "string", true),
                 // Shown as a coloured badge (grid Kind::KeyType).
                 col("type", "redis type", false),
-                col("ttl", "integer", false),
+                // Seconds; shown as a duration (grid Kind::Ttl).
+                col("ttl", "ttl", false),
                 col("value", "any", false),
             ],
             indexes: QueryResult::default(),

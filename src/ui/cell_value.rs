@@ -45,7 +45,8 @@ fn int_range(ty: &str) -> Option<(i128, i128)> {
         "smallint" | "int2" | "smallserial" => 16,
         "mediumint" => 24,
         "int" | "integer" | "int4" | "serial" => 32,
-        "bigint" | "int8" | "bigserial" => 64,
+        // Redis TTLs are seconds, edited like any 64-bit number.
+        "bigint" | "int8" | "bigserial" | "ttl" => 64,
         _ => return None,
     };
     Some(if unsigned {
@@ -347,6 +348,8 @@ mod tests {
         assert_eq!(err("int unsigned", "4294967295"), None);
         assert!(err("int unsigned", "-1").is_some());
         assert_eq!(err("bigint", "9223372036854775807"), None);
+        assert!(err("ttl", "soon").is_some(), "a TTL is a number of seconds");
+        assert_eq!(err("ttl", "3600"), None);
         assert_eq!(err("int8", "1.5").as_deref(), Some("Not a whole number"));
         assert!(err("int4", "").unwrap().contains("NULL"));
         // tinyint(1) is a boolean, not a number.

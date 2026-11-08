@@ -134,7 +134,8 @@ actually involved.
 - **PostgreSQL schemas:** tables are grouped by schema, and the schema in
   the title bar sets `search_path` so unqualified names find the chosen
   schema.
-- **Redis:** keys grouped by namespace (`user:*`), with type, TTL and value.
+- **Redis:** keys grouped by namespace (`user:*`), with type (a coloured
+  badge), TTL (as a duration like `59m 52s`; `—` for no expiry) and value.
   The selected key opens in a key editor beside the list: its type badge,
   size, a live TTL countdown (set an expiry or persist from its menu),
   Rename (never overwrites another key) and Delete. Each type has its own
