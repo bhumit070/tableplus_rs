@@ -201,11 +201,13 @@ Key new files: `src/ui/theme.rs` (tokens, `dp`, pills, `kbd`, `caps`,
    `DataTable` rows); the banner and status bar carry it instead.
 
 Smaller leftovers: the array chip editor (cell editor #11; arrays edit as
-`{a,b}` text); the sidebar's Functions section; the 2px left bar on
+`{a,b}` text); the 2px left bar on
 deleted / new rows is hidden under the row-header column; design.md
 "Review questions" decisions not yet applied (e.g. row panel overlay below
 1440px). The MySQL binary read treats binary-typed values that are valid
 UTF-8 as text (information_schema reports its text columns as binary).
+`connection_switching` (ui test) failed once in a loaded full
+`TABULA_IT=1` run and passes alone: a timing flake in the ⌘N picker step.
 
 Keep docs in step: README.md, `docs/` (features, shortcuts, architecture/ui,
 modules, development). The docs site deploys on push.

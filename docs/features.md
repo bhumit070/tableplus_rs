@@ -128,7 +128,9 @@ actually involved.
   `CREATE TABLE` shown live. It starts blank, with `id` + `created_at` /
   `updated_at`, or as a copy of another table's columns. Nothing runs
   until Create table.
-- **Sidebar:** tables, views, collections and **Saved queries** (click
+- **Sidebar:** tables, views, collections, **Functions** (Postgres and
+  MySQL functions and procedures; click one to open its `CREATE` statement
+  in a query tab) and **Saved queries** (click
   one to open it in a query tab; the list updates as you save or delete
   queries), each section with its count. Tables show an approximate row
   count in mono (`12`, `1.2K`, `2.1M`) from the server's statistics, never

@@ -274,6 +274,9 @@ pub enum ObjectKind {
     View,
     Collection,
     Keys,
+    /// A stored function or procedure (Postgres, MySQL): opens as its
+    /// definition in a query tab.
+    Function,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -689,6 +692,17 @@ impl Connection {
                 Conn::Sql(c) => c.approx_row_counts().await,
                 Conn::Redis(_) => Ok(vec![]),
                 Conn::Mongo(c) => c.approx_row_counts().await,
+            }
+        })
+        .await
+    }
+
+    /// `CREATE FUNCTION …` / `CREATE PROCEDURE …` for a routine.
+    pub async fn routine_definition(&self, obj: &DbObject) -> Result<String> {
+        self.bounded("Reading the definition", async {
+            match &self.inner {
+                Conn::Sql(c) => c.routine_definition(obj).await,
+                _ => bail!("only SQL servers have stored routines"),
             }
         })
         .await

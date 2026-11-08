@@ -376,7 +376,8 @@ impl Session {
         let names = self
             .objects
             .iter()
-            .filter(|o| in_schema(o.schema.as_deref()))
+            // Autocomplete offers these after FROM / JOIN: routines aren't.
+            .filter(|o| in_schema(o.schema.as_deref()) && o.kind != ObjectKind::Function)
             .map(|o| o.name.clone())
             .collect();
         let cols = self
@@ -465,6 +466,7 @@ impl Session {
             .map(|(i, o)| {
                 let (group, icon) = match o.kind {
                     ObjectKind::View => ("Views", IconName::Eye),
+                    ObjectKind::Function => ("Functions", IconName::SquareFunction),
                     ObjectKind::Collection => ("Collections", IconName::Braces),
                     _ => ("Tables", IconName::Table),
                 };
@@ -480,6 +482,7 @@ impl Session {
         items.sort_by_key(|i| match i.group.as_deref() {
             Some("Tables") => 0,
             Some("Views") => 1,
+            Some("Functions") => 3,
             _ => 2,
         });
         // Columns: shown once searched for (`.` or the chip scopes to them).
@@ -575,6 +578,10 @@ impl Session {
         let Some(obj) = self.objects.get(idx).cloned() else {
             return;
         };
+        if obj.kind == ObjectKind::Function {
+            self.open_definition(obj, window, cx);
+            return;
+        }
         if let Some(i) = self
             .tabs
             .iter()
@@ -584,6 +591,24 @@ impl Session {
             return;
         }
         self.open_table_tab(obj, vec![], window, cx);
+    }
+
+    /// A function or procedure: its CREATE statement in a new query tab.
+    fn open_definition(&mut self, obj: DbObject, window: &mut Window, cx: &mut Context<Self>) {
+        let conn = self.shared.conn.clone();
+        let task = runtime::spawn(async move { conn.read().await.routine_definition(&obj).await });
+        cx.spawn_in(window, async move |this, cx| {
+            let definition = task.await;
+            this.update_in(cx, |session, window, cx| match definition {
+                Ok(sql) => session.open_query(sql, window, cx),
+                Err(error) => window.push_notification(
+                    Notification::error(format!("{error:#}")).title("Couldn't read the definition"),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn open_table_tab(
@@ -1031,22 +1056,29 @@ impl Session {
                 s.update(cx, |this, cx| f(this, &obj, window, cx)).ok();
             })
         };
+        let menu = menu
+            .item(item(
+                "Open",
+                // By value: the list may have reloaded while the menu was open.
+                Rc::new(|s, o, w, cx| match s.objects.iter().position(|x| x == o) {
+                    Some(i) => s.open_object(i, w, cx),
+                    None => {
+                        w.push_notification(format!("{} is no longer in the list", o.title()), cx)
+                    }
+                }),
+            ))
+            .item(item(
+                "Copy Name",
+                Rc::new(|_, o, w, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(o.name.clone()));
+                    w.push_notification("Copied", cx);
+                }),
+            ));
+        // A routine has nothing to query, rename or truncate here.
+        if obj.kind == ObjectKind::Function {
+            return menu;
+        }
         menu.item(item(
-            "Open",
-            // By value: the list may have reloaded while the menu was open.
-            Rc::new(|s, o, w, cx| match s.objects.iter().position(|x| x == o) {
-                Some(i) => s.open_object(i, w, cx),
-                None => w.push_notification(format!("{} is no longer in the list", o.title()), cx),
-            }),
-        ))
-        .item(item(
-            "Copy Name",
-            Rc::new(|_, o, w, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(o.name.clone()));
-                w.push_notification("Copied", cx);
-            }),
-        ))
-        .item(item(
             "New Query for This",
             Rc::new(|s, o, w, cx| {
                 let text = match s.shared.cfg.driver {
@@ -1785,6 +1817,9 @@ impl Session {
                                         (IconName::Layers, t.text_muted)
                                     }
                                     Some(ObjectKind::Keys) => (IconName::KeyRound, t.text_muted),
+                                    Some(ObjectKind::Function) => {
+                                        (IconName::SquareFunction, t.number)
+                                    }
                                     _ => (IconName::Table, t.text_muted),
                                 };
                                 row.selected(selected)
@@ -2287,6 +2322,7 @@ fn build_tree(
             (ObjectKind::View, "views", "Views"),
             (ObjectKind::Collection, "collections", "Collections"),
             (ObjectKind::Keys, "keys", "Keys"),
+            (ObjectKind::Function, "functions", "Functions"),
         ]
         .into_iter()
         .filter_map(|(kind, id, name)| {

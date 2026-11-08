@@ -733,6 +733,20 @@ fn process_shots(s: &mut Shots) {
     cfg.user = "postgres".into();
     cfg.password = "test".into();
     cfg.database = "postgres".into();
+    // A table and a function, for the sidebar's Functions section.
+    let setup = cfg.clone();
+    block_on(crate::runtime::spawn(async move {
+        let c = crate::db::Connection::connect(&setup).await?;
+        c.execute(
+            "create table if not exists shots_events (id int primary key, kind text); \
+             create or replace function shots_event_count(k text) returns bigint \
+             language sql as 'select count(*) from shots_events where kind = k'",
+        )
+        .await?;
+        c.close().await;
+        Ok(())
+    }))
+    .expect("the Postgres container is up");
     // Another session, busy for a while (it finishes on its own).
     let busy = cfg.clone();
     let _busy_session = crate::runtime::spawn(async move {
@@ -749,6 +763,11 @@ fn process_shots(s: &mut Shots) {
             .last()
             .is_some_and(|session| session.read(cx).cfg().driver == Driver::Postgres)
     });
+    let started = Instant::now();
+    s.wait("sidebar", |_| {
+        started.elapsed() > Duration::from_millis(800)
+    });
+    s.snap("02-sidebar-functions");
     s.in_window(|w, cx| w.dispatch_action(Box::new(crate::ui::ShowProcesses), cx));
     let started = Instant::now();
     s.wait("processes", |_| {

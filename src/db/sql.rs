@@ -996,7 +996,84 @@ impl SqlConn {
                     },
                 }
             })
+            .chain(self.routines().await.unwrap_or_default())
             .collect())
+    }
+
+    /// Stored functions and procedures (one entry per name, however many
+    /// overloads). SQLite has none; a server that won't list them shows
+    /// none rather than failing the sidebar.
+    async fn routines(&self) -> Result<Vec<DbObject>> {
+        let sql = match self.cfg.driver {
+            Driver::Postgres => {
+                "select distinct n.nspname, p.proname from pg_proc p \
+                 join pg_namespace n on n.oid = p.pronamespace \
+                 where p.prokind in ('f', 'p') \
+                 and n.nspname not in ('pg_catalog', 'information_schema') \
+                 and n.nspname not like 'pg_toast%' \
+                 and not exists (select 1 from pg_depend d where d.objid = p.oid and d.deptype = 'e') \
+                 order by 1, 2"
+            }
+            Driver::MySql => {
+                "select routine_schema, routine_name from information_schema.routines \
+                 where routine_schema = database() order by 2"
+            }
+            _ => return Ok(vec![]),
+        };
+        Ok(self
+            .raw(sql.into())
+            .await?
+            .rows
+            .into_iter()
+            .filter_map(|row| {
+                Some(DbObject {
+                    schema: row.first()?.clone(),
+                    name: row.get(1)?.clone()?,
+                    kind: ObjectKind::Function,
+                })
+            })
+            .collect())
+    }
+
+    /// Postgres: `pg_get_functiondef` for every overload. MySQL: SHOW CREATE
+    /// FUNCTION, or PROCEDURE when it isn't a function.
+    pub async fn routine_definition(&self, obj: &DbObject) -> Result<String> {
+        match self.cfg.driver {
+            Driver::Postgres => {
+                let sql = format!(
+                    "select pg_get_functiondef(p.oid) from pg_proc p \
+                     join pg_namespace n on n.oid = p.pronamespace \
+                     where n.nspname = {} and p.proname = {} order by p.oid",
+                    self.lit(obj.schema.as_deref().unwrap_or("public")),
+                    self.lit(&obj.name)
+                );
+                let definitions: Vec<String> = self
+                    .raw(sql)
+                    .await?
+                    .rows
+                    .into_iter()
+                    .filter_map(|row| row.first()?.clone())
+                    .collect();
+                if definitions.is_empty() {
+                    bail!("{} no longer exists", obj.name);
+                }
+                Ok(definitions.join(";\n\n") + ";")
+            }
+            Driver::MySql => {
+                let name = self.q(&obj.name);
+                let shown = match self.raw(format!("show create function {name}")).await {
+                    Ok(result) => result,
+                    Err(_) => self.raw(format!("show create procedure {name}")).await?,
+                };
+                shown
+                    .rows
+                    .first()
+                    .and_then(|row| row.get(2).cloned().flatten())
+                    .map(|definition| definition + ";")
+                    .context("the server didn't show the definition")
+            }
+            _ => bail!("SQLite has no stored routines"),
+        }
     }
 
     pub async fn structure(&self, obj: &DbObject) -> Result<Structure> {

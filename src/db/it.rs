@@ -1553,6 +1553,46 @@ async fn mysql_binary() {
     }
 }
 
+/// Stored routines list as functions and open as their definition.
+async fn routine_scenario(driver: Driver) {
+    let c = Connection::connect(&cfg(driver)).await.unwrap();
+    let create = match driver {
+        Driver::Postgres => {
+            "create or replace function it_double(n int) returns int language sql as 'select n * 2'"
+        }
+        _ => "create function it_double(n int) returns int deterministic return n * 2",
+    };
+    c.execute("drop function if exists it_double").await.ok();
+    c.execute(create).await.unwrap();
+    let objects = c.list_objects().await.unwrap();
+    let routine = objects
+        .iter()
+        .find(|object| object.name == "it_double")
+        .unwrap_or_else(|| panic!("{driver:?}: it_double not listed"));
+    assert_eq!(routine.kind, ObjectKind::Function);
+    let definition = c.routine_definition(routine).await.unwrap();
+    assert!(
+        definition.to_lowercase().contains("create"),
+        "{driver:?}: {definition}"
+    );
+    assert!(definition.contains("it_double"), "{driver:?}: {definition}");
+    c.execute("drop function it_double").await.unwrap();
+}
+
+#[tokio::test]
+async fn postgres_routines() {
+    if it_enabled() {
+        routine_scenario(Driver::Postgres).await;
+    }
+}
+
+#[tokio::test]
+async fn mysql_routines() {
+    if it_enabled() {
+        routine_scenario(Driver::MySql).await;
+    }
+}
+
 #[tokio::test]
 async fn sqlite_ddl() {
     ddl_scenario(Driver::Sqlite).await;
