@@ -4,9 +4,11 @@
 //! row as one object; References — the row's foreign keys, each opening
 //! the referenced row.
 
+use std::rc::Rc;
+
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, Global, IntoElement, ParentElement, Styled, div,
-    prelude::*,
+    AnyElement, App, ClipboardItem, Context, Global, IntoElement, ParentElement, Styled, Window,
+    div, prelude::*,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::{ActiveTheme as _, Icon, Sizable as _, WindowExt as _, h_flex, v_flex};
@@ -16,7 +18,7 @@ use super::cell_edit::{self, CellEditHost, EditStart};
 use gpui::FontWeight;
 use serde_json::{Map, Value, from_str, to_string_pretty};
 
-use super::theme::{dp, tokens};
+use super::theme::{caps, dp, tokens};
 
 /// The panel's tab, shared by every grid so it stays put between rows.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -45,10 +47,19 @@ pub fn current_row<H: CellEditHost>(host: &H, cx: &App) -> Option<usize> {
     t.selected_row().or(t.selected_cell().map(|(r, _)| r))
 }
 
-/// `types[i]` is column i's type, when known.
+/// A table whose foreign key points at this row ("orders (customer_id)"),
+/// and what opens its matching rows.
+pub struct InboundLink {
+    pub label: String,
+    pub open: Rc<dyn Fn(&mut Window, &mut App)>,
+}
+
+/// `types[i]` is column i's type, when known; `inbound` lists the tables
+/// referencing this row (References tab).
 pub fn render<H: CellEditHost>(
     host: &H,
     types: &[Option<String>],
+    inbound: &[InboundLink],
     cx: &mut Context<H>,
 ) -> AnyElement {
     let theme = cx.theme().clone();
@@ -119,17 +130,67 @@ pub fn render<H: CellEditHost>(
                 })
                 .collect();
             let follow = g.on_follow.clone();
-            if links.is_empty() {
+            let referenced_by: Vec<AnyElement> = inbound
+                .iter()
+                .enumerate()
+                .map(|(index, link)| {
+                    let open = link.open.clone();
+                    h_flex()
+                        .id(("row-referenced-by", index))
+                        .gap(dp(8.))
+                        .px(dp(8.))
+                        .h(dp(32.))
+                        .rounded(dp(6.))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(t.hover))
+                        .text_size(dp(12.5))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .font_family(theme.mono_font_family.clone())
+                                .text_color(t.info)
+                                .child(link.label.clone()),
+                        )
+                        .child(Icon::new(IconName::ArrowRight).xsmall().text_color(t.info))
+                        .on_click(move |_, window, cx| open(window, cx))
+                        .into_any_element()
+                })
+                .collect();
+            let referenced_section = (!referenced_by.is_empty()).then(|| {
+                v_flex()
+                    .pt(dp(6.))
+                    .gap(dp(2.))
+                    .child(
+                        div()
+                            .px(dp(8.))
+                            .pt(dp(6.))
+                            .pb(dp(2.))
+                            .child(caps("REFERENCED BY", cx)),
+                    )
+                    .children(referenced_by)
+            });
+            if links.is_empty() && referenced_section.is_none() {
                 div()
                     .p(dp(12.))
                     .text_size(dp(12.5))
                     .text_color(t.text_muted)
-                    .child("This row has no foreign keys set.")
+                    .child("This row has no foreign keys set, and nothing refers to it.")
                     .into_any_element()
             } else {
                 v_flex()
                     .p(dp(6.))
                     .gap(dp(2.))
+                    .when(!links.is_empty(), |list| {
+                        list.child(
+                            div()
+                                .px(dp(8.))
+                                .pt(dp(6.))
+                                .pb(dp(2.))
+                                .child(caps("REFERENCES", cx)),
+                        )
+                    })
                     .children(links.into_iter().map(|(c, target, value)| {
                         let follow = follow.clone();
                         h_flex()
@@ -160,6 +221,7 @@ pub fn render<H: CellEditHost>(
                                 }
                             })
                     }))
+                    .children(referenced_section)
                     .into_any_element()
             }
         }

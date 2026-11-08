@@ -330,6 +330,11 @@ pub struct Structure {
     pub columns: Vec<ColumnInfo>,
     pub indexes: QueryResult,
     pub foreign_keys: Vec<ForeignKey>,
+    /// Other tables' foreign keys that point here, reversed so they read
+    /// like ours: `columns` are this table's, `ref_*` the referencing
+    /// table and its columns. Following one shows the rows that refer to
+    /// a row.
+    pub referenced_by: Vec<ForeignKey>,
     /// `CREATE TABLE …` (plus indexes where the server keeps them apart).
     pub ddl: String,
     /// Parts that couldn't be loaded (permissions, lost connection…).

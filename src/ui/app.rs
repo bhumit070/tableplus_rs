@@ -2809,6 +2809,63 @@ mod tests {
         let _ = remove_file(file);
     }
 
+    /// "Rows referencing this": from a customer, its orders open in a tab
+    /// filtered to that customer.
+    #[gpui::test]
+    fn rows_referencing_this(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = temp_dir().join(format!("tabula-ui-inbound-{}.db", cfg.id));
+        write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute(
+                "create table customers (id integer primary key, name text); \
+                 create table orders (id integer primary key, customer_id integer references customers(id)); \
+                 insert into customers values (1, 'Ana'), (2, 'Ben'); \
+                 insert into orders values (10, 1), (11, 2), (12, 2)",
+            )
+            .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("customers").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let index = s.object_index("customers").unwrap();
+            s.open_object(index, w, cx)
+        });
+        let customers = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "customers", |cx| {
+            customers.read_with(cx, |t, cx| t.has_structure() && t.loaded_rows(cx) == 2)
+        });
+        assert_eq!(
+            customers.read_with(&cx, |t, _| t.inbound_labels()),
+            ["orders (customer_id)"]
+        );
+        // Ben (row 1) has two orders.
+        customers.update_in(&mut cx, |t, _, cx| t.open_referencing(1, 0, cx));
+        wait_until(&mut cx, "orders tab", |cx| {
+            session.read_with(cx, |s, cx| {
+                s.active_table().is_some_and(|t| {
+                    let t = t.read(cx);
+                    t.object.name == "orders" && !t.is_loading(cx) && t.loaded_rows(cx) == 2
+                })
+            })
+        });
+        let _ = remove_file(file);
+    }
+
     /// The row menu builds (with its Copy as submenus), and "Filter by this
     /// value" narrows to the cell's value, or to NULL.
     #[gpui::test]

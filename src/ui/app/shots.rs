@@ -145,7 +145,7 @@ fn demo_db() -> ConnectionConfig {
                status text check (status in ('pending','paid','shipped','refunded')), \
                total numeric(12,2), currency text, created_at text, metadata text); \
              create index orders_status_created on orders (status, created_at); \
-             create table invoices (id integer primary key, order_id integer); \
+             create table invoices (id integer primary key, order_id integer references orders(id)); \
              create table products (id integer primary key, name text); \
              create view active_customers as select * from customers;",
         );

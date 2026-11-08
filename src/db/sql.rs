@@ -1032,6 +1032,10 @@ impl SqlConn {
             part("Foreign keys", e);
             Default::default()
         });
+        let referenced_by = self.referenced_by(obj).await.unwrap_or_else(|e| {
+            part("Referencing tables", e);
+            Default::default()
+        });
         let ddl = self.ddl(obj, &columns).await.unwrap_or_else(|e| {
             part("SQL", e);
             Default::default()
@@ -1050,6 +1054,7 @@ impl SqlConn {
             columns,
             indexes,
             foreign_keys,
+            referenced_by,
             ddl,
             warnings,
         })
@@ -1165,6 +1170,81 @@ impl SqlConn {
                     ))
                     .await?;
                 fk.ref_columns = pk.rows.into_iter().filter_map(|r| r[0].clone()).collect();
+            }
+        }
+        Ok(out)
+    }
+
+    /// Foreign keys of other tables that reference `obj`, reversed (see
+    /// `Structure::referenced_by`).
+    async fn referenced_by(&self, obj: &DbObject) -> Result<Vec<ForeignKey>> {
+        // One row per (constraint, column position): name, this table's
+        // column, referencing schema, referencing table, its column.
+        let sql = match self.cfg.driver {
+            Driver::Postgres => format!(
+                "select c.conname, ra.attname, n.nspname, cl.relname, a.attname \
+                 from pg_constraint c \
+                 cross join lateral unnest(c.conkey, c.confkey) with ordinality as k(col, refcol, pos) \
+                 join pg_class cl on cl.oid = c.conrelid \
+                 join pg_namespace n on n.oid = cl.relnamespace \
+                 join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.col \
+                 join pg_attribute ra on ra.attrelid = c.confrelid and ra.attnum = k.refcol \
+                 where c.contype = 'f' and c.confrelid = to_regclass({}) \
+                 order by cl.relname, c.conname, k.pos",
+                self.lit(&self.full_name(obj))
+            ),
+            Driver::MySql => format!(
+                "select constraint_name, referenced_column_name, table_schema, table_name, column_name \
+                 from information_schema.key_column_usage \
+                 where referenced_table_schema = database() and referenced_table_name = {} \
+                 order by table_name, constraint_name, ordinal_position",
+                self.lit(&obj.name)
+            ),
+            _ => format!(
+                "select 'fk_' || f.id, f.\"to\", null, m.name, f.\"from\" \
+                 from sqlite_master m join pragma_foreign_key_list(m.name) f \
+                 where m.type = 'table' and f.\"table\" = {} \
+                 order by m.name, f.id, f.seq",
+                self.lit(&obj.name)
+            ),
+        };
+        let mut out: Vec<ForeignKey> = vec![];
+        for row in self.raw(sql).await?.rows {
+            let cell = |index: usize| row.get(index).cloned().flatten().unwrap_or_default();
+            let same_key = out
+                .last()
+                .is_some_and(|key| key.name == cell(0) && key.ref_table == cell(3));
+            if !same_key {
+                out.push(ForeignKey {
+                    name: cell(0),
+                    ref_schema: row.get(2).cloned().flatten(),
+                    ref_table: cell(3),
+                    ..Default::default()
+                });
+            }
+            let key = out.last_mut().expect("just pushed");
+            key.columns.push(cell(1));
+            key.ref_columns.push(cell(4));
+        }
+        // SQLite: a reference without columns means our primary key.
+        if out
+            .iter()
+            .any(|key| key.columns.iter().any(String::is_empty))
+        {
+            let primary_key: Vec<String> = self
+                .raw(format!(
+                    "select name from pragma_table_info({}) where pk > 0 order by pk",
+                    self.lit(&obj.name)
+                ))
+                .await?
+                .rows
+                .into_iter()
+                .filter_map(|row| row[0].clone())
+                .collect();
+            for key in &mut out {
+                if key.columns.iter().any(String::is_empty) {
+                    key.columns = primary_key.clone();
+                }
             }
         }
         Ok(out)

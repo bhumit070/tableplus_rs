@@ -95,7 +95,8 @@ actually involved.
   of the selected row, JSON pretty-printed, edit and copy per field),
   **JSON** (the row as one object, JSON columns nested, with Copy) and
   **References** (the row's foreign keys, each opening the referenced
-  row).
+  row, and *Referenced by*: the tables whose foreign keys point at this
+  row, each opening their matching rows).
 - **Foreign keys:** a → in a foreign-key cell opens the referenced row.
 - **Structure view:** columns, indexes, foreign keys and the table's
   `CREATE TABLE` statement.
@@ -184,7 +185,8 @@ actually involved.
   Cell, **Copy as ›** JSON / INSERT / UPDATE / CSV / TSV / Markdown, the
   column's values as `IN (…)` or the column names, **Copy all rows as ›**,
   Export…, Row Details, Edit Cell, Set NULL, Duplicate Row, **Filter by
-  This Value** (or `is null`), Open Referenced Row on a foreign key, Import
+  This Value** (or `is null`), Open Referenced Row on a foreign key, **Rows
+  Referencing This ›** (one entry per table that points here), Import
   CSV…, and Delete Row (staged).
 - **Export** (⌘⇧E) to CSV, TSV, JSON, JSON Lines, Markdown, HTML or SQL.
   One dialog picks the format, the rows (current filter, whole table, this

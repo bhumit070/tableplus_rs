@@ -13,7 +13,7 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{EditorState, Input, InputEvent, InputState};
 use gpui_component::menu::DropdownMenu as _;
-use gpui_component::menu::PopupMenuItem;
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::notification::Notification;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::tab::{Tab, TabBar};
@@ -37,7 +37,7 @@ use super::index_editor::{IndexDialog, render_list as render_index_list};
 use super::loading;
 use super::mongo_views::{DocView, json_editor, page_json, render_documents, render_json};
 use super::redis_key_view::RedisKeyView;
-use super::row_panel;
+use super::row_panel::{self, InboundLink};
 use super::structure_editor::StructureEditor;
 use super::table_editor::OnDone;
 use super::theme::{dp, tokens};
@@ -180,6 +180,10 @@ impl TableTab {
                 };
             // What's under the pointer: "orders #10356", and whether the
             // cell is a foreign key that can be followed.
+            let inbound = w
+                .upgrade()
+                .map(|tab| tab.read(cx).inbound_labels())
+                .unwrap_or_default();
             let (header, on_reference) = w
                 .upgrade()
                 .map(|tab| {
@@ -245,6 +249,24 @@ impl TableTab {
                             },
                         ),
                     )
+                })
+                .when(!inbound.is_empty(), |menu| {
+                    let w = w.clone();
+                    let referencing = PopupMenu::build(window, cx, move |menu, _, _| {
+                        inbound
+                            .iter()
+                            .enumerate()
+                            .fold(menu, |menu, (index, label)| {
+                                let w = w.clone();
+                                menu.item(PopupMenuItem::new(label.clone()).on_click(
+                                    move |_, _, cx| {
+                                        w.update(cx, |t, cx| t.open_referencing(row, index, cx))
+                                            .ok();
+                                    },
+                                ))
+                            })
+                    });
+                    menu.item(PopupMenuItem::submenu("Rows Referencing This", referencing))
                 })
                 .item(item("Import CSV…", |t, _, window, cx| {
                     t.import_csv(window, cx)
@@ -1399,6 +1421,50 @@ impl TableTab {
         cx.emit(TableTabEvent::OpenReference {
             schema: fk.ref_schema.clone().filter(|s| !s.is_empty()),
             table: fk.ref_table.clone(),
+            filters,
+        });
+    }
+
+    /// "orders (customer_id)" for each table whose foreign key points here.
+    pub fn inbound_labels(&self) -> Vec<String> {
+        self.structure
+            .iter()
+            .flat_map(|structure| &structure.referenced_by)
+            .map(|key| format!("{} ({})", key.ref_table, key.ref_columns.join(", ")))
+            .collect()
+    }
+
+    /// Opens the rows of the `index`th referencing table that point at
+    /// `row` (a NULL in our key means nothing can).
+    pub fn open_referencing(&mut self, row: usize, index: usize, cx: &mut Context<Self>) {
+        let Some(key) = self
+            .structure
+            .as_ref()
+            .and_then(|structure| structure.referenced_by.get(index))
+        else {
+            return;
+        };
+        let grid = self.table.read(cx).delegate();
+        let mut filters = vec![];
+        for (ours, theirs) in key.columns.iter().zip(&key.ref_columns) {
+            let Some(value) = grid
+                .columns
+                .iter()
+                .position(|column| column == ours)
+                .and_then(|column| grid.cell_string(row, column))
+            else {
+                return;
+            };
+            filters.push(Filter {
+                column: theirs.clone(),
+                op: FilterOp::Eq,
+                value,
+                value2: String::new(),
+            });
+        }
+        cx.emit(TableTabEvent::OpenReference {
+            schema: key.ref_schema.clone().filter(|schema| !schema.is_empty()),
+            table: key.ref_table.clone(),
             filters,
         });
     }
@@ -2772,6 +2838,29 @@ impl Render for TableTab {
                     )
                     .into_any_element()
             } else if self.show_detail {
+                // Tables referencing the shown row, for the References tab.
+                let inbound: Vec<InboundLink> = match self.selected_row(cx) {
+                    Some(row) => {
+                        let tab = cx.entity().downgrade();
+                        self.inbound_labels()
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, label)| {
+                                let tab = tab.clone();
+                                InboundLink {
+                                    label,
+                                    open: Rc::new(move |_, cx| {
+                                        tab.update(cx, |tab, cx| {
+                                            tab.open_referencing(row, index, cx)
+                                        })
+                                        .ok();
+                                    }),
+                                }
+                            })
+                            .collect()
+                    }
+                    None => vec![],
+                };
                 let types: Vec<Option<String>> = {
                     let cols = &self.table.read(cx).delegate().columns;
                     cols.iter()
@@ -2788,7 +2877,7 @@ impl Render for TableTab {
                 h_flex()
                     .size_full()
                     .child(div().flex_1().min_w_0().h_full().child(grid))
-                    .child(row_panel::render(self, &types, cx))
+                    .child(row_panel::render(self, &types, &inbound, cx))
                     .into_any_element()
             } else {
                 grid.into_any_element()

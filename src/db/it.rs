@@ -950,6 +950,18 @@ async fn fk_scenario(driver: Driver) {
     assert!(ddl.contains("create table"), "{driver:?}: {ddl}");
     assert!(ddl.contains("foreign key"), "{driver:?}: {ddl}");
     assert!(ddl.contains("it_parent"), "{driver:?}: {ddl}");
+    // The parent lists the child's key, reversed.
+    let parent = c.structure(&obj(&objects, "it_parent")).await.unwrap();
+    assert_eq!(
+        parent.referenced_by.len(),
+        1,
+        "{driver:?}: {:?}",
+        parent.warnings
+    );
+    let inbound = &parent.referenced_by[0];
+    assert_eq!(inbound.ref_table, "it_child", "{driver:?}");
+    assert_eq!(inbound.columns, ["a", "b"], "{driver:?}");
+    assert_eq!(inbound.ref_columns, ["pa", "pb"], "{driver:?}");
     c.execute("drop table it_child; drop table it_parent")
         .await
         .unwrap();

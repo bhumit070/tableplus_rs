@@ -1585,7 +1585,7 @@ impl QueryTab {
                 h_flex()
                     .size_full()
                     .child(div().flex_1().min_w_0().h_full().child(grid))
-                    .child(row_panel::render(self, &types, cx))
+                    .child(row_panel::render(self, &types, &[], cx))
                     .into_any_element()
             } else {
                 grid.into_any_element()
