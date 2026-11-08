@@ -550,7 +550,22 @@ impl Session {
                 window.dispatch_action((goto_commands()[i].2)(), cx);
             }
         });
-        Picker::open_scoped(
+        // ⌘↵ opens a table in a new tab even when one is open already.
+        let new_tab_session = cx.entity().downgrade();
+        let plain_pick = on_pick.clone();
+        let on_pick_new_tab: OnPick = Rc::new(move |id, window, cx| {
+            match id.strip_prefix("o:").and_then(|i| i.parse::<usize>().ok()) {
+                Some(index) => {
+                    new_tab_session
+                        .update(cx, |session, cx| {
+                            session.open_object_in_new_tab(index, window, cx)
+                        })
+                        .ok();
+                }
+                None => plain_pick(id, window, cx),
+            }
+        });
+        let palette = Picker::open_scoped(
             "Go to",
             "Go to table, column, saved query or command…",
             IconName::Search,
@@ -559,6 +574,9 @@ impl Session {
             window,
             cx,
         );
+        palette.update(cx, |palette, _| {
+            palette.set_on_pick_new_tab(on_pick_new_tab)
+        });
     }
 
     pub fn cfg(&self) -> &ConnectionConfig {
@@ -609,6 +627,23 @@ impl Session {
             .ok();
         })
         .detach();
+    }
+
+    /// A table in a tab of its own, even if it's open already (⌘↵ in ⌘P).
+    pub fn open_object_in_new_tab(
+        &mut self,
+        idx: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(obj) = self.objects.get(idx).cloned() else {
+            return;
+        };
+        if obj.kind == ObjectKind::Function {
+            self.open_definition(obj, window, cx);
+            return;
+        }
+        self.open_table_tab(obj, vec![], window, cx);
     }
 
     fn open_table_tab(

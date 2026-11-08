@@ -16,6 +16,7 @@ command is also in the menu bar.
 | ⌘K | Switch database |
 | ⌘P | Go to a table, view, collection, column or saved query, or run a command |
 | Tab / ⇧Tab | In ⌘P: next / previous scope (All, Tables, Columns, Saved queries, Commands…) |
+| ⌘↵ | In ⌘P: open the highlighted table in a new tab, even if it's open already |
 | ⌥↵ | In ⌘P: copy the highlighted name, qualified (`schema.table`, `table.column`) |
 | ⌘⇧P | Process list |
 | ⌘R | Refresh the table (or the sidebar) |

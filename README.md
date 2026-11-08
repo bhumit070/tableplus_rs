@@ -123,7 +123,8 @@ time: **More info → Run anyway**.
   also from the database name in the title bar.
 - **Go to (⌘P):** jump to a table, view, collection, column or saved query,
   or run a command. Scope chips (Tab cycles) and prefixes: `>` commands,
-  `#` saved queries, `.` columns; ⌥↵ copies the qualified name.
+  `#` saved queries, `.` columns; ⌘↵ opens in a new tab, ⌥↵ copies the
+  qualified name.
 - **Schemas (PostgreSQL):** the sidebar groups tables by schema, and the
   schema in the title bar shows one schema and makes it the default for
   queries (`search_path`), so `SELECT * FROM orders` finds `sales.orders`.

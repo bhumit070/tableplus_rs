@@ -21,7 +21,7 @@ use gpui_kit_assets::IconName;
 
 use super::dialog;
 use super::theme::{caps, dp, kbd, tokens};
-use super::{CopyPickName, NextScope, PrevScope};
+use super::{CopyPickName, NextScope, PickInNewTab, PrevScope};
 
 /// Called with the picked item's id.
 pub type OnPick = Rc<dyn Fn(String, &mut Window, &mut App)>;
@@ -86,6 +86,8 @@ pub struct Picker {
     all: Vec<PickItem>,
     /// Scope chips (⌘P): 0 = all, then one per section in order.
     scoped: bool,
+    /// ⌘↵ in ⌘P: pick into a new tab (gets the same ids as `on_pick`).
+    on_pick_new_tab: Option<OnPick>,
     scope: usize,
     query: Entity<InputState>,
     highlighted: usize,
@@ -152,6 +154,7 @@ impl Picker {
                 all,
                 scoped,
                 scope: 0,
+                on_pick_new_tab: None,
                 query,
                 highlighted,
                 on_pick,
@@ -187,6 +190,27 @@ impl Picker {
                 })
         });
         result
+    }
+
+    /// What ⌘↵ does (⌘P: open in a new tab).
+    pub fn set_on_pick_new_tab(&mut self, on_pick: OnPick) {
+        self.on_pick_new_tab = Some(on_pick);
+    }
+
+    /// ⌘↵: like ↵, but through `on_pick_new_tab` (↵ when there's none).
+    fn choose_in_new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(on_pick) = self.on_pick_new_tab.clone() else {
+            self.choose(self.highlighted, window, cx);
+            return;
+        };
+        let matches = self.matches(cx);
+        let item = matches
+            .get(self.highlighted.min(matches.len().saturating_sub(1)))
+            .cloned();
+        window.close_dialog(cx);
+        if let Some(item) = item {
+            on_pick(item.id, window, cx);
+        }
     }
 
     /// Fills in details that arrive after the picker opened (database
@@ -466,6 +490,9 @@ impl Render for Picker {
                     .on_action(cx.listener(|picker, _: &CopyPickName, window, cx| {
                         picker.copy_name(window, cx)
                     }))
+                    .on_action(cx.listener(|picker, _: &PickInNewTab, window, cx| {
+                        picker.choose_in_new_tab(window, cx)
+                    }))
             })
             .child(
                 h_flex()
@@ -522,6 +549,7 @@ impl Render for Picker {
                     .when(self.scoped, |legend| {
                         legend
                             .child(h_flex().gap(dp(4.)).child(kbd("tab", cx)).child("scope"))
+                            .child(h_flex().gap(dp(4.)).child(kbd("⌘↵", cx)).child("new tab"))
                             .child(h_flex().gap(dp(4.)).child(kbd("⌥↵", cx)).child("copy name"))
                     })
                     .child(h_flex().gap(dp(4.)).child(kbd("↵", cx)).child("open"))

@@ -2806,6 +2806,14 @@ mod tests {
         wait_until(&mut cx, "table opened", |cx| {
             session.read_with(cx, |s, _| s.active_table().is_some())
         });
+        // ⌘↵ opens it again, in a second tab.
+        cx.dispatch_action(GoTo);
+        cx.run_until_parked();
+        cx.simulate_keystrokes("tab");
+        cx.simulate_keystrokes("cmd-enter");
+        wait_until(&mut cx, "second tab", |cx| {
+            session.read_with(cx, |s, _| s.tab_count() == 2)
+        });
         let _ = remove_file(file);
     }
 

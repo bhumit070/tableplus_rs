@@ -194,15 +194,13 @@ Key new files: `src/ui/theme.rs` (tokens, `dp`, pills, `kbd`, `caps`,
    Status bar: add Ln / Col.
 7. New features: done. Still open: the Redis sidebar key tree (19; the
    keys grid with type badges + key editor cover it); MongoDB field
-   autocomplete in the find bar and sort / projection chips (20); ⌘↵
-   "open in new tab" in the palette (05).
+   autocomplete in the find bar and sort / projection chips (20).
 8. States (22): done. Gap: the connection-lost state doesn't dim the
    grid (gpui's `opacity` and an absolute wash both fail to cover
    `DataTable` rows); the banner and status bar carry it instead.
 
 Smaller leftovers: the array chip editor (cell editor #11; arrays edit as
-`{a,b}` text); the 2px left bar on
-deleted / new rows is hidden under the row-header column; design.md
+`{a,b}` text); design.md
 "Review questions" decisions not yet applied (e.g. row panel overlay below
 1440px). The MySQL binary read treats binary-typed values that are valid
 UTF-8 as text (information_schema reports its text columns as binary).

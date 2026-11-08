@@ -64,6 +64,7 @@ actions!(
         NextScope,
         PrevScope,
         CopyPickName,
+        PickInNewTab,
         RunQuery,
         RunAll,
         CancelQuery,
@@ -356,6 +357,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("tab", NextScope, Some("Picker > Input")),
         KeyBinding::new("shift-tab", PrevScope, Some("Picker > Input")),
         KeyBinding::new("alt-enter", CopyPickName, Some("Picker > Input")),
+        KeyBinding::new(sec!("enter"), PickInNewTab, Some("Picker > Input")),
         KeyBinding::new("shift-tab", PrevCell, Some("CellEditor > Input")),
         // The enum dropdown that replaces the text input.
         KeyBinding::new("up", ChoiceUp, Some("CellChoices")),
