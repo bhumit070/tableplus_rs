@@ -134,6 +134,20 @@ Since that push (local, **not pushed**, ask first):
 | `b7f1585` | 22 Query errors suggest the column / table you meant (`db/suggest.rs`) |
 | `96e9e3b` | Row panel tabs Fields / JSON / References |
 | `e753b71` | 22 Connection lost banner: auto retry with back-off, Retry now, "Reconnecting…" in the status bar, edits kept |
+| `7d6078f` | 08 Structure › Columns edited in place (`ui/structure_editor.rs`): staged with "was …", Preview DDL / Discard / Apply; the dialog keeps only New Table |
+| `67b1a68` | Fix: ↵ in the write confirmation confirms away from production (the dialog's own ↵ binding used to just close it) |
+| `6d8c714` | 08 Indexes list with Copy Definition / Drop Index… and the + Index dialog (`ui/index_editor.rs`) |
+| `3b80088` | `ddl::index_entries` moved to db; end-to-end index test on each SQL server |
+| `602040a` | 19 Redis key editor (`ui/redis_key_view.rs`, `db/redis_key.rs`): typed editors, TTL countdown, Rename / Delete, staged Save in one MULTI |
+| `c30c8ee` | 20 MongoDB Documents (cards) and JSON views (`ui/mongo_views.rs`) |
+| `8acf826` | 20 MongoDB find bar (`TableQuery.find`, JSON5 filter document) |
+| `18a152a` | 05 ⌘P scope chips (Tab cycles), columns and saved queries, prefixes `>` `#` `.`, ⌥↵ copies the qualified name |
+| `0937707` | Fix: `object_index` back to test-only |
+
+Redis / MongoDB screenshots (19-redis-hash, 19-redis-string, 20-mongo-documents,
+20-mongo-json) only render with `TABULA_IT=1` and the containers up. Each
+Redis test owns a database: 5 end-to-end, 6 insert-with-TTL, 7 UI test,
+8 screenshots, 9 key editor.
 
 Screenshots now also cover 05-palette, 17-open-connection, 24-welcome-back,
 24-passwords and 24-1…24-5 onboarding steps, and 02-query-results, 04-edit-connection,
@@ -168,11 +182,14 @@ Key new files: `src/ui/theme.rs` (tokens, `dp`, pills, `kbd`, `caps`,
    result tabs with status dots, read-only reason badge, EXPLAIN tree with
    exclusive-cost bars (design answer #21), merged History / Saved dialog.
    Status bar: add Ln / Col.
-7. New features still open: in-place Structure editing (08), Redis typed
-   editors and TTL (19), MongoDB document cards and pager (20), the
-   palette's scope chips and ⌘↵ / ⌥↵ actions (05), database sizes in the
-   switcher (06). "Rows referencing this" in the row panel needs inbound
-   foreign keys; the process grid has no per-type cell colours yet.
+7. New features: done. Still open in their screens: database sizes and
+   table counts in the switcher (06); the Redis sidebar key tree with
+   type badges (19; the keys grid + key editor cover editing); MongoDB
+   field autocomplete in the find bar and sort / projection chips (20);
+   ⌘↵ "open in new tab" in the palette (05); index right-click only (no
+   FK actions yet, 08); column comments (08). "Rows referencing this" in
+   the row panel needs inbound foreign keys; the process grid has no
+   per-type cell colours yet.
 8. States (22): done. Gap: the connection-lost state doesn't dim the
    grid (gpui's `opacity` and an absolute wash both fail to cover
    `DataTable` rows); the banner and status bar carry it instead.
