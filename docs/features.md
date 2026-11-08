@@ -243,7 +243,8 @@ instead, the same Passwords step shows as a dialog.
   Kill session always show the exact statement and ask first; your own
   session isn't listed.
 - **Backup / Restore** with the database's own tools (`pg_dump` / `psql`,
-  `mysqldump` / `mysql`); SQLite is copied with `VACUUM INTO`. SQL Server
+  `mysqldump` / `mysql`); SQLite is copied with `VACUUM INTO`. A
+  Postgres dump made by a newer `pg_dump` restores into an older server. SQL Server
   writes its backups on the server (`BACKUP DATABASE`), so Tabula doesn't
   offer one.
 - **Create / drop databases** (a new database opens right away) and the

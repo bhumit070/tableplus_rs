@@ -1835,11 +1835,12 @@ async fn postgres_backup_restore() {
     let tag = Uuid::new_v4().simple().to_string();
     // Named to sort before "postgres", so the ⌘K picker test (which steps
     // from postgres to the next database) isn't thrown off meanwhile.
-    let (src, dst) = (
+    let (src, dst, older) = (
         format!("_tabula_bk_{}", &tag[..8]),
         format!("_tabula_rs_{}", &tag[..8]),
+        format!("_tabula_ro_{}", &tag[..8]),
     );
-    for db in [&src, &dst] {
+    for db in [&src, &dst, &older] {
         admin
             .execute(&format!("create database {db}"))
             .await
@@ -1887,9 +1888,35 @@ async fn postgres_backup_restore() {
     assert!(backup::restore(&t2, &file).await.is_err());
     let r = o.execute("select count(*) from it_backup").await.unwrap();
     assert_eq!(r[0].rows[0][0].as_deref(), Some("2"));
+    // A newer pg_dump sets things an older server lacks (pg_dump 17's
+    // transaction_timeout on PostgreSQL 15): skipped, not fatal.
+    let newer = text.replacen(
+        "SET statement_timeout = 0;",
+        "SET statement_timeout = 0;\nSET tabula_setting_from_the_future = 0;",
+        1,
+    );
+    assert_ne!(newer, text, "the dump starts with its settings");
+    let newer_file = std::env::temp_dir().join(format!("tabula-it-{tag}-newer.sql"));
+    std::fs::write(&newer_file, newer).unwrap();
+    let t3 = backup::Target {
+        cfg: at(&older),
+        database: older.clone(),
+        ..t.clone()
+    };
+    backup::restore(&t3, &newer_file)
+        .await
+        .expect("an unknown setting doesn't stop the restore");
+    let restored = Connection::connect(&at(&older)).await.unwrap();
+    let r = restored
+        .execute("select count(*) from it_backup")
+        .await
+        .unwrap();
+    assert_eq!(r[0].rows[0][0].as_deref(), Some("2"));
+    restored.close().await;
+    let _ = std::fs::remove_file(newer_file);
     c.close().await;
     o.close().await;
-    for db in [&src, &dst] {
+    for db in [&src, &dst, &older] {
         admin
             .execute(&format!("drop database {db} with (force)"))
             .await
