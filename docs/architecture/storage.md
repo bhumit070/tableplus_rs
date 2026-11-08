@@ -51,6 +51,10 @@ which stores secrets in:
 - **Windows:** Credential Manager;
 - **Linux:** the Secret Service (GNOME Keyring, KWallet).
 
+The MCP server's access token is kept there too (account `mcp-token`), so
+AI tools keep working across restarts; with `save_passwords` off it lives
+in memory for one run.
+
 Tabula touches the keychain only when a password is involved (connecting
 to, editing, duplicating or importing a connection that isn't SQLite), never
 at launch. The first such time it shows the "Passwords" step
@@ -79,8 +83,9 @@ The rules:
 
 ## Settings
 
-`settings.rs` holds `Settings { ui_font_size, editor_font_size,
-restore_sessions }` as a gpui global. `settings::update` changes it,
+`settings.rs` holds `Settings` (font sizes, session restore, appearance,
+rows per page, default safe mode, row panel width, `mcp_enabled` and the
+last `mcp_port`) as a gpui global. `settings::update` changes it,
 applies it to the theme and saves the file. If saving fails, the
 change still applies for now and a notification says it won't survive a
 restart.

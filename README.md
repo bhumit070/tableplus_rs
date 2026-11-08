@@ -131,6 +131,11 @@ time: **More info → Run anyway**.
 - **Settings (⌘,):** interface and editor font sizes, system / light /
   dark theme, rows per page, default safe mode, and a searchable shortcut
   list.
+- **AI tools (MCP):** an optional MCP server on `127.0.0.1` lets Claude
+  Code, Cursor and other AI tools list, read, query and change your
+  databases, behind a token and each connection's safe mode. Settings ›
+  MCP has the `claude mcp add …` command ready to copy. See
+  [docs/mcp.md](docs/mcp.md).
 
 ## Keyboard shortcuts
 

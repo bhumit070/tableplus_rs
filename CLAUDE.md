@@ -37,7 +37,7 @@ Tests never touch real user data: `store::config_dir()` points to a temp dir und
 Three layers:
 
 - **UI (`src/ui/`, gpui main thread):** `AppView` (`ui/app.rs`, window root, title bar, connection rail, global action routing) → `Home` or one `Session` per open connection (`ui/session.rs`, sidebar + tabs) → `TableTab` / `QueryTab`, each rendering a `Grid` (`ui/grid.rs`, the `TableDelegate` for every data grid).
-- **App services (`src/*.rs`):** `store` (connections + keychain), `settings`, `restore` (`session.json`), `history`, `saved`, export/import, `rncryptor` (TablePlus export decryption).
+- **App services (`src/*.rs`):** `store` (connections + keychain), `settings`, `restore` (`session.json`), `history`, `saved`, export/import, `rncryptor` (TablePlus export decryption), `mcp` (the optional MCP server for AI tools: rmcp Streamable HTTP on 127.0.0.1 behind a bearer token; writes go through the same safe-mode gates, and `Confirm` asks the window via `ui/mcp_service.rs`).
 - **Database (`src/db/`, tokio):** one `Connection` type (`db/mod.rs`) fronting `sql.rs` (Postgres/MySQL/SQLite via sqlx), `redis_kv.rs`, `mongo.rs`, optionally over an SSH tunnel (`ssh.rs`, russh). Also SQL splitting, formatting, `safety`, EXPLAIN parsing, DDL, cancel, and `target` (detects single-table queries so results can be edited).
 
 Key cross-cutting mechanics:

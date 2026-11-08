@@ -81,6 +81,21 @@ check missed is refused by Postgres, MySQL or SQLite.
 - TablePlus export files are decrypted in memory (RNCryptor v3:
   PBKDF2-SHA1, AES-256-CBC, HMAC-SHA256, checked before decrypting).
 
+### MCP server
+
+- Off until turned on in Settings. Listens on `127.0.0.1` only; rmcp's
+  Host check (loopback names only) guards against DNS rebinding, and an
+  axum middleware refuses requests without the bearer token (compared in
+  constant time).
+- Tools never return passwords; the server connects with keychain
+  passwords itself.
+- Every write goes through the same gates as the UI: `gate_query` for
+  `run_query`, `gate_write` for `change_rows` and `kill_process`. `Block`
+  refuses; `Confirm` sends a `ConfirmRequest` to the window
+  (`ui/mcp_service.rs`), which shows the usual `ConfirmWrite`. The tool
+  waits up to five minutes, and closing the dialog drops the reply, which
+  counts as "no".
+
 ### Network
 
 - **TLS:** *Require encrypted connection* makes TLS mandatory. *Verify

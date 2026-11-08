@@ -9,7 +9,8 @@ also starts with a `//!` comment saying the same in more detail.
 | --- | ---: | --- |
 | `main.rs` | ~140 | Entry point: starts gpui, loads settings, binds keys, registers actions, builds the menu bar and opens the window. On Windows release builds, `windows_subsystem = "windows"` prevents a console window. |
 | `runtime.rs` | ~60 | The tokio runtime the drivers run on, and `spawn` / `spawn_detached` to reach it from the UI. Panics become errors. |
-| `store.rs` | ~270 | Config folder, saved connections, keychain access, `read_json` (moves damaged files aside), `write_atomic`. |
+| `mcp.rs` | ~1,000 | The MCP server for AI tools: Streamable HTTP on 127.0.0.1 behind a bearer token, the tools (connections, objects, structure, rows, queries, changes, processes, Redis keys), safe-mode gates with confirmation requests to the UI. |
+| `store.rs` | ~290 | Config folder, saved connections, keychain access, `read_json` (moves damaged files aside), `write_atomic`. |
 | `settings.rs` | ~190 | User settings (font sizes, session restore, appearance, rows per page, default safe mode) as a gpui global, saved to `settings.json`. |
 | `restore.rs` | ~80 | What `session.json` holds, for reopening last time's connections and tabs. |
 | `sample.rs` | ~160 | The sample database: a SQLite shop generated in SQL on first use. |
@@ -49,6 +50,7 @@ also starts with a `//!` comment saying the same in more detail.
 | `mod.rs` | ~480 | Actions, key bindings, `Shared` (one open connection), `guarded` (safe-mode prompts), `prompt_text`, colors. |
 | `app.rs` | ~3,300 | `AppView`: window root, connection rail (with tiles for connections still opening), connecting (incl. SSH host-key prompts), onboarding and the "Welcome back" offer at launch, session save / restore, global shortcut routing, theme and zoom. Also the UI tests. |
 | `history_view.rs` | ~710 | Query history and saved queries in one dialog: tabs, search, status filter, preview, open / insert / save / delete. |
+| `mcp_service.rs` | ~170 | Starts / stops the MCP server with Settings › MCP, keeps its token, and shows its safe-mode confirmations in the window. |
 | `loading.rs` | ~200 | Loading states: delayed skeleton rows, the loading chip with elapsed time and Stop, busy toasts. |
 | `home.rs` | ~1,330 | Connections home: cards grouped Open now / Saved, search (`/`), environment filter, import, new / edit / duplicate / delete. |
 | `conn_form.rs` | ~1,040 | New / edit connection form: engine tiles, connection URL, environment, safe mode, SSH section, inline Test connection. |

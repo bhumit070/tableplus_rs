@@ -29,6 +29,15 @@ exact versions are in `Cargo.toml` and `Cargo.lock`.
 | --- | --- |
 | [`tokio`](https://crates.io/crates/tokio) | The runtime the drivers run on (`src/runtime.rs`), plus timeouts, locks (`RwLock` around each connection), `select!` for cancel, and `process` to run `pg_dump` and friends. |
 | [`futures`](https://crates.io/crates/futures) | Stream helpers (`TryStreamExt`) and `BoxFuture` for the server-side cancel callback. |
+| [`tokio-util`](https://crates.io/crates/tokio-util) | `CancellationToken` that stops the MCP server. |
+
+## MCP server
+
+| Crate | Used for |
+| --- | --- |
+| [`rmcp`](https://crates.io/crates/rmcp) | The official Rust MCP SDK: the tool router (`#[tool]` macros) and the Streamable HTTP transport (`src/mcp.rs`). Its client side is a dev-dependency, for the end-to-end tests. |
+| [`axum`](https://crates.io/crates/axum) | Serves that transport on `127.0.0.1`, with the bearer-token middleware in front. |
+| [`schemars`](https://crates.io/crates/schemars) | JSON Schemas of the tools' arguments, from their Rust types. |
 
 ## Data formats
 
@@ -55,6 +64,7 @@ exact versions are in `Cargo.toml` and `Cargo.lock`.
 | `gpui` with `test-support` | Headless UI tests: open the app in a test window, dispatch actions, read views. |
 | [`csv`](https://crates.io/crates/csv) | Reads exported CSV back in tests, as an independent check of the export format. |
 | [`rand`](https://crates.io/crates/rand) | Random SSH keys for the test SSH server. |
+| `rmcp` with `client` | Talks to the MCP server over HTTP in tests, as an AI tool would. |
 
 ## Packaging (CI only)
 

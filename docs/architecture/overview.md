@@ -37,7 +37,7 @@ flowchart TB
 | Layer | Where | Responsibility |
 | --- | --- | --- |
 | UI | `src/ui/` | Windows, views, dialogs, key bindings. Runs on gpui's main thread. |
-| App services | `src/*.rs` | Files Tabula owns (connections, settings, session, history), the keychain, import and export. |
+| App services | `src/*.rs` | Files Tabula owns (connections, settings, session, history), the keychain, import and export, and the optional MCP server (`mcp.rs`) that AI tools connect to. It runs on the tokio runtime with its own connections, and asks the UI for safe-mode confirmations through a channel (`ui/mcp_service.rs`). |
 | Database | `src/db/` | One `Connection` type in front of five drivers, plus everything that understands SQL: splitting, formatting, safety checks, EXPLAIN, DDL. |
 
 ## Two executors: gpui and tokio

@@ -252,8 +252,19 @@ actually involved.
 Sections for General (session restore), Appearance (System / Light / Dark,
 remembered across launches; ⌘⇧L switches too; interface size), Editor
 (font size with a preview), Data grid (rows per page when a table opens),
-Safe mode (what new connections start with), and Shortcuts: a searchable
-list of every key binding. Changes apply at once.
+Safe mode (what new connections start with), MCP, and Shortcuts: a
+searchable list of every key binding. Changes apply at once.
+
+## AI tools (MCP)
+
+Turn on **Settings › MCP** and AI tools such as Claude Code or Cursor can
+work with your saved connections through an MCP server on this computer:
+list databases and tables, read structure and rows, run queries, change
+rows, see and stop processes. Copy the ready-made `claude mcp add …`
+command or JSON config from Settings. It listens on `127.0.0.1` only, needs
+a token, never sends passwords, and every write follows the connection's
+safe mode (confirm modes ask in the Tabula window first). See
+[MCP server](mcp.md).
 
 ## Not yet supported
 

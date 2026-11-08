@@ -60,6 +60,7 @@ nav:
       - Getting started: getting-started.md
       - Features: features.md
       - Keyboard shortcuts: shortcuts.md
+      - MCP server (AI tools): mcp.md
   - Architecture:
       - Overview: architecture/overview.md
       - User interface: architecture/ui.md
