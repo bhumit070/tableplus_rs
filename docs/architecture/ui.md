@@ -41,8 +41,8 @@ flowchart TB
 | --- | --- | --- |
 | `AppView` | `ui/app.rs` | Window root: title bar (environment, connection / database / schema, ⌘P go-to box, safe-mode badge), connection rail, status bar, which session is in front. Opens connections, saves and restores the session, routes shortcuts. |
 | `Home` | `ui/home.rs` | Connections home: cards grouped Open now / Saved, search, environment filter, TablePlus import, the sample database, the "Welcome back" offer, and the keychain gate before anything reads a password. |
-| `Onboarding` | `ui/onboarding.rs` | First-run steps (Welcome, Look & feel, Connections, You're set), shown in place of everything else until finished or skipped. |
-| `PasswordsStep` | `ui/passwords.rs` | The one-time explanation before Tabula first uses the keychain. |
+| `Onboarding` | `ui/onboarding.rs` | First-run steps (Welcome, Look & feel, Connections, Passwords when needed, You're all set). `AppView` shows it in place of the title bar, rail and status bar until finished or skipped. |
+| `PasswordsStep` | `ui/passwords.rs` | The one-time keychain explanation: probes the keychain on Continue and shows the outcome. Embedded in onboarding, or a dialog later. |
 | `ConnForm` | `ui/conn_form.rs` | New / edit connection dialog: engine tiles, connection URL, environment, safe mode, SSH section, inline Test connection. |
 | `Session` | `ui/session.rs` | One open connection: sidebar, tab strip, database switching, backup / restore, create / drop database, sidebar menus. |
 | `TableTab` | `ui/table_tab.rs` | A table, view, collection or Redis key space: toolbar (Data / Structure / DDL, filter chips, pager, Refresh, + Row, Export), filter editor, editable grid, pending-changes bar, Structure view, CSV import, foreign-key jumps. |

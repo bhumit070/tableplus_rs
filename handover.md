@@ -153,6 +153,9 @@ Since that push (local, **not pushed**, ask first):
 | `1dfe8a2` | 08 Column comments on Postgres / MySQL (ColumnInfo / ColDef `comment`) |
 | `0ea32b3` | `db::binary`: hex written as bytes on every engine; MySQL non-UTF-8 binary read as `0x…` |
 | `0275e9d` | 13 Binary cells: Save Value to File / Load File into Cell |
+| `b42a2e0` | MCP server for AI tools (`src/mcp.rs`, `ui/mcp_service.rs`, Settings › MCP) |
+| `f740fd1` | New logo: app icons regenerated from `packaging/icons/tabula.svg` |
+| `4752188` | Onboarding redesign 24.1–24.5 from Penpot; `ui/logo.rs`; Passwords step inside onboarding with a real keychain probe and outcomes (24.4b) |
 
 Redis / MongoDB screenshots (19-redis-hash, 19-redis-string, 20-mongo-documents,
 20-mongo-json) only render with `TABULA_IT=1` and the containers up. Each
@@ -206,7 +209,8 @@ Smaller leftovers: the array chip editor (cell editor #11; arrays edit as
 screenshots don't relayout after `Window::resize`; check sizes with
 `simulate_resize` in UI tests instead. The MySQL binary read treats binary-typed values that are valid
 UTF-8 as text (information_schema reports its text columns as binary).
-`connection_switching` (ui test) failed once in a loaded full
+`connection_switching` and `picker_opens_saved_connection` (ui tests,
+both ⌘N picker) have each failed once in a loaded full
 `TABULA_IT=1` run and passes alone: a timing flake in the ⌘N picker step.
 
 Keep docs in step: README.md, `docs/` (features, shortcuts, architecture/ui,

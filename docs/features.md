@@ -2,12 +2,27 @@
 
 ## First run
 
-A short onboarding on a fresh install (skippable at every step): Welcome,
-Look & feel (theme with live previews, text size), Connections (import from
-TablePlus, new connection, open a SQLite file, or the sample database) and
-You're set, with the shortcuts worth knowing. Installs that already have
-connections skip it. Nothing touches the keychain until a password is
-actually involved.
+A short onboarding on a fresh install, filling the window (skippable at
+every step, Esc goes back):
+
+1. **Welcome:** what Tabula is, three things it's good at, and *Get
+   started* (or *Coming from TablePlus?*, which lands on Import).
+2. **Look & feel:** System, Dark or Light (← / → move; the window
+   re-themes at once) and the text size, with a live preview row.
+3. **Connections:** import from TablePlus (from an export file, or this
+   Mac's own list), a new connection, a SQLite file, or the sample
+   database. *I'll do this later* is fine too.
+4. **Passwords & Keychain:** only when the choice involves a password.
+   It explains what's stored where and shows the system prompt to expect;
+   *Continue* triggers that prompt and says how it went (with how to
+   change your mind if it was refused). *Don't save passwords* means
+   Tabula asks at every connect and stores nothing.
+5. **You're all set:** what was set up, four shortcuts worth knowing, and
+   *Open Tabula* (the sample database opens on its `orders` table).
+
+Installs that already have connections skip it. Nothing touches the
+keychain until a password is actually involved; when that happens later
+instead, the same Passwords step shows as a dialog.
 
 ## Connections
 

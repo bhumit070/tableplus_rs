@@ -71,8 +71,9 @@ also starts with a `//!` comment saying the same in more detail.
 | `redis_key_view.rs` | ~800 | The Redis key editor beside the key list: header with TTL countdown, Rename, Delete; typed item editors; staged Save. |
 | `structure_editor.rs` | ~690 | Structure › Columns edited in place: staged column changes, Preview DDL / Discard / Apply. |
 | `processes.rs` | ~240 | Process list (⌘⇧P). |
-| `onboarding.rs` | ~720 | First-run onboarding: Welcome, Look & feel, Connections, You're set. |
-| `passwords.rs` | ~200 | The "Passwords" step shown before Tabula first uses the keychain; "Don't save passwords" turns it off. |
+| `onboarding.rs` | ~1,300 | First-run onboarding: Welcome, Look & feel, Connections, Passwords (when needed), You're all set. |
+| `passwords.rs` | ~600 | Passwords & Keychain: the explainer, a drawn macOS prompt, the keychain probe and its outcome (allowed / refused); onboarding's step 4 and the one-time dialog later. |
+| `logo.rs` | ~130 | The Tabula mark drawn from shapes (dark and light), matching `packaging/icons/tabula.svg`. |
 | `picker.rs` | ~360 | Searchable pick-one dialog in the command-palette look: sections, icons, shortcut caps, highlighted matches. |
 | `settings_view.rs` | ~660 | Settings dialog: sections, and the shortcut list built from `key_bindings()` with names from the menu bar. |
 | `theme.rs` | ~380 | Bundled Geist fonts and the Tabula Dark / Light themes. |
