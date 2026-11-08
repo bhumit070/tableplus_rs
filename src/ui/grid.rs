@@ -152,7 +152,7 @@ fn hex_len(v: &str) -> Option<usize> {
 }
 
 /// 24100 → "23.5 KB".
-fn human_size(n: usize) -> String {
+pub(super) fn human_size(n: usize) -> String {
     match n {
         0..1024 => format!("{n} B"),
         1024..1_048_576 => format!("{:.1} KB", n as f64 / 1024.),

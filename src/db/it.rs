@@ -418,6 +418,117 @@ async fn mysql_end_to_end() {
     }
 }
 
+/// The key editor: read each type, stage edits, TTL, rename, delete.
+/// Database 9: each Redis test flushes its own database (5 end-to-end,
+/// 6 insert-with-TTL, 7 the UI test, 8 screenshots).
+#[tokio::test]
+async fn redis_key_editor() {
+    use redis_key::KeyEdit;
+    if !it_enabled() {
+        return;
+    }
+    let mut c = Connection::connect(&cfg(Driver::Redis)).await.unwrap();
+    c.use_database("9").await.unwrap();
+    c.execute(
+        "FLUSHDB\nHSET ke:user name Ada age 36\nRPUSH ke:queue a b c d\nSADD ke:tags red blue\n\
+         ZADD ke:board 10 ana 20 ben\nSET ke:json \"{\\\"a\\\":1}\"\nXADD ke:events * kind signup",
+    )
+    .await
+    .unwrap();
+    let hash = c.key_detail("ke:user").await.unwrap();
+    assert_eq!(hash.kind, "hash");
+    assert_eq!(hash.length, 2);
+    assert!(
+        hash.items.contains(&("name".into(), "Ada".into())),
+        "{:?}",
+        hash.items
+    );
+    assert_eq!(hash.ttl, None);
+    let board = c.key_detail("ke:board").await.unwrap();
+    assert_eq!(
+        board.items,
+        [("ana".into(), "10".into()), ("ben".into(), "20".into())]
+    );
+    let events = c.key_detail("ke:events").await.unwrap();
+    assert_eq!(events.items.len(), 1);
+    assert_eq!(events.items[0].1, "kind=signup");
+    assert_eq!(
+        c.key_detail("ke:json").await.unwrap().items[0].1,
+        "{\"a\":1}"
+    );
+
+    c.apply_key_edits(
+        "ke:user",
+        &[
+            KeyEdit::HashSet {
+                field: "name".into(),
+                value: "Ada L.".into(),
+            },
+            KeyEdit::HashDelete("age".into()),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        c.key_detail("ke:user").await.unwrap().items,
+        [("name".into(), "Ada L.".into())]
+    );
+    c.apply_key_edits(
+        "ke:queue",
+        &[
+            KeyEdit::ListRemove(0),
+            KeyEdit::ListSet {
+                index: 1,
+                value: "B".into(),
+            },
+            KeyEdit::ListRemove(3),
+            KeyEdit::ListPush("e".into()),
+        ],
+    )
+    .await
+    .unwrap();
+    let queue: Vec<String> = c
+        .key_detail("ke:queue")
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .map(|(_, value)| value)
+        .collect();
+    assert_eq!(queue, ["B", "c", "e"]);
+    c.apply_key_edits(
+        "ke:board",
+        &[
+            KeyEdit::ZsetAdd {
+                member: "ana".into(),
+                score: 30.0,
+            },
+            KeyEdit::ZsetRemove("ben".into()),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        c.key_detail("ke:board").await.unwrap().items,
+        [("ana".into(), "30".into())]
+    );
+
+    c.set_ttl("ke:tags", Some(100)).await.unwrap();
+    let ttl = c.key_detail("ke:tags").await.unwrap().ttl.unwrap();
+    assert!((90..=100).contains(&ttl), "{ttl}");
+    c.set_ttl("ke:tags", None).await.unwrap();
+    assert_eq!(c.key_detail("ke:tags").await.unwrap().ttl, None);
+    assert!(
+        c.rename_key("ke:tags", "ke:user").await.is_err(),
+        "never overwrites"
+    );
+    c.rename_key("ke:tags", "ke:labels").await.unwrap();
+    assert_eq!(c.key_detail("ke:labels").await.unwrap().kind, "set");
+    c.delete_key("ke:labels").await.unwrap();
+    assert_eq!(c.key_detail("ke:labels").await.unwrap().kind, "none");
+    c.execute("FLUSHDB").await.unwrap();
+}
+
 #[tokio::test]
 async fn redis_end_to_end() {
     if !it_enabled() {

@@ -2232,6 +2232,73 @@ mod tests {
         .unwrap();
     }
 
+    /// Selecting a Redis key opens it in the key editor; a staged field is
+    /// saved with HSET. Needs the Redis container (TABULA_IT=1).
+    #[gpui::test]
+    fn redis_key_editor_saves(cx: &mut TestAppContext) {
+        if std::env::var("TABULA_IT").is_err() {
+            return;
+        }
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Redis);
+        cfg.port = 56379;
+        cfg.database = "7".into();
+        let setup = cfg.clone();
+        block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute("FLUSHDB\nHSET kv:user name Ada age 36").await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| {
+            a.connect(cfg.clone(), w, cx, |_, _, _| {})
+        });
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "keys", |cx| {
+            session.read_with(cx, |s, _| s.object_index("keys").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let index = s.object_index("keys").unwrap();
+            s.open_object(index, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "rows", |cx| {
+            tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 1)
+        });
+        tab.update_in(&mut cx, |t, w, cx| t.select_cell(0, 0, w, cx));
+        let key_view = tab.read_with(&cx, |t, _| t.redis_key_view().unwrap());
+        wait_until(&mut cx, "key read", |cx| {
+            key_view.read_with(cx, |v, _| {
+                v.detail_for_test().is_some_and(|d| d.length == 2)
+            })
+        });
+        assert_eq!(
+            key_view.read_with(&cx, |v, _| v.shown_key().map(String::from)),
+            Some("kv:user".into())
+        );
+        key_view.update_in(&mut cx, |v, w, cx| {
+            v.edit_row_for_test(2, "city", "Paris", w, cx);
+            v.save(w, cx);
+        });
+        wait_until(&mut cx, "saved", |cx| {
+            key_view.read_with(cx, |v, _| {
+                v.detail_for_test().is_some_and(|d| d.length == 3)
+            })
+        });
+        block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&cfg).await?;
+            c.execute("FLUSHDB").await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+    }
+
     /// ⌘↵ runs the statement under the cursor (one result, no tab bar);
     /// ⌘⇧↵ runs them all; a result tab's × closes it.
     #[gpui::test]

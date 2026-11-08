@@ -32,6 +32,7 @@ use super::grid::{Grid, data_table};
 use super::index_editor::confirm_drop as confirm_drop_index;
 use super::index_editor::{IndexDialog, render_list as render_index_list};
 use super::loading;
+use super::redis_key_view::RedisKeyView;
 use super::row_panel;
 use super::structure_editor::StructureEditor;
 use super::table_editor::OnDone;
@@ -83,6 +84,8 @@ pub struct TableTab {
     /// Structure › Columns, editable in place; rebuilt when the structure
     /// is read again.
     columns_editor: Option<Entity<StructureEditor>>,
+    /// Redis: the selected key's editor, beside the key list.
+    redis_key: Option<Entity<RedisKeyView>>,
     struct_cols: Entity<TableState<Grid>>,
     struct_idx: Entity<TableState<Grid>>,
     struct_fks: Entity<TableState<Grid>>,
@@ -278,8 +281,12 @@ impl TableTab {
                     TableEvent::DoubleClickedCell(r, c) => {
                         cell_edit::start_edit(this, *r, *c, EditStart::Keep, window, cx)
                     }
-                    // The row detail panel follows the selection.
-                    TableEvent::SelectRow(_) | TableEvent::SelectCell(..) => cx.notify(),
+                    // The row detail panel and the Redis key editor follow
+                    // the selection.
+                    TableEvent::SelectRow(_) | TableEvent::SelectCell(..) => {
+                        this.follow_selected_key(window, cx);
+                        cx.notify()
+                    }
                     _ => {}
                 }
             }),
@@ -291,6 +298,7 @@ impl TableTab {
             table,
             structure: None,
             columns_editor: None,
+            redis_key: None,
             struct_cols,
             struct_idx,
             struct_fks,
@@ -317,8 +325,37 @@ impl TableTab {
             fk_labels: Default::default(),
             _subs: subs,
         };
+        if this.shared.cfg.driver == Driver::Redis {
+            let tab = cx.entity().downgrade();
+            let on_changed = Rc::new(move |_: &mut Window, cx: &mut App| {
+                tab.update(cx, |tab, cx| tab.reload(cx)).ok();
+            });
+            let shared = this.shared.clone();
+            this.redis_key = Some(cx.new(|cx| RedisKeyView::new(shared, on_changed, window, cx)));
+        }
         this.reload(cx);
         this
+    }
+
+    /// The Redis key editor shows the selected row's key (rows fetched
+    /// from the server only: a staged new key isn't there yet).
+    fn follow_selected_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.redis_key.clone() else {
+            return;
+        };
+        let grid = self.table.read(cx).delegate();
+        let key_column = grid.columns.iter().position(|column| column == "key");
+        let key = self
+            .selected_row(cx)
+            .filter(|row| *row < grid.base_rows)
+            .zip(key_column)
+            .and_then(|(row, column)| grid.cell_string(row, column));
+        view.update(cx, |view, cx| view.show_key(key, window, cx));
+    }
+
+    #[cfg(test)]
+    pub fn redis_key_view(&self) -> Option<Entity<RedisKeyView>> {
+        self.redis_key.clone()
     }
 
     #[cfg(test)]
@@ -2501,7 +2538,22 @@ impl Render for TableTab {
                 .into_any_element()
         } else {
             let grid = cell_edit::editable(data_table(&self.table, cx), cx);
-            if self.show_detail {
+            if let Some(key_view) = self.redis_key.clone() {
+                let t = tokens(cx);
+                h_flex()
+                    .size_full()
+                    .child(div().flex_1().min_w_0().h_full().child(grid))
+                    .child(
+                        div()
+                            .w(dp(460.))
+                            .flex_none()
+                            .h_full()
+                            .border_l_1()
+                            .border_color(t.border)
+                            .child(key_view),
+                    )
+                    .into_any_element()
+            } else if self.show_detail {
                 let types: Vec<Option<String>> = {
                     let cols = &self.table.read(cx).delegate().columns;
                     cols.iter()

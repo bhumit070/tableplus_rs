@@ -114,7 +114,9 @@ time: **More info → Run anyway**.
 - **Admin:** process list with cancel / kill (⌘⇧P), backup / restore
   (`pg_dump` / `psql`, `mysqldump` / `mysql`, SQLite file copy), create /
   drop databases, rename / duplicate / vacuum tables.
-- **Redis:** keys grouped by namespace (`user:*`) in the sidebar.
+- **Redis:** keys grouped by namespace (`user:*`) in the sidebar; the
+  selected key opens in a typed editor (hash, list, set, zset, string,
+  stream) with its TTL counting down, staged edits saved in one `MULTI`.
 - **Database switcher (⌘K):** jump between databases on the same connection,
   also from the database name in the title bar.
 - **Go to (⌘P):** jump to a table, view or collection, or run a command.

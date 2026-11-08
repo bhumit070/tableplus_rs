@@ -23,7 +23,7 @@ const SCAN_CAP: usize = 10_000;
 pub struct RedisConn {
     cfg: ConnectionConfig,
     /// Reconnects by itself after the server restarts or the network drops.
-    con: ConnectionManager,
+    pub(super) con: ConnectionManager,
     db: String,
 }
 

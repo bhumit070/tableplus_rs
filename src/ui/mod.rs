@@ -17,6 +17,7 @@ pub mod passwords;
 pub mod picker;
 pub mod processes;
 pub mod query_tab;
+pub mod redis_key_view;
 pub mod row_panel;
 pub mod session;
 pub mod settings_view;

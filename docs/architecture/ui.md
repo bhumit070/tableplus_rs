@@ -52,6 +52,7 @@ flowchart TB
 | `Grid` | `ui/grid.rs` | The `TableDelegate` behind every data grid: fetched rows plus staged edits, deletions and new rows. |
 | `TableEditor` | `ui/table_editor.rs` | New Table dialog. |
 | `IndexDialog` | `ui/index_editor.rs` | + Index: columns in order, unique, live CREATE INDEX. |
+| `RedisKeyView` | `ui/redis_key_view.rs` | Redis key editor, owned by the keys `TableTab` and following its selection. |
 | `StructureEditor` | `ui/structure_editor.rs` | Structure › Columns edited in place, owned by its `TableTab`; rebuilt when the structure is read again. |
 | `Processes` | `ui/processes.rs` | Process list dialog, polling every few seconds. |
 | `Picker` | `ui/picker.rs` | Searchable pick-one dialog in the palette look (⌘K, ⌘N, ⌘P, schemas). |

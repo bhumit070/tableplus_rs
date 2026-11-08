@@ -9,6 +9,7 @@ pub mod format;
 #[cfg(test)]
 mod it;
 mod mongo;
+pub mod redis_key;
 mod redis_kv;
 pub mod safety;
 pub mod split;
@@ -26,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use anyhow::{Error, anyhow, bail};
 pub use cancel::Cancel;
+use redis_key::{KeyDetail, KeyEdit};
 use tokio::{select, time::timeout};
 use uuid::Uuid;
 
@@ -787,6 +789,47 @@ impl Connection {
     /// failed commit may have saved some changes.
     pub fn commits_atomically(&self) -> bool {
         !matches!(self.inner, Conn::Mongo(_))
+    }
+
+    fn redis(&self) -> Result<&redis_kv::RedisConn> {
+        match &self.inner {
+            Conn::Redis(redis) => Ok(redis),
+            _ => bail!("only Redis has keys"),
+        }
+    }
+
+    /// One Redis key for the key editor.
+    pub async fn key_detail(&self, key: &str) -> Result<KeyDetail> {
+        let redis = self.redis()?;
+        self.bounded("Reading the key", redis.key_detail(key)).await
+    }
+
+    pub async fn apply_key_edits(&self, key: &str, edits: &[KeyEdit]) -> Result<()> {
+        self.redis()?
+            .apply_key_edits(key, edits)
+            .await
+            .map_err(|e| self.explain(e))
+    }
+
+    pub async fn set_ttl(&self, key: &str, seconds: Option<i64>) -> Result<()> {
+        self.redis()?
+            .set_ttl(key, seconds)
+            .await
+            .map_err(|e| self.explain(e))
+    }
+
+    pub async fn rename_key(&self, from: &str, to: &str) -> Result<()> {
+        self.redis()?
+            .rename_key(from, to)
+            .await
+            .map_err(|e| self.explain(e))
+    }
+
+    pub async fn delete_key(&self, key: &str) -> Result<()> {
+        self.redis()?
+            .delete_key(key)
+            .await
+            .map_err(|e| self.explain(e))
     }
 
     /// Server sessions (first column = id), for the process list.

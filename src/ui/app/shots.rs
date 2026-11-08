@@ -567,4 +567,85 @@ fn screenshots() {
     s.snap("24-passwords");
     s.in_window(|w, cx| w.close_dialog(cx));
     s.settle();
+    // Redis needs its container (TABULA_IT=1).
+    if std::env::var("TABULA_IT").is_ok() {
+        redis_shots(&mut s);
+    }
+}
+
+/// 19: a hash with staged edits, and a JSON string with a TTL.
+fn redis_shots(s: &mut Shots) {
+    let mut cfg = ConnectionConfig::new(Driver::Redis);
+    cfg.name = "cache".into();
+    cfg.port = 56379;
+    cfg.database = "8".into();
+    let setup = cfg.clone();
+    block_on(crate::runtime::spawn(async move {
+        let c = crate::db::Connection::connect(&setup).await?;
+        c.execute(
+            "FLUSHDB\n\
+             HSET user:1001 name \"Priya Raman\" email priya@example.com plan team created 2026-03-14\n\
+             HSET user:1002 name \"Marcus Lee\" email marcus@example.com plan free\n\
+             SET session:7f3a \"{\\\"user\\\":1001,\\\"cart\\\":[12,40],\\\"theme\\\":\\\"dark\\\"}\" EX 3600\n\
+             RPUSH queue:emails welcome:1001 receipt:10356 reset:1002\n\
+             ZADD leaderboard 4200 priya 3100 marcus 2800 ana\n\
+             SADD tags:popular sql rust databases\n\
+             XADD events * kind signup user 1002",
+        )
+        .await?;
+        c.close().await;
+        Ok(())
+    }))
+    .expect("the Redis container is up");
+    let app = s.app.clone();
+    s.in_window(|w, cx| app.update(cx, |a, cx| a.connect(cfg, w, cx, |_, _, _| {})));
+    s.wait("redis", |cx| {
+        app.read(cx)
+            .sessions
+            .last()
+            .is_some_and(|session| session.read(cx).object_index("keys").is_some())
+    });
+    let session =
+        s.cx.update(|cx| app.read(cx).sessions.last().unwrap().clone());
+    s.in_window(|w, cx| {
+        session.update(cx, |session, cx| {
+            let index = session.object_index("keys").unwrap();
+            session.open_object(index, w, cx)
+        })
+    });
+    let tab = s.cx.update(|cx| session.read(cx).active_table().unwrap());
+    s.wait("keys", |cx| tab.read(cx).loaded_rows(cx) == 7);
+    let key_view = s.cx.update(|cx| tab.read(cx).redis_key_view().unwrap());
+    // Rows sort by key: events, leaderboard, queue:emails, session:7f3a,
+    // tags:popular, user:1001, user:1002.
+    s.in_window(|w, cx| tab.update(cx, |t, cx| t.select_cell(5, 0, w, cx)));
+    s.wait("hash", |cx| {
+        key_view
+            .read(cx)
+            .detail_for_test()
+            .is_some_and(|detail| detail.kind == "hash")
+    });
+    s.in_window(|w, cx| {
+        key_view.update(cx, |view, cx| {
+            let plan = view
+                .detail_for_test()
+                .and_then(|detail| detail.items.iter().position(|(field, _)| field == "plan"))
+                .unwrap();
+            view.edit_row_for_test(plan, "plan", "enterprise", w, cx);
+            view.edit_row_for_test(4, "region", "eu-west", w, cx);
+            view.show_preview_for_test(cx);
+        })
+    });
+    s.snap("19-redis-hash");
+    s.in_window(|w, cx| {
+        key_view.update(cx, |view, cx| view.discard(w, cx));
+        tab.update(cx, |t, cx| t.select_cell(3, 0, w, cx));
+    });
+    s.wait("string", |cx| {
+        key_view
+            .read(cx)
+            .detail_for_test()
+            .is_some_and(|detail| detail.kind == "string")
+    });
+    s.snap("19-redis-string");
 }

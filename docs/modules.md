@@ -27,6 +27,7 @@ also starts with a `//!` comment saying the same in more detail.
 | `mod.rs` | ~770 | `Connection`, `ConnectionConfig`, `Driver`, `EnvTag`, `SafeMode` and the shared data types (`QueryResult`, `TableQuery`, `Change`, `Structure`, …). Adds timeouts and readable errors to driver calls. |
 | `sql.rs` | ~1,640 | PostgreSQL, MySQL and SQLite through sqlx: connect / probe, listing, structure, paging, editor batches, commits, processes, admin statements. |
 | `redis_kv.rs` | ~660 | Redis: key listing with SCAN, the *keys* table, one-command-per-line editor, pipelined commits. |
+| `redis_key.rs` | ~380 | One Redis key for the key editor: read (capped at 500 elements), staged `KeyEdit`s as one MULTI, TTL, RENAMENX, DEL. |
 | `mongo.rs` | ~660 | MongoDB: collections as tables, mongosh-style call parsing (JSON5), filters, commits. |
 | `ssh.rs` | ~680 | SSH tunnel: login (password, key, agent), host-key checks, local forwarding, reopening dropped sessions. Includes a test SSH server. |
 | `cancel.rs` | ~120 | `Cancel`: stops a running batch, cancelling server-side first. |
@@ -63,6 +64,7 @@ also starts with a `//!` comment saying the same in more detail.
 | `row_panel.rs` | ~180 | Row detail panel (⌘⇧I). |
 | `table_editor.rs` | ~700 | New Table dialog: templates, type menu, live CREATE TABLE. |
 | `index_editor.rs` | ~550 | Structure › Indexes: the index list with its right-click menu, and the + Index dialog. |
+| `redis_key_view.rs` | ~800 | The Redis key editor beside the key list: header with TTL countdown, Rename, Delete; typed item editors; staged Save. |
 | `structure_editor.rs` | ~690 | Structure › Columns edited in place: staged column changes, Preview DDL / Discard / Apply. |
 | `processes.rs` | ~240 | Process list (⌘⇧P). |
 | `onboarding.rs` | ~720 | First-run onboarding: Welcome, Look & feel, Connections, You're set. |
