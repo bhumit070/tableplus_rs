@@ -3081,11 +3081,8 @@ impl Render for TableTab {
                         })
                         .collect()
                 };
-                h_flex()
-                    .size_full()
-                    .child(div().flex_1().min_w_0().h_full().child(grid))
-                    .child(row_panel::render(self, &types, &inbound, cx))
-                    .into_any_element()
+                let panel = row_panel::render(self, &types, &inbound, cx);
+                row_panel::place(grid.into_any_element(), panel, window)
             } else {
                 grid.into_any_element()
             }

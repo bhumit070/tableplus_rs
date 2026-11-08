@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, ClipboardItem, Context, Global, IntoElement, ParentElement, Styled, Window,
-    div, prelude::*,
+    div, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::{ActiveTheme as _, Icon, Sizable as _, WindowExt as _, h_flex, v_flex};
@@ -45,6 +45,54 @@ pub fn pretty_json(v: &str) -> Option<String> {
 pub fn current_row<H: CellEditHost>(host: &H, cx: &App) -> Option<usize> {
     let t = host.grid().read(cx);
     t.selected_row().or(t.selected_cell().map(|(r, _)| r))
+}
+
+/// Windows narrower than this float the panel over the grid instead of
+/// docking it (design.md, review answer #13): the grid keeps its width.
+const DOCK_FROM: f32 = 1440.;
+
+/// The grid with the row panel beside it (wide windows) or floating over
+/// its right edge with a shadow (narrower ones).
+pub fn place(grid: AnyElement, panel: AnyElement, window: &Window) -> AnyElement {
+    if window.viewport_size().width >= px(DOCK_FROM) {
+        return h_flex()
+            .size_full()
+            .child(
+                div()
+                    .debug_selector(|| "panel-grid".into())
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(grid),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "row-panel".into())
+                    .h_full()
+                    .child(panel),
+            )
+            .into_any_element();
+    }
+    div()
+        .relative()
+        .size_full()
+        .child(
+            div()
+                .debug_selector(|| "panel-grid".into())
+                .size_full()
+                .child(grid),
+        )
+        .child(
+            div()
+                .debug_selector(|| "row-panel".into())
+                .absolute()
+                .top_0()
+                .right_0()
+                .bottom_0()
+                .shadow_lg()
+                .child(panel),
+        )
+        .into_any_element()
 }
 
 /// A table whose foreign key points at this row ("orders (customer_id)"),

@@ -1177,7 +1177,7 @@ mod tests {
     use crate::ui::onboarding::Step;
     use chrono::NaiveTime;
     use futures::executor::block_on;
-    use gpui::{ClipboardItem, Modifiers};
+    use gpui::{ClipboardItem, Modifiers, size};
     use gpui_component::init;
     use serde_json::to_string;
 
@@ -2885,6 +2885,61 @@ mod tests {
         assert_eq!(crate::db::binary::decode(&stored).unwrap(), payload);
         let _ = remove_file(file);
         let _ = remove_file(source);
+    }
+
+    /// The row panel docks beside the grid in wide windows and floats over
+    /// it below 1440px, leaving the grid its full width.
+    #[gpui::test]
+    fn row_panel_floats_in_narrow_windows(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = temp_dir().join(format!("tabula-ui-panel-{}.db", cfg.id));
+        write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute("create table t (id integer primary key); insert into t values (1)")
+                .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("t").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let index = s.object_index("t").unwrap();
+            s.open_object(index, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "rows", |cx| {
+            tab.read_with(cx, |t, cx| t.loaded_rows(cx) == 1)
+        });
+        tab.update(&mut cx, |t, cx| {
+            t.show_detail = true;
+            cx.notify();
+        });
+        let edges = |cx: &mut VisualTestContext| {
+            cx.run_until_parked();
+            let grid = cx.debug_bounds("panel-grid").expect("grid");
+            let panel = cx.debug_bounds("row-panel").expect("panel");
+            (grid.right(), panel.left(), panel.right())
+        };
+        cx.simulate_resize(size(px(1600.), px(900.)));
+        let (grid_right, panel_left, _) = edges(&mut cx);
+        assert!(grid_right <= panel_left, "docked: side by side");
+        cx.simulate_resize(size(px(1280.), px(900.)));
+        let (grid_right, panel_left, panel_right) = edges(&mut cx);
+        assert!(panel_left < grid_right, "floating: over the grid");
+        assert_eq!(grid_right, panel_right, "the grid keeps its full width");
+        let _ = remove_file(file);
     }
 
     /// A saved query shows in the sidebar as soon as it's saved.

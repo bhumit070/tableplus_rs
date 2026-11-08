@@ -1436,7 +1436,7 @@ impl QueryTab {
             .into_any_element()
     }
 
-    fn render_results(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_results(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = tokens(cx);
         let theme = cx.theme().clone();
         let showing_error = self.error.is_some() && self.active >= self.results.len();
@@ -1584,11 +1584,8 @@ impl QueryTab {
                         })
                         .collect()
                 };
-                h_flex()
-                    .size_full()
-                    .child(div().flex_1().min_w_0().h_full().child(grid))
-                    .child(row_panel::render(self, &types, &[], cx))
-                    .into_any_element()
+                let panel = row_panel::render(self, &types, &[], cx);
+                row_panel::place(grid.into_any_element(), panel, window)
             } else {
                 grid.into_any_element()
             }
@@ -1808,7 +1805,7 @@ impl Focusable for QueryTab {
 }
 
 impl Render for QueryTab {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = tokens(cx);
         let driver = self.shared.cfg.driver;
         let sql = matches!(driver, Driver::Postgres | Driver::MySql | Driver::Sqlite);
@@ -1982,7 +1979,7 @@ impl Render for QueryTab {
                     .child(
                         resizable_panel()
                             .size(px(320.))
-                            .child(self.render_results(cx)),
+                            .child(self.render_results(window, cx)),
                     ),
             )
     }
