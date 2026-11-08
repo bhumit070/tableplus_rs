@@ -249,6 +249,8 @@ pub type EmptyFn = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 pub type MenuFn = Rc<dyn Fn(usize, PopupMenu, &mut Window, &mut App) -> PopupMenu>;
 /// Called with (row, column) when a foreign-key link is clicked.
 pub type FollowFn = Rc<dyn Fn(usize, usize, &mut Window, &mut App)>;
+/// A cell's text colour from (column name, value); `None` keeps the default.
+pub type TintFn = Rc<dyn Fn(&str, &str, &App) -> Option<Hsla>>;
 /// Called with (column, typed text) while a foreign-key cell is edited; the
 /// host looks up matching rows and puts them in `fk_matches`.
 pub type FkSearchFn = Rc<dyn Fn(usize, String, &mut Window, &mut App)>;
@@ -282,6 +284,9 @@ pub struct Grid {
     /// Columns that reference another table: their values get a → link.
     pub links: Vec<bool>,
     pub on_follow: Option<FollowFn>,
+    /// Colours a plain text / number cell from its column and value (the
+    /// process list: long durations red, lock waits amber).
+    pub tint: Option<TintFn>,
     /// Per column: the database type ("int8", "numeric(12,2)"), shown under
     /// the name; empty when unknown.
     pub types: Vec<String>,
@@ -1466,6 +1471,10 @@ impl TableDelegate for Grid {
                     None => div().truncate().child(display(v)).into_any_element(),
                 },
                 Kind::Number => {
+                    let tint = self
+                        .tint
+                        .as_ref()
+                        .and_then(|tint| tint(&self.columns[col_ix], v, cx));
                     let negative = v.trim_start().starts_with('-');
                     let shown = if pk || link {
                         v.to_string()
@@ -1476,6 +1485,7 @@ impl TableDelegate for Grid {
                         .truncate()
                         .when(negative && !link, |d| d.text_color(t.danger))
                         .when(link, |d| d.text_color(t.info))
+                        .when_some(tint, |d, colour| d.text_color(colour))
                         .child(shown)
                         .into_any_element()
                 }
@@ -1483,6 +1493,12 @@ impl TableDelegate for Grid {
                     .min_w_0()
                     .truncate()
                     .when(link, |d| d.text_color(t.info))
+                    .when_some(
+                        self.tint
+                            .as_ref()
+                            .and_then(|tint| tint(&self.columns[col_ix], v, cx)),
+                        |d, colour| d.text_color(colour),
+                    )
                     .child(display(v))
                     .into_any_element(),
             },

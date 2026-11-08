@@ -8,8 +8,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext as _, ClipboardItem, Context, Entity, FontWeight, IntoElement, ParentElement,
-    Render, SharedString, Styled, Window, div, prelude::*,
+    App, AppContext as _, ClipboardItem, Context, Entity, FontWeight, Hsla, IntoElement,
+    ParentElement, Render, SharedString, Styled, Window, div, prelude::*,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::notification::Notification;
@@ -24,7 +24,7 @@ use super::dialog;
 use super::grid::{Grid, data_table};
 use super::theme::{dp, tokens};
 use crate::db::safety::{Gate, gate_write};
-use crate::db::{Connection, Driver, QueryResult};
+use crate::db::{ColumnInfo, Connection, Driver, QueryResult};
 use crate::runtime;
 
 /// How often the list refreshes while Live is on.
@@ -59,8 +59,10 @@ impl Processes {
             return;
         }
         let view = cx.new(|cx| {
+            let mut colours = Grid::default();
+            colours.tint = Some(Rc::new(tint));
             let grid = cx.new(|cx| {
-                TableState::new(Grid::default(), window, cx)
+                TableState::new(colours, window, cx)
                     .row_selectable(true)
                     .col_resizable(true)
             });
@@ -177,6 +179,25 @@ impl Processes {
         };
         self.grid.update(cx, |table, cx| {
             table.delegate_mut().set_result(&shown);
+            // States read as pills (active, idle in transaction, Sleep…).
+            let state = shown.columns.iter().position(|column| column == "state");
+            if let Some(state) = state {
+                let mut states: Vec<String> = shown
+                    .rows
+                    .iter()
+                    .filter_map(|row| row[state].clone())
+                    .collect();
+                states.sort();
+                states.dedup();
+                table.delegate_mut().set_choices(&[ColumnInfo {
+                    name: "state".into(),
+                    data_type: String::new(),
+                    nullable: true,
+                    default: None,
+                    is_pk: false,
+                    enum_values: states,
+                }]);
+            }
             let again = selected.and_then(|id| {
                 shown
                     .rows
@@ -477,5 +498,39 @@ impl Render for Processes {
                     .text_color(t.text_faint)
                     .child("Your own session isn't listed, so it can't be killed by mistake."),
             )
+    }
+}
+
+/// Seconds in Postgres's `HH:MM:SS` or MySQL's plain number.
+fn running_seconds(text: &str) -> Option<u64> {
+    let parts: Vec<u64> = text
+        .split(':')
+        .map(|part| part.trim().parse::<u64>().ok())
+        .collect::<Option<_>>()?;
+    Some(parts.iter().fold(0, |total, part| total * 60 + part))
+}
+
+/// Statements running over a minute in red, sessions waiting on a lock in
+/// amber (design.md screen 16).
+fn tint(column: &str, value: &str, cx: &App) -> Option<Hsla> {
+    let t = tokens(cx);
+    match column {
+        "running_for" | "seconds" => running_seconds(value)
+            .filter(|seconds| *seconds > 60)
+            .map(|_| t.danger),
+        "waiting_on" if value.starts_with("Lock") => Some(t.warning),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_running_times() {
+        assert_eq!(running_seconds("00:01:05"), Some(65));
+        assert_eq!(running_seconds("42"), Some(42));
+        assert_eq!(running_seconds(""), None);
     }
 }

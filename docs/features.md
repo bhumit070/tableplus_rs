@@ -210,7 +210,8 @@ actually involved.
   numbers for problems; unmapped required columns block Import. All rows
   go in one transaction, through safe mode.
 - **Process list** (⌘⇧P): server sessions, live every 2 s (or paused),
-  filtered to Active / Idle in transaction / All. The selected session's
+  filtered to Active / Idle in transaction / All. States show as pills,
+  statements running over a minute in red, lock waits in amber. The selected session's
   full query, client and start time show below the list, with "Blocked by
   PID n" to jump to the session holding it up (Postgres). Cancel query and
   Kill session always show the exact statement and ask first; your own

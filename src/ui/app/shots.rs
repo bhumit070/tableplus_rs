@@ -582,6 +582,7 @@ fn screenshots() {
     if std::env::var("TABULA_IT").is_ok() {
         redis_shots(&mut s);
         mongo_shots(&mut s);
+        process_shots(&mut s);
     }
 }
 
@@ -720,6 +721,40 @@ fn redis_shots(s: &mut Shots) {
         started.elapsed() > Duration::from_millis(500)
     });
     s.snap("06-db-switcher");
+    s.in_window(|w, cx| w.close_dialog(cx));
+    s.settle();
+}
+
+/// 16: the process list, with a statement running elsewhere.
+fn process_shots(s: &mut Shots) {
+    let mut cfg = ConnectionConfig::new(Driver::Postgres);
+    cfg.name = "analytics".into();
+    cfg.port = 55432;
+    cfg.user = "postgres".into();
+    cfg.password = "test".into();
+    cfg.database = "postgres".into();
+    // Another session, busy for a while (it finishes on its own).
+    let busy = cfg.clone();
+    let _busy_session = crate::runtime::spawn(async move {
+        let c = crate::db::Connection::connect(&busy).await?;
+        c.execute("select pg_sleep(8)").await?;
+        c.close().await;
+        Ok(())
+    });
+    let app = s.app.clone();
+    s.in_window(|w, cx| app.update(cx, |a, cx| a.connect(cfg, w, cx, |_, _, _| {})));
+    s.wait("postgres", |cx| {
+        app.read(cx)
+            .sessions
+            .last()
+            .is_some_and(|session| session.read(cx).cfg().driver == Driver::Postgres)
+    });
+    s.in_window(|w, cx| w.dispatch_action(Box::new(crate::ui::ShowProcesses), cx));
+    let started = Instant::now();
+    s.wait("processes", |_| {
+        started.elapsed() > Duration::from_millis(1500)
+    });
+    s.snap("16-processes");
     s.in_window(|w, cx| w.close_dialog(cx));
     s.settle();
 }
