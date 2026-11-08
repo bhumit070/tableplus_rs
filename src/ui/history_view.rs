@@ -19,6 +19,7 @@ use gpui_component::{ActiveTheme as _, Icon, Sizable as _, WindowExt as _, h_fle
 use gpui_kit_assets::IconName;
 
 use super::dialog;
+use super::saved_changed;
 use super::session::Session;
 use super::theme::{caps, dp, kbd, tokens};
 use crate::history::{self, Entry};
@@ -260,6 +261,7 @@ impl HistoryView {
         match saved::delete(&q.id) {
             Ok(()) => {
                 self.saved.remove(i);
+                saved_changed(cx);
                 window.push_notification(format!("Deleted “{}”", q.name), cx);
             }
             Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),

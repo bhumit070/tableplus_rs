@@ -2809,6 +2809,39 @@ mod tests {
         let _ = remove_file(file);
     }
 
+    /// A saved query shows in the sidebar as soon as it's saved.
+    #[gpui::test]
+    fn saved_queries_in_sidebar(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = temp_dir().join(format!("tabula-ui-saved-side-{}.db", cfg.id));
+        write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let conn_id = cfg.id.clone();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        assert!(session.read_with(&cx, |s, _| s.saved_in_sidebar().is_empty()));
+        let query = crate::saved::SavedQuery {
+            id: format!("sidebar-{conn_id}"),
+            name: "Failed payments".into(),
+            sql: "select 1".into(),
+            conn_id: Some(conn_id),
+        };
+        crate::saved::upsert(query.clone()).unwrap();
+        cx.update(|_, cx| crate::ui::saved_changed(cx));
+        cx.run_until_parked();
+        assert_eq!(
+            session.read_with(&cx, |s, _| s.saved_in_sidebar()),
+            ["Failed payments"]
+        );
+        crate::saved::delete(&query.id).unwrap();
+        let _ = remove_file(file);
+    }
+
     /// "Rows referencing this": from a customer, its orders open in a tab
     /// filtered to that customer.
     #[gpui::test]

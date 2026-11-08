@@ -677,6 +677,20 @@ impl Connection {
         .await
     }
 
+    /// Approximate rows per table for the sidebar, from the catalog
+    /// (cheap; never a COUNT): `(schema, name, rows)`. Empty where the
+    /// server keeps no estimate (SQLite, Redis).
+    pub async fn approx_row_counts(&self) -> Result<Vec<(Option<String>, String, u64)>> {
+        self.bounded("Reading row estimates", async {
+            match &self.inner {
+                Conn::Sql(c) => c.approx_row_counts().await,
+                Conn::Redis(_) => Ok(vec![]),
+                Conn::Mongo(c) => c.approx_row_counts().await,
+            }
+        })
+        .await
+    }
+
     /// Sizes and object counts for the database switcher. Best effort: a
     /// server that won't say gets no numbers, not an error.
     pub async fn database_stats(&self) -> Result<Vec<DatabaseStats>> {

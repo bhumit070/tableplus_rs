@@ -836,6 +836,34 @@ impl SqlConn {
             .collect())
     }
 
+    /// Planner estimates: Postgres `reltuples` (-1 until first analyzed:
+    /// left out), MySQL `table_rows`. SQLite keeps none.
+    pub async fn approx_row_counts(&self) -> Result<Vec<(Option<String>, String, u64)>> {
+        let sql = match self.cfg.driver {
+            Driver::Postgres => {
+                "select n.nspname, c.relname, c.reltuples::bigint from pg_class c \
+                 join pg_namespace n on n.oid = c.relnamespace \
+                 where c.relkind in ('r', 'p', 'm') and c.reltuples >= 0 \
+                 and n.nspname not in ('pg_catalog', 'information_schema')"
+            }
+            Driver::MySql => {
+                "select null, table_name, table_rows from information_schema.tables \
+                 where table_schema = database() and table_rows is not null"
+            }
+            _ => return Ok(vec![]),
+        };
+        Ok(self
+            .raw(sql.into())
+            .await?
+            .rows
+            .into_iter()
+            .filter_map(|row| {
+                let rows = row.get(2)?.as_deref()?.parse::<u64>().ok()?;
+                Some((row.first()?.clone(), row.get(1)?.clone()?, rows))
+            })
+            .collect())
+    }
+
     /// Postgres: sizes (table counts would need a connection per
     /// database). MySQL: sizes and table counts from information_schema.
     pub async fn database_stats(&self) -> Result<Vec<DatabaseStats>> {

@@ -240,6 +240,14 @@ fn screenshots() {
     s.in_window(|w, cx| w.close_dialog(cx));
 
     let cfg = demo_db();
+    // A saved query, for the sidebar's Saved queries section.
+    crate::saved::upsert(crate::saved::SavedQuery {
+        id: format!("shots-{}", cfg.id),
+        name: "Failed payments".into(),
+        sql: "select * from orders where status = 'refunded';".into(),
+        conn_id: Some(cfg.id.clone()),
+    })
+    .expect("config dir is a temp dir under test");
     let app = s.app.clone();
     s.in_window(|w, cx| app.update(cx, |a, cx| a.connect(cfg, w, cx, |_, _, _| {})));
     s.wait("connection", |cx| app.read(cx).sessions.len() == 1);

@@ -22,7 +22,6 @@ use gpui_component::{
 };
 use gpui_kit_assets::IconName;
 
-use super::Shared;
 use super::completion::Schema;
 use super::grid::human_size;
 use super::history_view::{HistoryView, Tab as HistoryTab};
@@ -31,9 +30,10 @@ use super::picker::{OnPick, PickItem, Picker};
 use super::query_tab::QueryTab;
 use super::table_tab::{TableTab, TableTabEvent};
 use super::theme::{caps, dp, kbd, tokens};
+use super::{SavedChanged, Shared};
 use crate::db::{ConnectionConfig, DbObject, Driver, Filter, ObjectKind};
 use crate::runtime;
-use crate::saved;
+use crate::saved::{self, SavedQuery};
 use anyhow::{Result, anyhow};
 use dirs::{download_dir, home_dir};
 use gpui::{Action, ClipboardItem, PathPromptOptions, transparent_black};
@@ -85,6 +85,10 @@ pub struct Session {
     /// Set when the connection comes back; the next render reloads the
     /// sidebar (it needs the window).
     reload_objects_later: bool,
+    /// Approximate rows per object index, once the catalog says.
+    row_counts: HashMap<usize, u64>,
+    /// This connection's saved queries, for the sidebar section.
+    saved_queries: Vec<SavedQuery>,
     /// Databases switched to in this session, newest first, for the
     /// switcher's Recent section.
     recent_dbs: Vec<String>,
@@ -107,6 +111,10 @@ impl Session {
                 }
             }),
         ];
+        // Saved queries changed elsewhere (a query tab, History): relist.
+        cx.default_global::<SavedChanged>();
+        let mut subs = subs;
+        subs.push(cx.observe_global::<SavedChanged>(|session, cx| session.rebuild_tree(cx)));
         let mut this = Self {
             shared,
             objects: Vec::new(),
@@ -127,6 +135,8 @@ impl Session {
             retry_at: None,
             retries: 0,
             reload_objects_later: false,
+            row_counts: HashMap::new(),
+            saved_queries: vec![],
             load_error: None,
             dbs_error: None,
             focus: cx.focus_handle(),
@@ -194,7 +204,9 @@ impl Session {
                         this.refresh_completion();
                         this.databases = dbs;
                         this.current_db = current;
+                        this.row_counts.clear();
                         this.rebuild_tree(cx);
+                        this.load_row_counts(cx);
                         // Redis has a single "keys" view: open it straight away.
                         if this.tabs.is_empty()
                             && this
@@ -304,14 +316,57 @@ impl Session {
 
     fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
         let q = self.search.read(cx).value().to_string();
-        let items = build_tree(
+        let mut items = build_tree(
             &self.objects,
             &q,
             self.schema.as_deref(),
             self.schemas.len() > 1,
         );
+        // Saved queries last, filtered like everything else.
+        self.saved_queries = saved::for_connection(&self.shared.cfg.id).unwrap_or_default();
+        let needle = q.to_lowercase();
+        let saved: Vec<TreeItem> = self
+            .saved_queries
+            .iter()
+            .enumerate()
+            .filter(|(_, query)| needle.is_empty() || query.name.to_lowercase().contains(&needle))
+            .map(|(index, query)| TreeItem::new(format!("q:{index}"), query.name.clone()))
+            .collect();
+        if !saved.is_empty() {
+            items.push(
+                TreeItem::new("g:saved", format!("Saved queries ({})", saved.len()))
+                    .expanded(true)
+                    .children(saved),
+            );
+        }
         self.tree.update(cx, |t, cx| t.set_items(items, cx));
         cx.notify();
+    }
+
+    /// The sidebar's approximate row counts, from the catalog.
+    fn load_row_counts(&mut self, cx: &mut Context<Self>) {
+        let conn = self.shared.conn.clone();
+        let task = runtime::spawn(async move { conn.read().await.approx_row_counts().await });
+        cx.spawn(async move |this, cx| {
+            // No estimates is fine: the sidebar just shows none.
+            let Ok(counts) = task.await else { return };
+            this.update(cx, |session, cx| {
+                session.row_counts = session
+                    .objects
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, object)| {
+                        let (_, _, rows) = counts.iter().find(|(schema, name, _)| {
+                            *name == object.name && (schema.is_none() || *schema == object.schema)
+                        })?;
+                        Some((index, *rows))
+                    })
+                    .collect();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Autocomplete follows the selected schema (all schemas when none is).
@@ -922,6 +977,14 @@ impl Session {
     #[cfg(test)]
     pub fn object(&self, name: &str) -> Option<DbObject> {
         self.objects.iter().find(|o| o.name == name).cloned()
+    }
+
+    #[cfg(test)]
+    pub fn saved_in_sidebar(&self) -> Vec<String> {
+        self.saved_queries
+            .iter()
+            .map(|query| query.name.clone())
+            .collect()
     }
 
     #[cfg(test)]
@@ -1583,6 +1646,7 @@ impl Session {
         let session = cx.entity().downgrade();
         let s2 = session.clone();
         let kinds: Rc<Vec<ObjectKind>> = Rc::new(self.objects.iter().map(|o| o.kind).collect());
+        let row_counts = Rc::new(self.row_counts.clone());
         v_flex()
             .size_full()
             .bg(t.sidebar)
@@ -1706,11 +1770,16 @@ impl Session {
                                             ),
                                     );
                                 }
-                                let kind = id
-                                    .strip_prefix("o:")
-                                    .and_then(|n| n.parse::<usize>().ok())
-                                    .and_then(|i| kinds.get(i).copied());
+                                let object_index =
+                                    id.strip_prefix("o:").and_then(|n| n.parse::<usize>().ok());
+                                let kind = object_index.and_then(|i| kinds.get(i).copied());
+                                let rows = object_index.and_then(|i| row_counts.get(&i).copied());
+                                let saved_query =
+                                    id.strip_prefix("q:").and_then(|n| n.parse::<usize>().ok());
                                 let (icon, color) = match kind {
+                                    _ if saved_query.is_some() => {
+                                        (IconName::Bookmark, t.text_muted)
+                                    }
                                     Some(ObjectKind::View) => (IconName::Eye, t.keyword),
                                     Some(ObjectKind::Collection) => {
                                         (IconName::Layers, t.text_muted)
@@ -1732,14 +1801,29 @@ impl Session {
                                             .child(Icon::new(icon).small().text_color(
                                                 if selected { t.accent } else { color },
                                             ))
-                                            .child(div().truncate().child(label)),
+                                            .child(div().flex_1().min_w_0().truncate().child(label))
+                                            .children(rows.map(|rows| {
+                                                div()
+                                                    .flex_none()
+                                                    .font_family(
+                                                        cx.theme().mono_font_family.clone(),
+                                                    )
+                                                    .text_size(dp(11.))
+                                                    .text_color(t.text_faint)
+                                                    .child(compact_count(rows))
+                                            })),
                                     )
                                     .on_click(move |_, window, cx| {
-                                        if let Some(i) = id
-                                            .strip_prefix("o:")
-                                            .and_then(|n| n.parse::<usize>().ok())
-                                        {
+                                        if let Some(i) = object_index {
                                             s.update(cx, |s, cx| s.open_object(i, window, cx)).ok();
+                                        } else if let Some(i) = saved_query {
+                                            s.update(cx, |s, cx| {
+                                                if let Some(query) = s.saved_queries.get(i) {
+                                                    let sql = query.sql.clone();
+                                                    s.open_query(sql, window, cx);
+                                                }
+                                            })
+                                            .ok();
                                         }
                                     })
                             })
@@ -2168,6 +2252,16 @@ fn schemas_of(objects: &[DbObject]) -> Vec<String> {
 
 /// Sidebar tree. With several schemas and none selected, objects are
 /// grouped under a folder per schema; otherwise Tables / Views / … only.
+/// 12, 1.2K, 2.1M: an estimate needs no more digits.
+fn compact_count(count: u64) -> String {
+    match count {
+        0..1_000 => count.to_string(),
+        1_000..1_000_000 => format!("{:.1}K", count as f64 / 1_000.),
+        1_000_000..1_000_000_000 => format!("{:.1}M", count as f64 / 1_000_000.),
+        _ => format!("{:.1}B", count as f64 / 1_000_000_000.),
+    }
+}
+
 fn build_tree(
     objects: &[DbObject],
     query: &str,
@@ -2254,6 +2348,13 @@ mod tests {
             obj("public", "active_users", ObjectKind::View),
             obj("audit", "log", ObjectKind::Table),
         ]
+    }
+
+    #[test]
+    fn compact_counts() {
+        assert_eq!(compact_count(12), "12");
+        assert_eq!(compact_count(1_234), "1.2K");
+        assert_eq!(compact_count(2_100_000), "2.1M");
     }
 
     #[test]

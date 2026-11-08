@@ -32,7 +32,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui::{App, Hsla, KeyBinding};
+use gpui::{App, Global, Hsla, KeyBinding};
 use tokio::sync::RwLock;
 
 use crate::db::{Connection, ConnectionConfig, is_connection_lost};
@@ -173,6 +173,16 @@ pub fn guarded(
 
 /// A small dialog asking for one line of text. `on_ok` gets the trimmed
 /// text and returns false to keep the dialog open (e.g. invalid input).
+/// Bumped whenever saved queries change, so sidebars list them again.
+#[derive(Default)]
+pub struct SavedChanged(pub u64);
+
+impl Global for SavedChanged {}
+
+pub fn saved_changed(cx: &mut App) {
+    cx.default_global::<SavedChanged>().0 += 1;
+}
+
 pub fn prompt_text(
     title: &str,
     description: &str,

@@ -243,6 +243,17 @@ impl MongoConn {
         Ok(self.client.list_database_names().await?)
     }
 
+    /// Per collection, from its metadata (estimatedDocumentCount).
+    pub async fn approx_row_counts(&self) -> Result<Vec<(Option<String>, String, u64)>> {
+        let mut counts = vec![];
+        for name in self.db.list_collection_names().await? {
+            if let Ok(count) = self.coll(&name).estimated_document_count().await {
+                counts.push((None, name, count));
+            }
+        }
+        Ok(counts)
+    }
+
     /// Sizes on disk, from listDatabases.
     pub async fn database_stats(&self) -> Result<Vec<DatabaseStats>> {
         Ok(self

@@ -30,7 +30,7 @@ use super::grid::{Grid, data_table};
 use super::loading;
 use super::row_panel;
 use super::theme::{dp, kbd, tokens};
-use super::{DisabledWhen as _, QueryHistory, RunQuery, Shared, SwitchDatabase};
+use super::{DisabledWhen as _, QueryHistory, RunQuery, Shared, SwitchDatabase, saved_changed};
 use crate::db::explain::{self, PlanNode};
 use crate::db::split::{split_statements, statement_at};
 use crate::db::suggest::{Unknown, closest, replace_word, unknown_name};
@@ -809,6 +809,7 @@ impl QueryTab {
             match crate::saved::upsert(q.clone()) {
                 Ok(()) => {
                     self.saved = Some(q);
+                    saved_changed(cx);
                     window.push_notification("Saved", cx);
                 }
                 Err(e) => window.push_notification(Notification::error(format!("{e:#}")), cx),
@@ -842,6 +843,7 @@ impl QueryTab {
                         window.push_notification(Notification::error(format!("{e:#}")), cx);
                         return true;
                     }
+                    saved_changed(cx);
                     me.update(cx, |t, cx| {
                         t.set_saved(q);
                         cx.notify();

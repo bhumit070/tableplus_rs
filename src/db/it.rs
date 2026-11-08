@@ -1424,6 +1424,13 @@ async fn database_stats_per_server() {
     let stats = mysql.database_stats().await.unwrap();
     let system = stats.iter().find(|stats| stats.name == "mysql").unwrap();
     assert!(system.objects.unwrap() > 0, "{stats:?}");
+    mysql.execute("drop table if exists it_estimate; create table it_estimate (id int primary key); insert into it_estimate values (1), (2); analyze table it_estimate").await.unwrap();
+    let estimates = mysql.approx_row_counts().await.unwrap();
+    assert!(
+        estimates.iter().any(|(_, name, _)| name == "it_estimate"),
+        "{estimates:?}"
+    );
+    mysql.execute("drop table it_estimate").await.unwrap();
 
     let mut redis = Connection::connect(&cfg(Driver::Redis)).await.unwrap();
     redis.use_database("10").await.unwrap();
@@ -1441,6 +1448,12 @@ async fn database_stats_per_server() {
         .execute("db.stats_probe.insertOne({a: 1})")
         .await
         .unwrap();
+    let estimates = mongo.approx_row_counts().await.unwrap();
+    assert!(
+        estimates
+            .iter()
+            .any(|(_, name, rows)| name == "stats_probe" && *rows >= 1)
+    );
     let stats = mongo.database_stats().await.unwrap();
     assert!(
         stats
