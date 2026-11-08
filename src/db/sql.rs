@@ -1892,6 +1892,7 @@ mod tests {
             };
             let query = |filters: Vec<Filter>, match_any: bool| TableQuery {
                 find: String::new(),
+                fields: vec![],
                 object: DbObject {
                     schema: None,
                     name: "t".into(),

@@ -99,6 +99,9 @@ pub struct TableTab {
     /// MongoDB's find bar, and the filter document it applied.
     find_input: Option<Entity<InputState>>,
     find: String,
+    /// MongoDB's projection: the fields input, and the fields it applied.
+    fields_input: Option<Entity<InputState>>,
+    fields: Vec<String>,
     /// The JSON view's editor and the text it was made from.
     json_view: Option<(Entity<EditorState>, String)>,
     struct_cols: Entity<TableState<Grid>>,
@@ -365,6 +368,8 @@ impl TableTab {
             doc_view: DocView::default(),
             find_input: None,
             find: String::new(),
+            fields_input: None,
+            fields: vec![],
             json_view: None,
             struct_cols,
             struct_idx,
@@ -406,6 +411,17 @@ impl TableTab {
                 },
             ));
             this.find_input = Some(input);
+            let fields = cx.new(|cx| InputState::new(window, cx).placeholder("all fields"));
+            this._subs.push(cx.subscribe_in(
+                &fields,
+                window,
+                |tab, _, event: &InputEvent, _, cx| {
+                    if let InputEvent::PressEnter { .. } = event {
+                        tab.apply_find(cx);
+                    }
+                },
+            ));
+            this.fields_input = Some(fields);
         }
         if this.shared.cfg.driver == Driver::Redis {
             let tab = cx.entity().downgrade();
@@ -426,7 +442,21 @@ impl TableTab {
             return;
         };
         let find = input.read(cx).value().trim().to_string();
-        if find == self.find {
+        // "name, status" → the projection; `_id` always comes along.
+        let fields: Vec<String> = self
+            .fields_input
+            .as_ref()
+            .map(|input| {
+                input
+                    .read(cx)
+                    .value()
+                    .split(',')
+                    .map(|field| field.trim().to_string())
+                    .filter(|field| !field.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if find == self.find && fields == self.fields {
             return;
         }
         if self.is_dirty(cx) {
@@ -435,6 +465,7 @@ impl TableTab {
             return;
         }
         self.find = find;
+        self.fields = fields;
         self.page = 0;
         self.reload(cx);
     }
@@ -461,10 +492,27 @@ impl TableTab {
                 .child(
                     div()
                         .flex_1()
-                        .font_family(mono)
+                        .font_family(mono.clone())
                         .child(Input::new(input).small().cleanable(true)),
                 )
-                .when(!self.find.is_empty(), |bar| {
+                .children(self.fields_input.as_ref().map(|fields| {
+                    h_flex()
+                        .gap(dp(8.))
+                        .child(
+                            div()
+                                .text_size(dp(12.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(t.text_muted)
+                                .child("fields"),
+                        )
+                        .child(
+                            div()
+                                .w(dp(220.))
+                                .font_family(mono)
+                                .child(Input::new(fields).small().cleanable(true)),
+                        )
+                }))
+                .when(!self.find.is_empty() || !self.fields.is_empty(), |bar| {
                     bar.child(
                         div()
                             .text_size(dp(11.5))
@@ -479,6 +527,16 @@ impl TableTab {
     #[cfg(test)]
     pub fn error_for_test(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    #[cfg(test)]
+    pub fn fields_for_test(&mut self, fields: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(input) = self.fields_input.clone() {
+            input.update(cx, |input, cx| {
+                input.set_value(fields.to_string(), window, cx)
+            });
+        }
+        self.apply_find(cx);
     }
 
     #[cfg(test)]
@@ -809,6 +867,7 @@ impl TableTab {
             // without one.
             match_any: self.match_any && self.fixed.is_empty(),
             find: self.find.clone(),
+            fields: self.fields.clone(),
         }
     }
 

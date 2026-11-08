@@ -2459,6 +2459,14 @@ mod tests {
         wait_until(&mut cx, "found by a nested field", |cx| {
             tab.read_with(cx, |t, cx| !t.is_loading(cx) && t.loaded_rows(cx) == 1)
         });
+        // Fields: only those (and _id) come back.
+        tab.update_in(&mut cx, |t, w, cx| t.fields_for_test("status", w, cx));
+        wait_until(&mut cx, "projected", |cx| {
+            tab.read_with(cx, |t, cx| {
+                let json = t.page_json_for_test(cx);
+                !t.is_loading(cx) && json.contains("status") && !json.contains("items")
+            })
+        });
         tab.update_in(&mut cx, |t, w, cx| t.find_for_test("{ status: ", w, cx));
         wait_until(&mut cx, "bad filter reported", |cx| {
             tab.read_with(cx, |t, _| {

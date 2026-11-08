@@ -160,7 +160,8 @@ actually involved.
   A **find** bar above the data takes a filter document in JSON5
   (`{ status: "paid", total: { $gt: 100 } }`, dotted paths for nested
   fields); ↵ applies it on top of the filter chips, and clearing it shows
-  everything again.
+  everything again. **fields** beside it limits the documents to the
+  fields listed (`name, status`; `_id` always comes along).
 
 ## Query editor
 

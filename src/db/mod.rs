@@ -531,6 +531,8 @@ pub struct TableQuery {
     /// MongoDB's find bar: a filter document (JSON5), ANDed with the
     /// filters. Empty for everything else.
     pub find: String,
+    /// MongoDB's projection: only these fields (and `_id`); empty = all.
+    pub fields: Vec<String>,
 }
 
 /// A staged edit. `key` identifies the row: primary-key columns for SQL,

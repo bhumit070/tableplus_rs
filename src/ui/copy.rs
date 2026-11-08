@@ -1020,6 +1020,7 @@ mod tests {
             let conn = Arc::new(RwLock::new(c));
             let query = TableQuery {
                 find: String::new(),
+                fields: vec![],
                 object: DbObject {
                     schema: None,
                     name: "t".into(),

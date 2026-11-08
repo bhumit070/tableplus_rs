@@ -429,6 +429,14 @@ impl MongoConn {
         if let Some((c, asc)) = &q.order {
             find = find.sort(doc! {c.clone(): if *asc { 1 } else { -1 }});
         }
+        if !q.fields.is_empty() {
+            let projection: Document = q
+                .fields
+                .iter()
+                .map(|field| (field.clone(), Bson::Int32(1)))
+                .collect();
+            find = find.projection(projection);
+        }
         let docs: Vec<Document> = find.await?.try_collect().await?;
         let total = if filter.is_empty() {
             coll.estimated_document_count().await.ok()

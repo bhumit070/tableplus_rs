@@ -194,7 +194,8 @@ Key new files: `src/ui/theme.rs` (tokens, `dp`, pills, `kbd`, `caps`,
    Status bar: add Ln / Col.
 7. New features: done. Still open: the Redis sidebar key tree (19; the
    keys grid with type badges + key editor cover it); MongoDB field
-   autocomplete in the find bar and sort / projection chips (20).
+   autocomplete in the find bar (20; sort is the column headers, limit the
+   page size, projection the fields input).
 8. States (22): done. Gap: the connection-lost state doesn't dim the
    grid (gpui's `opacity` and an absolute wash both fail to cover
    `DataTable` rows); the banner and status bar carry it instead.
