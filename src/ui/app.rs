@@ -1177,7 +1177,7 @@ mod tests {
     use crate::ui::onboarding::Step;
     use chrono::NaiveTime;
     use futures::executor::block_on;
-    use gpui::{ClipboardItem, Modifiers, size};
+    use gpui::{ClipboardItem, Modifiers, MouseButton, point, size};
     use gpui_component::init;
     use serde_json::to_string;
 
@@ -2939,6 +2939,27 @@ mod tests {
         let (grid_right, panel_left, panel_right) = edges(&mut cx);
         assert!(panel_left < grid_right, "floating: over the grid");
         assert_eq!(grid_right, panel_right, "the grid keeps its full width");
+        // Dragging the left edge 60px further left widens it, and the
+        // width is saved once the drag ends.
+        let handle = cx
+            .debug_bounds("row-panel-resize")
+            .expect("resize handle")
+            .center();
+        cx.simulate_mouse_down(handle, MouseButton::Left, Modifiers::none());
+        for step in 1..=6 {
+            let to = point(handle.x - px(10. * step as f32), handle.y);
+            cx.simulate_mouse_move(to, MouseButton::Left, Modifiers::none());
+        }
+        cx.simulate_mouse_up(
+            point(handle.x - px(60.), handle.y),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let saved = cx.update(|_, cx| crate::settings::get(cx).row_panel_width);
+        assert!((395. ..=405.).contains(&saved), "saved width {saved}");
         let _ = remove_file(file);
     }
 

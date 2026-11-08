@@ -15,7 +15,8 @@ use gpui_component::{ActiveTheme as _, Icon, Sizable as _, WindowExt as _, h_fle
 use gpui_kit_assets::IconName;
 
 use super::cell_edit::{self, CellEditHost, EditStart};
-use gpui::FontWeight;
+use crate::settings::{self, PANEL_RANGE};
+use gpui::{DragMoveEvent, FontWeight, Render};
 use serde_json::{Map, Value, from_str, to_string_pretty};
 
 use super::theme::{caps, dp, tokens};
@@ -45,6 +46,38 @@ pub fn pretty_json(v: &str) -> Option<String> {
 pub fn current_row<H: CellEditHost>(host: &H, cx: &App) -> Option<usize> {
     let t = host.grid().read(cx);
     t.selected_row().or(t.selected_cell().map(|(r, _)| r))
+}
+
+/// What's dragged when resizing the panel (its left edge).
+#[derive(Clone, Copy)]
+struct PanelResize;
+
+/// Nothing follows the pointer while resizing; the panel itself moves.
+struct ResizeGhost;
+
+impl Render for ResizeGhost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+/// The width while dragging; saved to settings once the drag ends.
+#[derive(Clone, Copy)]
+struct LiveWidth(f32);
+
+impl Global for LiveWidth {}
+
+/// The panel's width now: live while dragging, else the saved one. A
+/// finished drag is saved here (deferred: this runs during render).
+fn panel_width(cx: &mut App) -> f32 {
+    let saved = settings::get(cx).row_panel_width;
+    let Some(LiveWidth(live)) = cx.try_global::<LiveWidth>().copied() else {
+        return saved;
+    };
+    if !cx.has_active_drag() && live != saved {
+        cx.defer(move |cx| settings::update(cx, |settings| settings.row_panel_width = live));
+    }
+    live
 }
 
 /// Windows narrower than this float the panel over the grid instead of
@@ -390,10 +423,31 @@ pub fn render<H: CellEditHost>(
             .child(label)
             .on_click(move |_, _, cx| cx.set_global(which))
     };
+    let width = panel_width(cx);
     v_flex()
-        .w(dp(340.))
+        .relative()
+        .w(px(width))
         .h_full()
         .flex_none()
+        // Dragging the left edge resizes; the width is remembered.
+        .on_drag_move(|event: &DragMoveEvent<PanelResize>, window, cx| {
+            let wanted = f32::from(event.bounds.right() - event.event.position.x);
+            let (narrowest, widest) = PANEL_RANGE;
+            cx.set_global(LiveWidth(wanted.clamp(narrowest, widest)));
+            window.refresh();
+        })
+        .child(
+            div()
+                .id("row-panel-resize")
+                .debug_selector(|| "row-panel-resize".into())
+                .absolute()
+                .left(px(-3.))
+                .top_0()
+                .bottom_0()
+                .w(px(6.))
+                .cursor_col_resize()
+                .on_drag(PanelResize, |_, _, _, cx| cx.new(|_| ResizeGhost)),
+        )
         .border_l_1()
         .border_color(theme.border)
         .child(

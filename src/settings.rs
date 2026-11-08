@@ -52,6 +52,8 @@ pub struct Settings {
     pub page_size: usize,
     /// Safe mode a new connection starts with.
     pub default_safe_mode: SafeMode,
+    /// The row detail panel's width in pixels (dragged, 280–480).
+    pub row_panel_width: f32,
 }
 
 impl Default for Settings {
@@ -68,11 +70,15 @@ impl Default for Settings {
             appearance: Appearance::System,
             page_size: PAGE_SIZES[1],
             default_safe_mode: SafeMode::Auto,
+            row_panel_width: 340.,
         }
     }
 }
 
 impl Global for Settings {}
+
+/// How narrow / wide the row panel can be dragged (design.md answer #13).
+pub const PANEL_RANGE: (f32, f32) = (280., 480.);
 
 fn path() -> PathBuf {
     config_dir().join("settings.json")
@@ -98,6 +104,10 @@ impl Settings {
             .editor_font_size
             .round()
             .clamp(EDITOR_RANGE.0, EDITOR_RANGE.1);
+        self.row_panel_width = self
+            .row_panel_width
+            .round()
+            .clamp(PANEL_RANGE.0, PANEL_RANGE.1);
         if !PAGE_SIZES.contains(&self.page_size) {
             self.page_size = PAGE_SIZES[1];
         }

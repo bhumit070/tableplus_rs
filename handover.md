@@ -202,8 +202,7 @@ Key new files: `src/ui/theme.rs` (tokens, `dp`, pills, `kbd`, `caps`,
 
 Smaller leftovers: the array chip editor (cell editor #11; arrays edit as
 `{a,b}` text); design.md
-"Review questions" decisions not yet applied: the row panel floats below
-1440px, but isn't resizable (280–480px, remembered) yet. Headless
+"Review questions": the row panel answer (#13) is applied. Headless
 screenshots don't relayout after `Window::resize`; check sizes with
 `simulate_resize` in UI tests instead. The MySQL binary read treats binary-typed values that are valid
 UTF-8 as text (information_schema reports its text columns as binary).
