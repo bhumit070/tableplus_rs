@@ -6,7 +6,7 @@
 
 ```mermaid
 flowchart LR
-    D["driver (sqlx / redis / mongodb)"] -- "TCP 127.0.0.1:random" --> L["Tunnel listener"]
+    D["driver (sqlx / tiberius / redis / mongodb)"] -- "TCP 127.0.0.1:random" --> L["Tunnel listener"]
     L -- "direct-tcpip channel" --> S["SSH server"]
     S -- "TCP" --> DB["database host:port<br/>(as seen from the SSH server)"]
 ```

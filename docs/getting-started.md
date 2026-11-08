@@ -72,7 +72,7 @@ their own: if you had connections open, the connection list offers to
 1. On the start screen, click **New Connection**.
 2. Pick the engine, then fill in host, port, user, password and database
    (or the file, for SQLite). Or paste a connection URL
-   (`postgres://user:pass@host:5432/db`, `mysql://…`, `redis://…`,
+   (`postgres://user:pass@host:5432/db`, `mysql://…`, `sqlserver://…`, `redis://…`,
    `mongodb://…`, `sqlite:///path/to.db`) into the URL field and the form
    fills itself in; type one and press ↵ to do the same. A password in the
    URL goes to the password field only.

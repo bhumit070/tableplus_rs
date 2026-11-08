@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Tabula (crate `tabula`, repo `tableplus_rs`) is a native TablePlus-style database client for PostgreSQL, MySQL, SQLite, Redis and MongoDB, written in Rust (edition 2024, toolchain pinned in `rust-toolchain.toml`) with gpui (`gpui-pre`) and gpui-component 0.9. Full developer docs live in `docs/` (MkDocs site); `docs/architecture/*.md` and `docs/modules.md` go deeper than this file.
+Tabula (crate `tabula`, repo `tableplus_rs`) is a native TablePlus-style database client for PostgreSQL, MySQL, SQL Server, SQLite, Redis and MongoDB, written in Rust (edition 2024, toolchain pinned in `rust-toolchain.toml`) with gpui (`gpui-pre`) and gpui-component 0.9. Full developer docs live in `docs/` (MkDocs site); `docs/architecture/*.md` and `docs/modules.md` go deeper than this file.
 
 ## Commands
 
@@ -13,7 +13,7 @@ cargo fmt                        # rustfmt defaults; enable hook once: git confi
 cargo test                       # unit + SQLite end-to-end + headless UI tests
 cargo test <name>                # single test by name substring
 
-# End-to-end against real servers (throwaway containers from compose.yaml, ports 55432/53306/56379/57017)
+# End-to-end against real servers (throwaway containers from compose.yaml, ports 55432/53306/51433/56379/57017)
 docker compose up -d --wait
 TABULA_IT=1 cargo test
 docker compose down
@@ -38,7 +38,7 @@ Three layers:
 
 - **UI (`src/ui/`, gpui main thread):** `AppView` (`ui/app.rs`, window root, title bar, connection rail, global action routing) → `Home` or one `Session` per open connection (`ui/session.rs`, sidebar + tabs) → `TableTab` / `QueryTab`, each rendering a `Grid` (`ui/grid.rs`, the `TableDelegate` for every data grid).
 - **App services (`src/*.rs`):** `store` (connections + keychain), `settings`, `restore` (`session.json`), `history`, `saved`, export/import, `rncryptor` (TablePlus export decryption), `mcp` (the optional MCP server for AI tools: rmcp Streamable HTTP on 127.0.0.1 behind a bearer token; writes go through the same safe-mode gates, and `Confirm` asks the window via `ui/mcp_service.rs`).
-- **Database (`src/db/`, tokio):** one `Connection` type (`db/mod.rs`) fronting `sql.rs` (Postgres/MySQL/SQLite via sqlx), `redis_kv.rs`, `mongo.rs`, optionally over an SSH tunnel (`ssh.rs`, russh). Also SQL splitting, formatting, `safety`, EXPLAIN parsing, DDL, cancel, and `target` (detects single-table queries so results can be edited).
+- **Database (`src/db/`, tokio):** one `Connection` type (`db/mod.rs`) fronting `sql.rs` (Postgres/MySQL/SQLite via sqlx), `mssql.rs` (SQL Server via tiberius, own pool, T-SQL `GO` batches), `redis_kv.rs`, `mongo.rs`, optionally over an SSH tunnel (`ssh.rs`, russh). Also SQL splitting, formatting, `safety`, EXPLAIN parsing, DDL, cancel, and `target` (detects single-table queries so results can be edited).
 
 Key cross-cutting mechanics:
 

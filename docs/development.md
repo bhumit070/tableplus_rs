@@ -30,7 +30,7 @@ The binary is `target/release/tabula` (`tabula.exe` on Windows).
 
 ```sh
 cargo test                  # unit tests, SQLite end-to-end, UI tests
-TABULA_IT=1 cargo test      # also against real Postgres, MySQL, Redis, MongoDB
+TABULA_IT=1 cargo test      # also against real Postgres, MySQL, SQL Server, Redis, MongoDB
 ```
 
 There are four kinds of test:
@@ -57,6 +57,7 @@ docker compose down           # stop and delete them; no data is kept
 | --- | --- | --- |
 | PostgreSQL 17 | 55432 | `postgres` / `test`, plus an empty `tabula_it_other` database |
 | MySQL 8.4 | 53306 | `root` / `test`, database `app` |
+| SQL Server 2022 | 51433 | `sa` / `Tabula-test1`, database `master` (amd64 image; runs under Rosetta on Apple silicon) |
 | Redis 7 | 56379 | none |
 | MongoDB 7 | 57017 | none |
 

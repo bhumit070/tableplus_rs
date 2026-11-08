@@ -54,7 +54,11 @@ check missed is refused by Postgres, MySQL or SQLite.
 
 !!! note
     Redis and MongoDB have no read-only session setting, so for them,
-    read-only mode relies on the command check above.
+    read-only mode relies on the command check above. SQL Server has none
+    either; its driver applies the check itself, below the UI, so nothing
+    reaches the server that it doesn't read as a read. T-SQL needs no `;`
+    between statements, so there every word counts: `select 1 delete
+    from t` writes.
 
 ### Other safeguards
 

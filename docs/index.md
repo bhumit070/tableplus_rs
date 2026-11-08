@@ -16,6 +16,7 @@ limit on open connections: each one gets an icon in the left rail.
 | --- | --- | --- |
 | PostgreSQL | ✓ | SQL |
 | MySQL / MariaDB | ✓ | SQL |
+| SQL Server / Azure SQL | ✓ | T-SQL, with `GO` batches |
 | SQLite | ✓ | SQL |
 | Redis | keys, types, TTLs, values | one command per line |
 | MongoDB | collections as tables | mongosh-style: `db.users.find({age: {$gt: 30}})` |

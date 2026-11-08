@@ -18,6 +18,7 @@ exact versions are in `Cargo.toml` and `Cargo.lock`.
 | Crate | Used for |
 | --- | --- |
 | [`sqlx`](https://crates.io/crates/sqlx) | PostgreSQL, MySQL and SQLite: pools, the text protocol for reads, bound parameters for writes, rustls TLS. Also stores query history (`history.db`). Default features are off; only the needed ones are on. |
+| [`tiberius`](https://crates.io/crates/tiberius) | SQL Server and Azure SQL (TDS), with rustls and chrono for date types. Needs `tokio-util`'s `compat` to run on tokio. |
 | [`redis`](https://crates.io/crates/redis) | Redis client with tokio support and `ConnectionManager` (reconnects by itself). |
 | [`mongodb`](https://crates.io/crates/mongodb) | The official MongoDB driver; BSON comes with it. |
 | [`russh`](https://crates.io/crates/russh) | Pure-Rust SSH client (and server, in tests) for tunnels, with the `ring` crypto backend, RSA keys and compression. Its `keys` module reads private keys, `known_hosts` and the ssh-agent. |

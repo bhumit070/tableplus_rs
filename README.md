@@ -68,6 +68,7 @@ time: **More info → Run anyway**.
 | --- | --- | --- |
 | PostgreSQL | ✓ | SQL |
 | MySQL / MariaDB | ✓ | SQL |
+| SQL Server / Azure SQL | ✓ | T-SQL, with `GO` batches |
 | SQLite | ✓ | SQL |
 | Redis | keys, types, TTLs, values | one command per line |
 | MongoDB | collections as tables | mongosh-style: `db.users.find({age: {$gt: 30}})` |
@@ -112,7 +113,8 @@ time: **More info → Run anyway**.
   the earlier results and is underlined in the editor. Optional row
   **Limit** for SELECTs.
 - **Admin:** process list with cancel / kill (⌘⇧P), backup / restore
-  (`pg_dump` / `psql`, `mysqldump` / `mysql`, SQLite file copy), create /
+  (`pg_dump` / `psql`, `mysqldump` / `mysql`, SQLite file copy; not SQL
+  Server, whose backups stay on the server), create /
   drop databases, rename / duplicate / vacuum tables.
 - **MongoDB:** Documents (cards), Table and JSON views of a collection;
   edits in any of them save as `$set` by `_id`.
@@ -215,13 +217,13 @@ Linux, `%APPDATA%\tabula\` on Windows: `settings.json`,
 
 ```sh
 cargo test                  # unit tests, SQLite end-to-end, UI keystroke tests
-TABULA_IT=1 cargo test      # also runs against real Postgres/MySQL/Redis/MongoDB
+TABULA_IT=1 cargo test      # also runs against real Postgres/MySQL/SQL Server/Redis/MongoDB
 ```
 
 `TABULA_IT=1` expects throwaway servers, defined in [`compose.yaml`](compose.yaml):
 
 ```sh
-docker compose up -d --wait   # start Postgres, MySQL, Redis, MongoDB and wait until ready
+docker compose up -d --wait   # start Postgres, MySQL, SQL Server, Redis, MongoDB and wait until ready
 TABULA_IT=1 cargo test
 docker compose down           # stop and delete them
 ```

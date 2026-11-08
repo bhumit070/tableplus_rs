@@ -7,7 +7,7 @@ Everything that talks to a server, or needs to understand SQL, is in
 
 ```rust
 pub struct Connection {
-    inner: Conn,                    // Sql(SqlConn) | Redis(RedisConn) | Mongo(MongoConn)
+    inner: Conn,                    // Sql | Mssql | Redis | Mongo
     _tunnel: Option<ssh::Tunnel>,   // closes when the connection is dropped
     endpoint: (String, u16),        // where the driver actually connects
 }
@@ -99,9 +99,47 @@ running the statement and points to the process list.
 | `safety.rs` | Decides whether text only reads (see [Safety](safety.md)). |
 | `format.rs` | The SQL formatter: upper-case keywords, one clause per line, indented subqueries. Strings, quoted names and comments stay exactly as written. |
 | `target.rs` | Finds the single table a `SELECT` reads from, so its result can be edited. |
-| `ddl.rs` | `CREATE TABLE` / `ALTER TABLE` for the table editor, per dialect. SQLite only supports add, rename and drop column. |
+| `ddl.rs` | `CREATE TABLE` / `ALTER TABLE` for the table editor, per dialect. SQLite only supports add, rename and drop column. SQL Server renames with `sp_rename`, drops a column's named default first, and writes comments as `MS_Description`; its script puts each statement in its own `GO` batch inside one `XACT_ABORT` transaction. |
 | `explain.rs` | EXPLAIN as a tree: Postgres `FORMAT JSON`, MySQL `FORMAT=TREE`, SQLite `EXPLAIN QUERY PLAN`. *Analyze* runs inside `BEGIN … ROLLBACK`. |
 | `backup.rs` | Backup / restore through `pg_dump` / `psql` and `mysqldump` / `mysql`, found on `PATH` or in the usual install folders. Passwords go through `PGPASSWORD` or a private (`0600`) MySQL options file that is deleted afterwards, never the command line. SQLite uses `VACUUM INTO` a temporary file, then a rename. |
+
+## SQL Server (`mssql.rs`)
+
+sqlx dropped its SQL Server driver, so this one uses
+[tiberius](https://github.com/prisma/tiberius) (rustls, TDS 8.0) behind the
+same methods as `SqlConn`.
+
+- **Pool:** tiberius has none, so `mssql.rs` keeps up to 4 connections. A
+  connection goes back only through `Pooled::release` after a request that
+  finished cleanly; dropped any other way (error, timeout, cancel) it is
+  closed. One idle for over a minute is pinged before reuse. Each new
+  connection sets the SSMS defaults (`QUOTED_IDENTIFIER`, `ANSI_*`,
+  unlimited `TEXTSIZE`).
+- **Reading:** every `ColumnData` is turned into text in `cell()`: dates in
+  ISO form with at most 7 fractional digits (so they compare equal when
+  written back), legacy `datetime` rounded to the millisecond, `bit` as
+  1 / 0, binary as `0x…`. A statement with no result set gets its count
+  from `rowcount_big()`.
+- **Writing:** commits use `@Pn` text parameters (the server converts
+  them), `convert(varbinary(max), @Pn, 1)` for hex into binary columns, in
+  one `XACT_ABORT` transaction. Each statement's count is read with
+  `rowcount_big()`, so triggers' own counts don't confuse the one-row
+  check.
+- **Editor batches** (`split::split_mssql`) run on one connection in a
+  spawned task. Cancel goes through `Cancel::on_server_cancel` to that
+  task, which drops the statement and sends a TDS attention
+  (`cancel_query`); the server confirms before the cancel returns. Like
+  the other SQL drivers, a transaction left open (`@@trancount`) is rolled
+  back and reported, and a connection whose session changed is closed.
+- **Catalog:** `sys.*` views for objects, columns (with identity, computed
+  and `MS_Description`), indexes, keys and checks. There is no SHOW CREATE
+  TABLE, so `table_ddl` rebuilds it; *Duplicate* reuses it with unnamed
+  constraints. SQL Server stores `IN ('a','b')` checks as
+  `([c]='b' OR [c]='a')`, which `check_in_lists` reads (reversed back).
+- **Read-only** mode has no server setting: `execute` and `commit` refuse
+  anything `safety::is_read_only` doesn't read as a read.
+- Its futures are large (TLS handshake), so `Connection` boxes them; else
+  the test threads' stacks overflow in debug builds.
 
 ## Redis (`redis_kv.rs`)
 

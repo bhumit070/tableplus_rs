@@ -46,8 +46,8 @@ instead, the same Passwords step shows as a dialog.
   automatic reconnect; both are in Settings.
 - **SSH tunnels** with password, private key (with passphrase) or
   ssh-agent. Host keys are checked; a dead tunnel is reopened automatically.
-- **Paste a connection URL** (`postgres://`, `mysql://`, `redis://`,
-  `mongodb://`, `sqlite:`) to fill in the connection form; a password in
+- **Paste a connection URL** (`postgres://`, `mysql://`, `sqlserver://`,
+  `redis://`, `mongodb://`, `sqlite:`) to fill in the connection form; a password in
   the URL is stored only in the system keychain.
 - **Test connection** in the form reports the server version and latency,
   or the error with details.
@@ -124,11 +124,12 @@ instead, the same Passwords step shows as a dialog.
   the list (the sidebar's *Edit Columns…* opens it). Changes stage like
   data edits: amber with "was …" under what changed, green for new, red
   for removed. A bar counts them, with *Preview DDL*, *Discard* and
-  *Apply*; Apply runs them as one script (transactional on Postgres and
-  SQLite) through safe mode. Each type field has a menu of the engine's
-  common types. Postgres and MySQL columns also have a **comment**
-  (`COMMENT ON COLUMN` / part of `MODIFY COLUMN`, which now keeps an
-  existing comment instead of dropping it). SQLite can add, rename and
+  *Apply*; Apply runs them as one script (transactional on Postgres,
+  SQLite and SQL Server) through safe mode. Each type field has a menu of
+  the engine's common types. Postgres, MySQL and SQL Server columns also
+  have a **comment** (`COMMENT ON COLUMN` / part of `MODIFY COLUMN`, which
+  now keeps an existing comment instead of dropping it / the
+  `MS_Description` extended property). SQLite can add, rename and
   remove columns only.
 - **Indexes:** Structure › Indexes lists each index with its definition;
   right-click to copy the definition or drop it (always confirmed).
@@ -145,8 +146,8 @@ instead, the same Passwords step shows as a dialog.
   `CREATE TABLE` shown live. It starts blank, with `id` + `created_at` /
   `updated_at`, or as a copy of another table's columns. Nothing runs
   until Create table.
-- **Sidebar:** tables, views, collections, **Functions** (Postgres and
-  MySQL functions and procedures; click one to open its `CREATE` statement
+- **Sidebar:** tables, views, collections, **Functions** (Postgres, MySQL
+  and SQL Server functions and procedures; click one to open its `CREATE` statement
   in a query tab) and **Saved queries** (click
   one to open it in a query tab; the list updates as you save or delete
   queries), each section with its count. Tables show an approximate row
@@ -242,11 +243,13 @@ instead, the same Passwords step shows as a dialog.
   Kill session always show the exact statement and ask first; your own
   session isn't listed.
 - **Backup / Restore** with the database's own tools (`pg_dump` / `psql`,
-  `mysqldump` / `mysql`); SQLite is copied with `VACUUM INTO`.
+  `mysqldump` / `mysql`); SQLite is copied with `VACUUM INTO`. SQL Server
+  writes its backups on the server (`BACKUP DATABASE`), so Tabula doesn't
+  offer one.
 - **Create / drop databases** (a new database opens right away) and the
   **database switcher** (⌘K): Recent databases first (the current one
   marked), then all of them, then Create database…. Each row fills in its
-  size and count as they arrive: sizes on Postgres and MongoDB, sizes and
+  size and count as they arrive: sizes on Postgres, SQL Server and MongoDB, sizes and
   table counts on MySQL, key counts on Redis ("—" where the server
   doesn't say).
 
@@ -280,6 +283,29 @@ command or JSON config from Settings. It listens on `127.0.0.1` only, needs
 a token, never sends passwords, and every write follows the connection's
 safe mode (confirm modes ask in the Tabula window first). See
 [MCP server](mcp.md).
+
+## SQL Server
+
+- Connects with SQL Server logins (user and password) to SQL Server 2012+
+  and Azure SQL; Azure's redirect to another node is followed. Unchecked
+  *Require SSL* still encrypts when the server can; the certificate is
+  checked only with *Verify server certificate*.
+- The editor speaks T-SQL: `GO` on its own line ends a batch, as in SSMS.
+  A batch is split on `;` so each statement gets its own result, except
+  when that would change its meaning (`DECLARE`, `BEGIN … END`, `IF`,
+  `CREATE PROCEDURE …`), which runs as one batch. A procedure returning
+  several result sets gets a tab for each. ⌘. cancels with the protocol's
+  own attention signal, so no KILL permission is needed.
+- The row **Limit** adds `TOP (n)`; *New Query for This* writes
+  `SELECT TOP 100`. Format keeps every `GO` on its own line.
+- Values show as SSMS does: `bit` as 1 / 0 (a checkbox in the grid),
+  `datetime` to the millisecond, GUIDs upper case, binary as `0x…`. Text
+  you write goes in as `N'…'`, so any character survives.
+- Read-only safe mode is enforced by Tabula: SQL Server has no read-only
+  session. For a hard guarantee, connect with a login that can only read
+  (`db_datareader`).
+- Not yet: EXPLAIN (SHOWPLAN XML), backup / restore, Windows / Entra ID
+  authentication and named instances (`host\instance`): give the port.
 
 ## Not yet supported
 

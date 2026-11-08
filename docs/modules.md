@@ -27,6 +27,7 @@ also starts with a `//!` comment saying the same in more detail.
 | --- | ---: | --- |
 | `mod.rs` | ~770 | `Connection`, `ConnectionConfig`, `Driver`, `EnvTag`, `SafeMode` and the shared data types (`QueryResult`, `TableQuery`, `Change`, `Structure`, …). Adds timeouts and readable errors to driver calls. |
 | `sql.rs` | ~1,640 | PostgreSQL, MySQL and SQLite through sqlx: connect / probe, listing, structure, paging, editor batches, commits, processes, admin statements. |
+| `mssql.rs` | ~1,550 | SQL Server through tiberius: its own small pool, values as text, catalog queries, DDL rebuild, editor batches with TDS cancel, commits. |
 | `redis_kv.rs` | ~660 | Redis: key listing with SCAN, the *keys* table, one-command-per-line editor, pipelined commits. |
 | `redis_key.rs` | ~380 | One Redis key for the key editor: read (capped at 500 elements), staged `KeyEdit`s as one MULTI, TTL, RENAMENX, DEL. |
 | `mongo.rs` | ~660 | MongoDB: collections as tables, mongosh-style call parsing (JSON5), filters, commits. |

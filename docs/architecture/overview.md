@@ -24,10 +24,11 @@ flowchart TB
     subgraph DB["Database layer: src/db/ (tokio runtime)"]
         Conn[Connection]
         Sql[sql: Postgres, MySQL, SQLite via sqlx]
+        Mssql[mssql: SQL Server via tiberius]
         Redis[redis_kv]
         Mongo[mongo]
         Ssh[ssh tunnel]
-        Conn --> Sql & Redis & Mongo
+        Conn --> Sql & Mssql & Redis & Mongo
         Conn -.-> Ssh
     end
     UI -- "runtime::spawn" --> DB
@@ -43,7 +44,7 @@ flowchart TB
 ## Two executors: gpui and tokio
 
 gpui has its own single-threaded executor for UI work, but the database
-drivers (sqlx, redis, mongodb, russh) need **tokio**. Tabula runs both:
+drivers (sqlx, tiberius, redis, mongodb, russh) need **tokio**. Tabula runs both:
 
 - **gpui** owns the main thread. All views (*entities*) live there and are
   `!Send`; they hold `Rc`s and are updated through `Context`.
