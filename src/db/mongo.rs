@@ -10,8 +10,8 @@ use mongodb::bson::{Bson, Document, doc};
 use mongodb::{Client, Collection, Database};
 
 use super::{
-    Change, ColumnInfo, ConnectionConfig, DbObject, FilterOp, ObjectKind, QueryResult, Structure,
-    TableQuery,
+    Change, ColumnInfo, ConnectionConfig, DatabaseStats, DbObject, FilterOp, ObjectKind,
+    QueryResult, Structure, TableQuery,
 };
 use anyhow::Error;
 use json5::from_str;
@@ -241,6 +241,21 @@ impl MongoConn {
 
     pub async fn databases(&self) -> Result<Vec<String>> {
         Ok(self.client.list_database_names().await?)
+    }
+
+    /// Sizes on disk, from listDatabases.
+    pub async fn database_stats(&self) -> Result<Vec<DatabaseStats>> {
+        Ok(self
+            .client
+            .list_databases()
+            .await?
+            .into_iter()
+            .map(|database| DatabaseStats {
+                name: database.name,
+                size_bytes: Some(database.size_on_disk),
+                objects: None,
+            })
+            .collect())
     }
 
     pub fn use_database(&mut self, name: &str) -> Result<()> {

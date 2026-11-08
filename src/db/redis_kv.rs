@@ -8,8 +8,8 @@ use redis::Value;
 use redis::aio::ConnectionManager;
 
 use super::{
-    Change, ColumnInfo, ConnectionConfig, DbObject, FilterOp, ObjectKind, QueryResult, Structure,
-    TableQuery,
+    Change, ColumnInfo, ConnectionConfig, DatabaseStats, DbObject, FilterOp, ObjectKind,
+    QueryResult, Structure, TableQuery,
 };
 use anyhow::Error;
 use redis::{
@@ -105,6 +105,25 @@ const BLOCKING: &[&str] = &[
     "SYNC",
     "PSYNC",
 ];
+
+/// `db3:keys=12,expires=1,avg_ttl=0` lines → database "3" with 12 keys.
+fn keyspace_counts(info: &str) -> Vec<DatabaseStats> {
+    info.lines()
+        .filter_map(|line| {
+            let (database, fields) = line.trim().strip_prefix("db")?.split_once(':')?;
+            let keys = fields
+                .split(',')
+                .find_map(|field| field.strip_prefix("keys="))?
+                .parse::<u64>()
+                .ok()?;
+            Some(DatabaseStats {
+                name: database.to_string(),
+                size_bytes: None,
+                objects: Some(keys),
+            })
+        })
+        .collect()
+}
 
 pub fn render(v: &Value) -> Option<String> {
     Some(match v {
@@ -265,6 +284,13 @@ impl RedisConn {
             .and_then(|v| v.get(1)?.parse::<usize>().ok())
             .unwrap_or(16);
         Ok((0..n).map(|i| i.to_string()).collect())
+    }
+
+    /// Key counts per database, from INFO keyspace (`db0:keys=3,expires=0,…`).
+    pub async fn database_stats(&self) -> Result<Vec<DatabaseStats>> {
+        let mut con = self.con.clone();
+        let info: String = cmd("INFO").arg("keyspace").query_async(&mut con).await?;
+        Ok(keyspace_counts(&info))
     }
 
     pub async fn use_database(&mut self, name: &str) -> Result<()> {
@@ -647,6 +673,18 @@ pub fn preview(changes: &[Change]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reads_keyspace_counts() {
+        let counts = super::keyspace_counts(
+            "# Keyspace\r\ndb0:keys=3,expires=0,avg_ttl=0\r\ndb5:keys=12,expires=1\r\n",
+        );
+        let pairs: Vec<(String, Option<u64>)> = counts
+            .into_iter()
+            .map(|stats| (stats.name, stats.objects))
+            .collect();
+        assert_eq!(pairs, [("0".into(), Some(3)), ("5".into(), Some(12))]);
+    }
+
     #[test]
     fn words_handles_quotes() {
         assert_eq!(

@@ -8,6 +8,7 @@
 use std::rc::Rc;
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::iter::once;
 
 use gpui::{
@@ -103,8 +104,8 @@ impl Picker {
         on_pick: OnPick,
         window: &mut Window,
         cx: &mut App,
-    ) {
-        Self::open_with(title, placeholder, icon, all, on_pick, false, window, cx);
+    ) -> Entity<Picker> {
+        Self::open_with(title, placeholder, icon, all, on_pick, false, window, cx)
     }
 
     /// The ⌘P palette: like `open`, with scope chips and prefixes.
@@ -116,8 +117,8 @@ impl Picker {
         on_pick: OnPick,
         window: &mut Window,
         cx: &mut App,
-    ) {
-        Self::open_with(title, placeholder, icon, all, on_pick, true, window, cx);
+    ) -> Entity<Picker> {
+        Self::open_with(title, placeholder, icon, all, on_pick, true, window, cx)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -130,7 +131,7 @@ impl Picker {
         scoped: bool,
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> Entity<Picker> {
         let placeholder = placeholder.to_string();
         let picker = cx.new(|cx| {
             let query = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
@@ -160,6 +161,7 @@ impl Picker {
             }
         });
         let query = picker.read(cx).query.clone();
+        let result = picker.clone();
         let first = Cell::new(true);
         let w = dialog::width(640., cx);
         window.open_dialog(cx, move |dialog, window, cx| {
@@ -184,6 +186,18 @@ impl Picker {
                     false
                 })
         });
+        result
+    }
+
+    /// Fills in details that arrive after the picker opened (database
+    /// sizes): `details` maps an item's id to its new detail.
+    pub fn set_details(&mut self, details: &HashMap<String, String>, cx: &mut Context<Self>) {
+        for item in &mut self.all {
+            if let Some(detail) = details.get(&item.id) {
+                item.detail = Some(detail.clone());
+            }
+        }
+        cx.notify();
     }
 
     /// The sections, in the order they first appear.

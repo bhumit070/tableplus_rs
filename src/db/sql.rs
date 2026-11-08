@@ -19,8 +19,8 @@ use sqlx::{
 use super::cancel::{CANCELLED, Cancel};
 use super::split::split_statements;
 use super::{
-    BatchFailed, Change, ColumnInfo, Connection as DbConnection, ConnectionConfig, DbObject,
-    Driver, Filter, FilterOp, ForeignKey, ObjectKind, QueryResult, Structure, TableQuery,
+    BatchFailed, Change, ColumnInfo, Connection as DbConnection, ConnectionConfig, DatabaseStats,
+    DbObject, Driver, Filter, FilterOp, ForeignKey, ObjectKind, QueryResult, Structure, TableQuery,
     sql_literal,
 };
 use anyhow::{Error, anyhow};
@@ -833,6 +833,38 @@ impl SqlConn {
             .rows
             .into_iter()
             .filter_map(|r| r[0].clone())
+            .collect())
+    }
+
+    /// Postgres: sizes (table counts would need a connection per
+    /// database). MySQL: sizes and table counts from information_schema.
+    pub async fn database_stats(&self) -> Result<Vec<DatabaseStats>> {
+        let sql = match self.cfg.driver {
+            Driver::Postgres => {
+                "select datname, case when has_database_privilege(datname, 'CONNECT') \
+                 then pg_database_size(datname) end, null \
+                 from pg_database where not datistemplate"
+            }
+            Driver::MySql => {
+                "select table_schema, sum(data_length + index_length), count(*) \
+                 from information_schema.tables group by table_schema"
+            }
+            _ => return Ok(vec![]),
+        };
+        let number =
+            |cell: &Option<String>| cell.as_deref().and_then(|text| text.parse::<u64>().ok());
+        Ok(self
+            .raw(sql.into())
+            .await?
+            .rows
+            .into_iter()
+            .filter_map(|row| {
+                Some(DatabaseStats {
+                    name: row.first()?.clone()?,
+                    size_bytes: row.get(1).and_then(number),
+                    objects: row.get(2).and_then(number),
+                })
+            })
             .collect())
     }
 

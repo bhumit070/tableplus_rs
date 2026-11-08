@@ -1,6 +1,7 @@
 //! One open connection: sidebar (database switcher, search, object tree) and
 //! a tab strip of table and query tabs.
 
+use std::collections::HashMap;
 use std::mem::take;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -23,6 +24,7 @@ use gpui_kit_assets::IconName;
 
 use super::Shared;
 use super::completion::Schema;
+use super::grid::human_size;
 use super::history_view::{HistoryView, Tab as HistoryTab};
 use super::loading;
 use super::picker::{OnPick, PickItem, Picker};
@@ -609,6 +611,7 @@ impl Session {
                 current: *d == self.current_db,
                 icon: Some(IconName::RotateCcwClock),
                 group: Some("Recent".into()),
+                detail: Some("—".into()),
                 ..PickItem::new(format!("recent:{d}"), d)
             })
             .collect();
@@ -617,6 +620,7 @@ impl Session {
             current: *d == self.current_db,
             icon: Some(IconName::Database),
             group: Some("All databases".into()),
+            detail: Some("—".into()),
             ..PickItem::new(d, d)
         }));
         let can_create = matches!(self.shared.cfg.driver, Driver::Postgres | Driver::MySql);
@@ -641,7 +645,7 @@ impl Session {
             me.update(cx, |s, cx| s.request_switch_database(name, window, cx))
                 .ok();
         });
-        Picker::open(
+        let picker = Picker::open(
             "Switch Database",
             "Switch database…",
             IconName::Database,
@@ -650,6 +654,63 @@ impl Session {
             window,
             cx,
         );
+        self.load_database_stats(picker, cx);
+    }
+
+    /// Sizes and counts for the open switcher, filled in when they arrive
+    /// ("—" until then, and where the server doesn't say).
+    fn load_database_stats(&mut self, picker: Entity<Picker>, cx: &mut Context<Self>) {
+        let conn = self.shared.conn.clone();
+        let task = runtime::spawn(async move { conn.read().await.database_stats().await });
+        let unit = match self.shared.cfg.driver {
+            Driver::Redis => "keys",
+            Driver::Mongo => "collections",
+            _ => "tables",
+        };
+        // Postgres can't count another database's tables without connecting
+        // to it; the current one's are in the sidebar.
+        let current = self.current_db.clone();
+        let current_tables = self
+            .objects
+            .iter()
+            .filter(|object| object.kind == ObjectKind::Table)
+            .count() as u64;
+        let databases = self.databases.clone();
+        let picker = picker.downgrade();
+        cx.spawn(async move |_, cx| {
+            let read = task.await;
+            let answered = read.is_ok();
+            let stats = read.unwrap_or_default();
+            let mut details = HashMap::new();
+            for name in databases {
+                let found = stats.iter().find(|stats| stats.name == name);
+                let objects = found
+                    .and_then(|stats| stats.objects)
+                    .or((name == current && unit == "tables").then_some(current_tables));
+                let mut parts = vec![];
+                if let Some(count) = objects {
+                    parts.push(format!("{count} {unit}"));
+                }
+                if let Some(bytes) = found.and_then(|stats| stats.size_bytes) {
+                    parts.push(human_size(bytes as usize));
+                }
+                let detail = if parts.is_empty() && answered && unit == "keys" {
+                    // INFO keyspace leaves out databases without keys.
+                    "empty".to_string()
+                } else if parts.is_empty() {
+                    "—".to_string()
+                } else {
+                    parts.join(" · ")
+                };
+                details.insert(format!("recent:{name}"), detail.clone());
+                details.insert(name, detail);
+            }
+            // The picker may be closed already.
+            picker
+                .update(cx, |picker, cx| picker.set_details(&details, cx))
+                .ok();
+        })
+        .detach();
     }
 
     /// ⌘Y: past queries on this connection (screen 15, History tab).

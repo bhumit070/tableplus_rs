@@ -204,7 +204,10 @@ actually involved.
   `mysqldump` / `mysql`); SQLite is copied with `VACUUM INTO`.
 - **Create / drop databases** (a new database opens right away) and the
   **database switcher** (⌘K): Recent databases first (the current one
-  marked), then all of them, then Create database….
+  marked), then all of them, then Create database…. Each row fills in its
+  size and count as they arrive: sizes on Postgres and MongoDB, sizes and
+  table counts on MySQL, key counts on Redis ("—" where the server
+  doesn't say).
 
 ## Safety
 

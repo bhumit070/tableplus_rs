@@ -703,4 +703,13 @@ fn redis_shots(s: &mut Shots) {
             .is_some_and(|detail| detail.kind == "string")
     });
     s.snap("19-redis-string");
+    // ⌘K with key counts per database.
+    s.in_window(|w, cx| session.update(cx, |session, cx| session.open_db_picker(w, cx)));
+    let started = Instant::now();
+    s.wait("database stats", |_| {
+        started.elapsed() > Duration::from_millis(500)
+    });
+    s.snap("06-db-switcher");
+    s.in_window(|w, cx| w.close_dialog(cx));
+    s.settle();
 }

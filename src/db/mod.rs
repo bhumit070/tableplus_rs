@@ -315,6 +315,15 @@ pub struct ForeignKey {
     pub on_delete: String,
 }
 
+/// One database in the ⌘K switcher: its size and how many tables (keys,
+/// collections) it holds, where the server tells cheaply.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DatabaseStats {
+    pub name: String,
+    pub size_bytes: Option<u64>,
+    pub objects: Option<u64>,
+}
+
 /// What the Structure view shows.
 #[derive(Clone, Debug, Default)]
 pub struct Structure {
@@ -658,6 +667,19 @@ impl Connection {
                 Conn::Sql(c) => c.databases().await,
                 Conn::Redis(c) => c.databases().await,
                 Conn::Mongo(c) => c.databases().await,
+            }
+        })
+        .await
+    }
+
+    /// Sizes and object counts for the database switcher. Best effort: a
+    /// server that won't say gets no numbers, not an error.
+    pub async fn database_stats(&self) -> Result<Vec<DatabaseStats>> {
+        self.bounded("Reading database sizes", async {
+            match &self.inner {
+                Conn::Sql(c) => c.database_stats().await,
+                Conn::Redis(c) => c.database_stats().await,
+                Conn::Mongo(c) => c.database_stats().await,
             }
         })
         .await

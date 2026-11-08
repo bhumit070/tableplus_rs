@@ -1396,6 +1396,47 @@ async fn ddl_scenario(driver: Driver) {
     c.execute("drop table it_ddl").await.unwrap();
 }
 
+/// ⌘K's sizes and counts: Postgres sizes, MySQL sizes and table counts,
+/// Redis key counts, MongoDB sizes.
+#[tokio::test]
+async fn database_stats_per_server() {
+    if !it_enabled() {
+        return;
+    }
+    let postgres = Connection::connect(&cfg(Driver::Postgres)).await.unwrap();
+    let stats = postgres.database_stats().await.unwrap();
+    let main = stats.iter().find(|stats| stats.name == "postgres").unwrap();
+    assert!(main.size_bytes.unwrap() > 0);
+
+    let mysql = Connection::connect(&cfg(Driver::MySql)).await.unwrap();
+    let stats = mysql.database_stats().await.unwrap();
+    let system = stats.iter().find(|stats| stats.name == "mysql").unwrap();
+    assert!(system.objects.unwrap() > 0, "{stats:?}");
+
+    let mut redis = Connection::connect(&cfg(Driver::Redis)).await.unwrap();
+    redis.use_database("10").await.unwrap();
+    redis
+        .execute("FLUSHDB\nSET stats:a 1\nSET stats:b 2")
+        .await
+        .unwrap();
+    let stats = redis.database_stats().await.unwrap();
+    let ten = stats.iter().find(|stats| stats.name == "10").unwrap();
+    assert_eq!(ten.objects, Some(2));
+    redis.execute("FLUSHDB").await.unwrap();
+
+    let mongo = Connection::connect(&cfg(Driver::Mongo)).await.unwrap();
+    mongo
+        .execute("db.stats_probe.insertOne({a: 1})")
+        .await
+        .unwrap();
+    let stats = mongo.database_stats().await.unwrap();
+    assert!(
+        stats
+            .iter()
+            .any(|stats| stats.name == "tabula_it" && stats.size_bytes.is_some())
+    );
+}
+
 #[tokio::test]
 async fn sqlite_ddl() {
     ddl_scenario(Driver::Sqlite).await;
