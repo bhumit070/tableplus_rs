@@ -107,7 +107,10 @@ actually involved.
   for removed. A bar counts them, with *Preview DDL*, *Discard* and
   *Apply*; Apply runs them as one script (transactional on Postgres and
   SQLite) through safe mode. Each type field has a menu of the engine's
-  common types. SQLite can add, rename and remove columns only.
+  common types. Postgres and MySQL columns also have a **comment**
+  (`COMMENT ON COLUMN` / part of `MODIFY COLUMN`, which now keeps an
+  existing comment instead of dropping it). SQLite can add, rename and
+  remove columns only.
 - **Indexes:** Structure › Indexes lists each index with its definition;
   right-click to copy the definition or drop it (always confirmed).
   *+ Index* opens a small dialog: pick columns in order, unique or not,

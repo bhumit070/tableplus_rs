@@ -996,7 +996,8 @@ impl SqlConn {
                      (exists (select 1 from pg_index i where i.indrelid = a.attrelid and i.indisprimary \
                        and a.attnum = any(i.indkey)))::text, \
                      (select json_agg(e.enumlabel order by e.enumsortorder) from pg_enum e \
-                       where e.enumtypid = a.atttypid)::text \
+                       where e.enumtypid = a.atttypid)::text, \
+                     col_description(a.attrelid, a.attnum) \
                      from pg_attribute a left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum \
                      where a.attrelid = to_regclass({}) and a.attnum > 0 and not a.attisdropped order by a.attnum",
                     self.lit(&self.full_name(obj))
@@ -1011,7 +1012,8 @@ impl SqlConn {
             Driver::MySql => (
                 format!(
                     "select column_name, column_type, if(is_nullable = 'YES', 'true', 'false'), column_default, \
-                     if(column_key = 'PRI', 'true', 'false') from information_schema.columns \
+                     if(column_key = 'PRI', 'true', 'false'), null, nullif(column_comment, '') \
+                     from information_schema.columns \
                      where table_schema = database() and table_name = {} order by ordinal_position",
                     self.lit(&obj.name)
                 ),
@@ -1046,6 +1048,8 @@ impl SqlConn {
                     Some(json) => from_str(&json).unwrap_or_default(),
                     None => mysql_enum(r[1].as_deref().unwrap_or_default()),
                 },
+                // A seventh column on Postgres and MySQL; SQLite has none.
+                comment: r.get(6).cloned().flatten(),
             })
             .collect();
         // Extras: when one can't be read (permissions, old servers…) the

@@ -2012,6 +2012,7 @@ mod tests {
             default: None,
             is_pk: pk,
             enum_values: vec![],
+            comment: None,
         }
     }
 

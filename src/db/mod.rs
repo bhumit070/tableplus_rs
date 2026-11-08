@@ -291,7 +291,7 @@ impl DbObject {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ColumnInfo {
     pub name: String,
     pub data_type: String,
@@ -300,6 +300,8 @@ pub struct ColumnInfo {
     pub is_pk: bool,
     /// The allowed values of an enum column, in order; empty otherwise.
     pub enum_values: Vec<String>,
+    /// The column's comment (Postgres, MySQL), if it has one.
+    pub comment: Option<String>,
 }
 
 /// A foreign key: `columns` of this table reference `ref_columns` of

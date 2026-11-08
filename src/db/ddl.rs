@@ -7,7 +7,7 @@ use super::{ColumnInfo, Driver, ForeignKey, QueryResult};
 use crate::export::ident;
 
 /// A column as the editor describes it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ColDef {
     pub name: String,
     /// Written as typed, e.g. `varchar(100)`, `numeric(10,2)`.
@@ -16,6 +16,8 @@ pub struct ColDef {
     /// A SQL expression (`0`, `'new'`, `now()`), as typed.
     pub default: Option<String>,
     pub pk: bool,
+    /// Postgres / MySQL column comment; SQLite has none.
+    pub comment: Option<String>,
 }
 
 impl ColDef {
@@ -26,6 +28,7 @@ impl ColDef {
             nullable: c.nullable,
             default: c.default.clone(),
             pk: c.is_pk,
+            comment: c.comment.clone(),
         }
     }
 }
@@ -37,7 +40,25 @@ fn table_name(driver: Driver, schema: Option<&str>, table: &str) -> String {
     }
 }
 
-/// `name type [NOT NULL] [DEFAULT x]`.
+/// A comment as a string literal; MySQL also reads backslashes as escapes.
+fn comment_literal(driver: Driver, text: &str) -> String {
+    let quoted = text.replace('\'', "''");
+    match driver {
+        Driver::MySql => format!("'{}'", quoted.replace('\\', "\\\\")),
+        _ => format!("'{quoted}'"),
+    }
+}
+
+/// A comment worth writing: trimmed, not empty.
+fn comment_of(column: &ColDef) -> Option<&str> {
+    column
+        .comment
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+}
+
+/// `name type [NOT NULL] [DEFAULT x]` (and `COMMENT '…'` on MySQL).
 fn column_sql(driver: Driver, c: &ColDef) -> Result<String> {
     if c.name.trim().is_empty() {
         bail!("every column needs a name");
@@ -56,6 +77,11 @@ fn column_sql(driver: Driver, c: &ColDef) -> Result<String> {
         .filter(|d| !d.is_empty())
     {
         s.push_str(&format!(" DEFAULT {d}"));
+    }
+    if driver == Driver::MySql
+        && let Some(comment) = comment_of(c)
+    {
+        s.push_str(&format!(" COMMENT {}", comment_literal(driver, comment)));
     }
     Ok(s)
 }
@@ -138,6 +164,7 @@ pub fn alter_table(
                 let retyped = !to.ty.eq_ignore_ascii_case(&from.ty);
                 let null_changed = to.nullable != from.nullable;
                 let default_changed = to.default != from.default;
+                let comment_changed = comment_of(&to) != comment_of(from);
                 if renamed {
                     out.push(format!(
                         "ALTER TABLE {t} RENAME COLUMN {} TO {};",
@@ -168,10 +195,16 @@ pub fn alter_table(
                                 None => format!("ALTER TABLE {t} ALTER COLUMN {col} DROP DEFAULT;"),
                             });
                         }
+                        if comment_changed {
+                            let comment = comment_of(&to)
+                                .map(|text| comment_literal(driver, text))
+                                .unwrap_or_else(|| "NULL".into());
+                            out.push(format!("COMMENT ON COLUMN {t}.{col} IS {comment};"));
+                        }
                     }
                     // MODIFY restates the whole column definition.
                     Driver::MySql => {
-                        if retyped || null_changed || default_changed {
+                        if retyped || null_changed || default_changed || comment_changed {
                             out.push(format!(
                                 "ALTER TABLE {t} MODIFY COLUMN {};",
                                 column_sql(driver, &to)?
@@ -179,6 +212,9 @@ pub fn alter_table(
                         }
                     }
                     _ => {
+                        if comment_changed {
+                            bail!("SQLite columns have no comments");
+                        }
                         if retyped || null_changed || default_changed {
                             bail!(
                                 "SQLite can't change a column's type, NULL setting or default in place \
@@ -387,6 +423,7 @@ mod tests {
             nullable,
             default: default.map(String::from),
             pk,
+            comment: None,
         }
     }
 
@@ -451,6 +488,36 @@ mod tests {
                     definition: "(status, created_at)".into()
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn comments_per_dialect() {
+        let from = col("total", "numeric", true, None, false);
+        let to = ColDef {
+            comment: Some("Order total, in the order's currency".into()),
+            ..from.clone()
+        };
+        let change = [ColChange::Alter {
+            from: from.clone(),
+            to: to.clone(),
+        }];
+        assert_eq!(
+            alter_table(Driver::Postgres, None, "orders", &change).unwrap(),
+            ["COMMENT ON COLUMN \"orders\".\"total\" IS 'Order total, in the order''s currency';"]
+        );
+        assert_eq!(
+            alter_table(Driver::MySql, None, "orders", &change).unwrap(),
+            [
+                "ALTER TABLE `orders` MODIFY COLUMN `total` numeric COMMENT 'Order total, in the order''s currency';"
+            ]
+        );
+        assert!(alter_table(Driver::Sqlite, None, "orders", &change).is_err());
+        // Clearing it.
+        let cleared = [ColChange::Alter { from: to, to: from }];
+        assert_eq!(
+            alter_table(Driver::Postgres, None, "orders", &cleared).unwrap(),
+            ["COMMENT ON COLUMN \"orders\".\"total\" IS NULL;"]
         );
     }
 

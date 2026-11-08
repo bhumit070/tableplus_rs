@@ -342,6 +342,7 @@ impl RedisConn {
             default: None,
             is_pk: pk,
             enum_values: vec![],
+            comment: None,
         };
         Ok(Structure {
             columns: vec![

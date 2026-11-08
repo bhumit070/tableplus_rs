@@ -1324,6 +1324,7 @@ async fn ddl_scenario(driver: Driver) {
         nullable,
         default: d.map(String::from),
         pk,
+        comment: None,
     };
     let create = ddl::create_table(
         driver,
@@ -1372,6 +1373,47 @@ async fn ddl_scenario(driver: Driver) {
         assert!(
             st.columns.iter().all(|c| c.name != "extra"),
             "{driver:?} rolled back"
+        );
+    }
+    // Column comments round-trip (SQLite has none).
+    if driver != Driver::Sqlite {
+        let st = c.structure(&obj(&objects, "it_ddl")).await.unwrap();
+        let age = ColDef::from_info(
+            st.columns
+                .iter()
+                .find(|column| column.name == "age")
+                .unwrap(),
+        );
+        let commented = ColDef {
+            comment: Some("Years, rounded down".into()),
+            ..age.clone()
+        };
+        let stmts = ddl::alter_table(
+            driver,
+            None,
+            "it_ddl",
+            &[ColChange::Alter {
+                from: age,
+                to: commented,
+            }],
+        )
+        .unwrap();
+        c.execute(&ddl::script(driver, &stmts)).await.unwrap();
+        let st = c.structure(&obj(&objects, "it_ddl")).await.unwrap();
+        let age = st
+            .columns
+            .iter()
+            .find(|column| column.name == "age")
+            .unwrap();
+        assert_eq!(
+            age.comment.as_deref(),
+            Some("Years, rounded down"),
+            "{driver:?}"
+        );
+        assert_eq!(
+            age.default.as_deref().map(str::trim),
+            Some("0"),
+            "{driver:?}: the default survives"
         );
     }
     // + Index and Drop Index…, read back through the index list.

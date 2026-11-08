@@ -129,6 +129,7 @@ impl TableEditor {
             nullable: false,
             default: None,
             pk: true,
+            comment: None,
         };
         let (stamp, now) = match driver {
             Driver::Postgres => ("timestamptz", "now()"),
@@ -141,6 +142,7 @@ impl TableEditor {
             nullable: false,
             default: Some(now.into()),
             pk: false,
+            comment: None,
         };
         let columns = match start {
             Start::Blank => vec![id],
@@ -277,6 +279,7 @@ impl TableEditor {
                     nullable: row.nullable,
                     default: Some(value(&row.default)).filter(|default| !default.is_empty()),
                     pk: row.pk,
+                    comment: None,
                 }
             })
             .filter(|column| !column.name.is_empty())

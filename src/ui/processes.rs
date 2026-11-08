@@ -196,6 +196,7 @@ impl Processes {
                     default: None,
                     is_pk: false,
                     enum_values: states,
+                    comment: None,
                 }]);
             }
             let again = selected.and_then(|id| {

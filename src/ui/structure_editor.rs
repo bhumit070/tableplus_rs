@@ -33,6 +33,7 @@ struct ColumnRow {
     name: Entity<InputState>,
     data_type: Entity<InputState>,
     default: Entity<InputState>,
+    comment: Entity<InputState>,
     nullable: bool,
     removed: bool,
 }
@@ -104,6 +105,7 @@ impl StructureEditor {
             nullable: true,
             default: None,
             pk: false,
+            comment: None,
         });
         let mut input = |value: &str, placeholder: &str| {
             let (value, placeholder) = (value.to_string(), placeholder.to_string());
@@ -125,6 +127,7 @@ impl StructureEditor {
             name: input(&shown.name, "column"),
             data_type: input(&shown.ty, default_type(driver)),
             default: input(shown.default.as_deref().unwrap_or(""), "no default"),
+            comment: input(shown.comment.as_deref().unwrap_or(""), "no comment"),
             nullable: shown.nullable,
             removed: false,
             original,
@@ -150,6 +153,7 @@ impl StructureEditor {
             nullable: row.nullable,
             default: Some(value(&row.default)).filter(|default| !default.is_empty()),
             pk: row.original.as_ref().is_some_and(|original| original.pk),
+            comment: Some(value(&row.comment)).filter(|comment| !comment.is_empty()),
         }
     }
 
@@ -162,7 +166,8 @@ impl StructureEditor {
                 let same = now.name == original.name
                     && now.ty.eq_ignore_ascii_case(&original.ty)
                     && now.nullable == original.nullable
-                    && now.default == original.default;
+                    && now.default == original.default
+                    && now.comment == original.comment;
                 if same {
                     RowState::Unchanged
                 } else {
@@ -321,6 +326,7 @@ impl StructureEditor {
     fn render_row(&self, index: usize, row: &ColumnRow, cx: &mut Context<Self>) -> AnyElement {
         let t = tokens(cx);
         let driver = self.shared.cfg.driver;
+        let has_comments = driver != Driver::Sqlite;
         let state = self.state(row, cx);
         let now = self.definition(row, cx);
         // Clicks find their row by this id: positions shift when a new
@@ -460,6 +466,24 @@ impl StructureEditor {
                         ))
                     }),
             )
+            // SQLite columns have no comments.
+            .when(has_comments, |line| {
+                line.child(
+                    v_flex()
+                        .w(dp(220.))
+                        .gap(dp(2.))
+                        .child(Input::new(&row.comment).small())
+                        .when(shows_was, |field| {
+                            field.child(was(
+                                changed(|before, now| before.comment != now.comment),
+                                original
+                                    .as_ref()
+                                    .and_then(|o| o.comment.clone())
+                                    .unwrap_or_else(|| "no comment".into()),
+                            ))
+                        }),
+                )
+            })
             .child(
                 div().w(dp(28.)).child(
                     Button::new(("structure-remove", index))
@@ -582,6 +606,7 @@ impl Render for StructureEditor {
         let t = tokens(cx);
         let mono = cx.theme().mono_font_family.clone();
         let count = self.change_count(cx);
+        let has_comments = self.shared.cfg.driver != Driver::Sqlite;
         let header = |label: &'static str| {
             div()
                 .text_size(dp(11.))
@@ -613,6 +638,9 @@ impl Render for StructureEditor {
                     .child(div().w(dp(220.)).child(header("TYPE")))
                     .child(div().w(dp(60.)).child(header("NULL")))
                     .child(div().flex_1().child(header("DEFAULT")))
+                    .when(has_comments, |line| {
+                        line.child(div().w(dp(220.)).child(header("COMMENT")))
+                    })
                     .child(div().w(dp(28.))),
             )
             .child(
