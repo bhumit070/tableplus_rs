@@ -62,6 +62,7 @@ also starts with a `//!` comment saying the same in more detail.
 | `dialog.rs` | ~240 | The shared dialog look (surface, title, footer) and its controls: section labels, tiles, radio rows. |
 | `row_panel.rs` | ~180 | Row detail panel (⌘⇧I). |
 | `table_editor.rs` | ~700 | New Table dialog: templates, type menu, live CREATE TABLE. |
+| `index_editor.rs` | ~550 | Structure › Indexes: the index list with its right-click menu, and the + Index dialog. |
 | `structure_editor.rs` | ~690 | Structure › Columns edited in place: staged column changes, Preview DDL / Discard / Apply. |
 | `processes.rs` | ~240 | Process list (⌘⇧P). |
 | `onboarding.rs` | ~720 | First-run onboarding: Welcome, Look & feel, Connections, You're set. |

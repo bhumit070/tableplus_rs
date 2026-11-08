@@ -1,4 +1,5 @@
-//! CREATE / ALTER TABLE statements for the table editor, per dialect.
+//! CREATE / ALTER TABLE and CREATE / DROP INDEX statements for the
+//! structure editors, per dialect.
 
 use anyhow::{Result, bail};
 
@@ -193,6 +194,44 @@ pub fn alter_table(
     Ok(out)
 }
 
+/// `CREATE [UNIQUE] INDEX name ON table (columns);`
+pub fn create_index(
+    driver: Driver,
+    schema: Option<&str>,
+    table: &str,
+    index_name: &str,
+    columns: &[String],
+    unique: bool,
+) -> Result<String> {
+    if index_name.trim().is_empty() {
+        bail!("the index needs a name");
+    }
+    if columns.is_empty() {
+        bail!("pick at least one column");
+    }
+    let column_list: Vec<String> = columns.iter().map(|column| ident(driver, column)).collect();
+    Ok(format!(
+        "CREATE {}INDEX {} ON {} ({});",
+        if unique { "UNIQUE " } else { "" },
+        ident(driver, index_name.trim()),
+        table_name(driver, schema, table),
+        column_list.join(", ")
+    ))
+}
+
+/// `DROP INDEX …`: Postgres names it in the table's schema, MySQL names
+/// the table too.
+pub fn drop_index(driver: Driver, schema: Option<&str>, table: &str, index_name: &str) -> String {
+    match driver {
+        Driver::MySql => format!(
+            "DROP INDEX {} ON {};",
+            ident(driver, index_name),
+            ident(driver, table)
+        ),
+        _ => format!("DROP INDEX {};", table_name(driver, schema, index_name)),
+    }
+}
+
 /// The statements as one script; transactional where the server rolls DDL
 /// back on failure (Postgres, SQLite).
 pub fn script(driver: Driver, stmts: &[String]) -> String {
@@ -241,6 +280,37 @@ mod tests {
                 &[col("a", "", true, None, false)]
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn index_statements_per_dialect() {
+        let columns = ["status".to_string(), "created_at".to_string()];
+        assert_eq!(
+            create_index(
+                Driver::Postgres,
+                Some("shop"),
+                "orders",
+                "orders_status",
+                &columns,
+                true
+            )
+            .unwrap(),
+            "CREATE UNIQUE INDEX \"orders_status\" ON \"shop\".\"orders\" (\"status\", \"created_at\");"
+        );
+        assert!(create_index(Driver::Sqlite, None, "t", "", &columns, false).is_err());
+        assert!(create_index(Driver::Sqlite, None, "t", "i", &[], false).is_err());
+        assert_eq!(
+            drop_index(Driver::Postgres, Some("shop"), "orders", "orders_status"),
+            "DROP INDEX \"shop\".\"orders_status\";"
+        );
+        assert_eq!(
+            drop_index(Driver::MySql, None, "orders", "orders_status"),
+            "DROP INDEX `orders_status` ON `orders`;"
+        );
+        assert_eq!(
+            drop_index(Driver::Sqlite, None, "orders", "orders_status"),
+            "DROP INDEX \"orders_status\";"
         );
     }
 

@@ -10,6 +10,7 @@ pub mod dialog;
 pub mod grid;
 pub mod history_view;
 pub mod home;
+pub mod index_editor;
 pub mod loading;
 pub mod onboarding;
 pub mod passwords;

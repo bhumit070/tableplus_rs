@@ -3233,6 +3233,77 @@ mod tests {
         let _ = std::fs::remove_file(file);
     }
 
+    /// + Index creates an index (named after its columns); Drop Index…
+    /// confirms, then drops it.
+    #[gpui::test]
+    fn create_and_drop_index(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let mut cfg = ConnectionConfig::new(Driver::Sqlite);
+        let file = temp_dir().join(format!("tabula-ui-index-{}.db", cfg.id));
+        write(&file, b"").unwrap();
+        cfg.file = file.to_string_lossy().into();
+        let setup = cfg.clone();
+        block_on(crate::runtime::spawn(async move {
+            let c = crate::db::Connection::connect(&setup).await?;
+            c.execute("create table t (id integer primary key, status text)")
+                .await?;
+            c.close().await;
+            Ok(())
+        }))
+        .unwrap();
+        let (app, mut cx) = open(cx);
+        app.update_in(&mut cx, |a, w, cx| a.connect(cfg, w, cx, |_, _, _| {}));
+        wait_until(&mut cx, "connection", |cx| {
+            app.read_with(cx, |a, _| a.sessions.len() == 1)
+        });
+        let session = app.read_with(&cx, |a, _| a.sessions[0].clone());
+        wait_until(&mut cx, "tables", |cx| {
+            session.read_with(cx, |s, _| s.object_index("t").is_some())
+        });
+        session.update_in(&mut cx, |s, w, cx| {
+            let index = s.object_index("t").unwrap();
+            s.open_object(index, w, cx)
+        });
+        let tab = session.read_with(&cx, |s, _| s.active_table().unwrap());
+        wait_until(&mut cx, "structure", |cx| {
+            tab.read_with(cx, |t, _| t.has_structure())
+        });
+        let index_dialog = tab
+            .update_in(&mut cx, |t, w, cx| t.open_index_dialog(w, cx))
+            .unwrap();
+        index_dialog.update_in(&mut cx, |dialog, w, cx| {
+            dialog.toggle_column("status", w, cx);
+            dialog.create(w, cx);
+        });
+        wait_until(&mut cx, "index created", |cx| {
+            tab.read_with(cx, |t, _| {
+                t.index_names().contains(&"t_status_idx".to_string())
+            })
+        });
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert!(
+            !cx.update(|w, cx| w.has_active_dialog(cx)),
+            "index dialog closed"
+        );
+        tab.update_in(&mut cx, |t, w, cx| {
+            t.drop_index_for_test("t_status_idx", w, cx)
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.update(|w, cx| w.has_active_dialog(cx)),
+            "drop asks first"
+        );
+        // ↵ confirms away from production.
+        cx.simulate_keystrokes("enter");
+        wait_until(&mut cx, "index dropped", |cx| {
+            tab.read_with(cx, |t, _| {
+                !t.index_names().contains(&"t_status_idx".to_string())
+            })
+        });
+        let _ = remove_file(file);
+    }
+
     /// Rename… asks for the new name (prefilled, selected) and renames.
     #[gpui::test]
     fn rename_table(cx: &mut TestAppContext) {

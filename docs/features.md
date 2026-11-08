@@ -107,6 +107,11 @@ actually involved.
   *Apply*; Apply runs them as one script (transactional on Postgres and
   SQLite) through safe mode. Each type field has a menu of the engine's
   common types. SQLite can add, rename and remove columns only.
+- **Indexes:** Structure › Indexes lists each index with its definition;
+  right-click to copy the definition or drop it (always confirmed).
+  *+ Index* opens a small dialog: pick columns in order, unique or not,
+  and the name follows the columns until you type your own; the
+  `CREATE INDEX` is shown live.
 - **New Table:** name, columns (type menu, NULL, default, key) and the
   `CREATE TABLE` shown live. It starts blank, with `id` + `created_at` /
   `updated_at`, or as a copy of another table's columns. Nothing runs

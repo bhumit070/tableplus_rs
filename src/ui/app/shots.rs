@@ -143,6 +143,7 @@ fn demo_db() -> ConnectionConfig {
                customer_id integer references customers(id), \
                status text check (status in ('pending','paid','shipped','refunded')), \
                total numeric(12,2), currency text, created_at text, metadata text); \
+             create index orders_status_created on orders (status, created_at); \
              create table invoices (id integer primary key, order_id integer); \
              create table products (id integer primary key, name text); \
              create view active_customers as select * from customers;",
@@ -321,6 +322,20 @@ fn screenshots() {
         })
     });
     s.snap("08-structure");
+    s.in_window(|_, cx| tab.update(cx, |t, cx| t.show_indexes_for_test(cx)));
+    s.snap("08-indexes");
+    let index_dialog = s
+        .in_window(|w, cx| tab.update(cx, |t, cx| t.open_index_dialog(w, cx)))
+        .expect("structure loaded");
+    s.in_window(|w, cx| {
+        index_dialog.update(cx, |dialog, cx| {
+            dialog.toggle_column("customer_id", w, cx);
+            dialog.toggle_column("created_at", w, cx);
+        })
+    });
+    s.snap("08-new-index");
+    s.in_window(|w, cx| w.close_dialog(cx));
+    s.settle();
     s.in_window(|w, cx| {
         columns.update(cx, |editor, cx| editor.discard_for_test(w, cx));
         tab.update(cx, |t, cx| t.show_data_for_test(cx));

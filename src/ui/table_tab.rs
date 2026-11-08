@@ -28,6 +28,9 @@ use super::cell_edit::{self, EditStart};
 use super::copy;
 use super::dialog;
 use super::grid::{Grid, data_table};
+#[cfg(test)]
+use super::index_editor::confirm_drop as confirm_drop_index;
+use super::index_editor::{IndexDialog, index_entries, render_list as render_index_list};
 use super::loading;
 use super::row_panel;
 use super::structure_editor::StructureEditor;
@@ -428,6 +431,13 @@ impl TableTab {
     pub fn show_columns(&mut self, cx: &mut Context<Self>) {
         self.show_structure = true;
         self.struct_section = 0;
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub fn show_indexes_for_test(&mut self, cx: &mut Context<Self>) {
+        self.show_structure = true;
+        self.struct_section = 1;
         cx.notify();
     }
 
@@ -939,22 +949,89 @@ impl TableTab {
         self.reload(cx);
     }
 
+    /// Tables on SQL servers; views, Redis and MongoDB stay read-only.
+    fn structure_editable(&self) -> bool {
+        !matches!(self.shared.cfg.driver, Driver::Redis | Driver::Mongo)
+            && self.object.kind == ObjectKind::Table
+    }
+
+    /// Reads the structure again after a schema change.
+    fn on_structure_change(&self, cx: &mut Context<Self>) -> OnDone {
+        let tab = cx.entity().downgrade();
+        Rc::new(move |_, cx| {
+            tab.update(cx, |tab, cx| tab.reload_structure(cx)).ok();
+        })
+    }
+
+    /// `+ Index`: the dialog, with this table's columns to pick from.
+    pub fn open_index_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<IndexDialog>> {
+        let columns = self
+            .structure
+            .as_ref()?
+            .columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect();
+        let on_done = self.on_structure_change(cx);
+        Some(IndexDialog::open(
+            self.shared.clone(),
+            self.object.clone(),
+            columns,
+            on_done,
+            window,
+            cx,
+        ))
+    }
+
+    #[cfg(test)]
+    pub fn index_names(&self) -> Vec<String> {
+        self.structure
+            .as_ref()
+            .map(|structure| index_entries(self.shared.cfg.driver, &structure.indexes))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub fn drop_index_for_test(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let on_done = self.on_structure_change(cx);
+        confirm_drop_index(self.shared.clone(), &self.object, name, on_done, window, cx);
+    }
+
+    fn render_indexes(&self, cx: &mut Context<Self>) -> AnyElement {
+        let entries = self
+            .structure
+            .as_ref()
+            .map(|structure| index_entries(self.shared.cfg.driver, &structure.indexes))
+            .unwrap_or_default();
+        let tab = cx.entity().downgrade();
+        let on_add = Rc::new(move |window: &mut Window, cx: &mut App| {
+            tab.update(cx, |tab, cx| {
+                tab.open_index_dialog(window, cx);
+            })
+            .ok();
+        });
+        let on_done = self.on_structure_change(cx);
+        render_index_list(&self.shared, &self.object, &entries, on_add, on_done, cx)
+    }
+
     /// The in-place column editor, made once the structure is known (it
     /// needs the window for its inputs). Views, Redis and MongoDB keep the
     /// read-only list.
     fn ensure_columns_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let editable = !matches!(self.shared.cfg.driver, Driver::Redis | Driver::Mongo)
-            && self.object.kind == ObjectKind::Table;
-        if !editable || self.columns_editor.is_some() {
+        if !self.structure_editable() || self.columns_editor.is_some() {
             return;
         }
         let Some(structure) = &self.structure else {
             return;
         };
-        let tab = cx.entity().downgrade();
-        let on_done: OnDone = Rc::new(move |_, cx| {
-            tab.update(cx, |tab, cx| tab.reload_structure(cx)).ok();
-        });
+        let on_done = self.on_structure_change(cx);
         let (shared, object, columns) = (
             self.shared.clone(),
             self.object.clone(),
@@ -2319,6 +2396,7 @@ impl Render for TableTab {
                     Some(editor) => editor.clone().into_any_element(),
                     None => data_table(&self.struct_cols, cx).into_any_element(),
                 },
+                1 if self.structure_editable() => self.render_indexes(cx),
                 1 => data_table(&self.struct_idx, cx).into_any_element(),
                 2 => data_table(&self.struct_fks, cx).into_any_element(),
                 _ => v_flex()

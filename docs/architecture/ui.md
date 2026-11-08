@@ -51,6 +51,7 @@ flowchart TB
 | `ExportDialog` | `ui/copy.rs` | Export: format, rows, options, preview, destination, progress toast. |
 | `Grid` | `ui/grid.rs` | The `TableDelegate` behind every data grid: fetched rows plus staged edits, deletions and new rows. |
 | `TableEditor` | `ui/table_editor.rs` | New Table dialog. |
+| `IndexDialog` | `ui/index_editor.rs` | + Index: columns in order, unique, live CREATE INDEX. |
 | `StructureEditor` | `ui/structure_editor.rs` | Structure › Columns edited in place, owned by its `TableTab`; rebuilt when the structure is read again. |
 | `Processes` | `ui/processes.rs` | Process list dialog, polling every few seconds. |
 | `Picker` | `ui/picker.rs` | Searchable pick-one dialog in the palette look (⌘K, ⌘N, ⌘P, schemas). |
