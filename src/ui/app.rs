@@ -1191,6 +1191,7 @@ mod tests {
 
     use super::*;
     use crate::db::{ConnectionConfig, Driver, EnvTag};
+    use crate::rncryptor::encrypt;
     use crate::settings::{Appearance, Settings};
     use crate::ui::mongo_views::DocView;
     use crate::ui::onboarding::Step;
@@ -1198,7 +1199,8 @@ mod tests {
     use futures::executor::block_on;
     use gpui::{ClipboardItem, Modifiers, MouseButton, point, size};
     use gpui_component::init;
-    use serde_json::to_string;
+    use serde_json::{json, to_string};
+    use uuid::Uuid;
 
     /// Opens the real app view in a test window, with app-wide shortcuts.
     fn open(cx: &mut TestAppContext) -> (Entity<AppView>, VisualTestContext) {
@@ -3720,6 +3722,105 @@ mod tests {
         assert_eq!(mine[0].sql, "select 'kept' -- v2");
         crate::saved::delete(&mine[0].id).unwrap();
         let _ = std::fs::remove_file(file);
+    }
+
+    /// A password-protected TablePlus export: the password dialog keeps a
+    /// wrong password out, the right one adds the connections (ssh too),
+    /// and importing the file again adds nothing.
+    #[gpui::test]
+    fn tableplus_export_import(cx: &mut TestAppContext) {
+        let export = json!([
+            {"ID": "tp-ui-1", "Driver": "PostgreSQL", "ConnectionName": "tp billing",
+             "DatabaseHost": "db.example.test", "DatabasePort": "5432", "DatabaseUser": "app",
+             "DatabaseName": "billing", "DatabasePassword": "s3cret", "Enviroment": "staging",
+             "tLSMode": 1, "isOverSSH": 1, "ServerAddress": "bastion.example.test",
+             "ServerPort": "22", "ServerUser": "ops", "ServerPassword": "tunnel", "isUsePrivateKey": 0},
+            {"ID": "tp-ui-2", "Driver": "SQLServer", "ConnectionName": "tp warehouse",
+             "DatabaseHost": "mssql.example.test", "DatabasePort": "1433", "DatabaseUser": "sa",
+             "DatabaseName": "dw", "Enviroment": "production"},
+        ]);
+        let file = temp_dir().join(format!("tabula-ui-{}.tableplusconnection", Uuid::new_v4()));
+        write(&file, encrypt(export.to_string().as_bytes(), "export pw")).unwrap();
+
+        let (app, mut cx) = open(cx);
+        let home = app.read_with(&cx, |a, _| a.home.clone());
+        let imported = |cx: &mut VisualTestContext| {
+            home.read_with(cx, |h, _| {
+                h.connections
+                    .iter()
+                    .filter(|c| c.id.starts_with("tableplus-tp-ui-"))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+        };
+        let submit = |cx: &mut VisualTestContext, password: &str| {
+            cx.simulate_input(password);
+            let b = cx.debug_bounds("do-import").expect("password dialog shown");
+            cx.simulate_click(b.center(), Modifiers::none());
+            cx.run_until_parked();
+        };
+
+        home.update_in(&mut cx, |h, w, cx| {
+            h.import_from_for_test(file.clone(), w, cx)
+        });
+        cx.run_until_parked();
+        submit(&mut cx, "wrong");
+        assert!(
+            imported(&mut cx).is_empty(),
+            "a wrong password imports nothing"
+        );
+        assert!(
+            cx.debug_bounds("do-import").is_some(),
+            "the dialog stays open"
+        );
+        // ↵ imports too (it used to just close the dialog).
+        cx.simulate_keystrokes("cmd-a backspace");
+        cx.simulate_input("export pw");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("do-import").is_none(),
+            "closed after importing"
+        );
+
+        let added = imported(&mut cx);
+        assert_eq!(added.len(), 2);
+        let billing = added.iter().find(|c| c.name == "tp billing").unwrap();
+        assert_eq!(
+            (
+                billing.driver,
+                billing.host.as_str(),
+                billing.port,
+                billing.tag,
+                billing.ssl
+            ),
+            (
+                Driver::Postgres,
+                "db.example.test",
+                5432,
+                EnvTag::Staging,
+                true
+            )
+        );
+        let ssh = billing.ssh.as_ref().expect("ssh tunnel imported");
+        assert_eq!(
+            (ssh.host.as_str(), ssh.user.as_str()),
+            ("bastion.example.test", "ops")
+        );
+        assert!(
+            billing.password.is_empty(),
+            "passwords go to the keychain, not memory"
+        );
+        let warehouse = added.iter().find(|c| c.name == "tp warehouse").unwrap();
+        assert_eq!((warehouse.driver, warehouse.port), (Driver::Mssql, 1433));
+
+        home.update_in(&mut cx, |h, w, cx| {
+            h.import_from_for_test(file.clone(), w, cx)
+        });
+        cx.run_until_parked();
+        submit(&mut cx, "export pw");
+        assert_eq!(imported(&mut cx).len(), 2, "a second import adds nothing");
+        let _ = remove_file(file);
     }
 
     /// Import CSV: rows go in after confirming; a bad row inserts nothing.

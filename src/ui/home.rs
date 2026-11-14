@@ -2,9 +2,9 @@
 //! grouped Open now / Saved, with search (`/`), an environment filter,
 //! Import and New connection.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use chrono::Utc;
@@ -248,12 +248,7 @@ impl Home {
             .ok();
     }
 
-    fn import_from(
-        &mut self,
-        path: std::path::PathBuf,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn import_from(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) => {
@@ -341,10 +336,28 @@ impl Home {
                 .placeholder("Export password")
         });
         let home = cx.entity().downgrade();
-        let bytes = std::rc::Rc::new(bytes);
-        input.update(cx, |i, cx| i.focus(window, cx));
-        window.open_dialog(cx, move |dialog, _, _| {
-            let (input2, home, bytes) = (input.clone(), home.clone(), bytes.clone());
+        let bytes = Rc::new(bytes);
+        // The Import button and ↵ (the dialog's OK). True when imported, so
+        // the dialog closes; a wrong password keeps it open.
+        let import = {
+            let input = input.clone();
+            Rc::new(move |window: &mut Window, cx: &mut App| {
+                let password = input.read(cx).value().to_string();
+                home.update(cx, |home, cx| {
+                    home.finish_import(&bytes, Some(&password), window, cx)
+                })
+                .unwrap_or(true)
+            })
+        };
+        let first_render = Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            // Opening the dialog moves focus to it, so focus the field on its
+            // first render: earlier, typing the password went nowhere.
+            if first_render.replace(false) {
+                input.update(cx, |input, cx| input.focus(window, cx));
+            }
+            let on_ok = import.clone();
+            let on_click = import.clone();
             dialog
                 .title("Password-protected export")
                 .w(px(420.))
@@ -354,6 +367,7 @@ impl Home {
                         .child("Enter the password you chose when exporting from TablePlus.")
                         .child(Input::new(&input).mask_toggle()),
                 )
+                .on_ok(move |_, window, cx| on_ok(window, cx))
                 .footer(
                     DialogFooter::new()
                         .child(
@@ -364,25 +378,31 @@ impl Home {
                                 .on_click(|_, w, cx| w.close_dialog(cx)),
                         )
                         .child(
-                            Button::new("do-import")
-                                .cursor_pointer()
-                                .label("Import")
-                                .primary()
-                                .small()
-                                .on_click(move |_, window, cx| {
-                                    let pw = input2.read(cx).value().to_string();
-                                    let ok = home
-                                        .update(cx, |h, cx| {
-                                            h.finish_import(&bytes, Some(&pw), window, cx)
-                                        })
-                                        .unwrap_or(true);
-                                    if ok {
-                                        window.close_dialog(cx);
-                                    }
-                                }),
+                            div().debug_selector(|| "do-import".into()).child(
+                                Button::new("do-import")
+                                    .cursor_pointer()
+                                    .label("Import")
+                                    .primary()
+                                    .small()
+                                    .on_click(move |_, window, cx| {
+                                        if on_click(window, cx) {
+                                            window.close_dialog(cx);
+                                        }
+                                    }),
+                            ),
                         ),
                 )
         });
+    }
+
+    #[cfg(test)]
+    pub fn import_from_for_test(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.import_from(path, window, cx);
     }
 
     pub fn import_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
