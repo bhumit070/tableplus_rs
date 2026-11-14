@@ -16,7 +16,7 @@ cargo test <name>                # single test by name substring
 # End-to-end against real servers (throwaway containers from compose.yaml, ports 55432/53306/51433/56379/57017)
 docker compose up -d --wait
 TABULA_IT=1 cargo test
-docker compose down
+docker compose down              # always, as soon as you're done with them
 
 # Pause tests: must run on their own
 TABULA_IT=1 TABULA_IT_PAUSE=1 cargo test frozen_server_times_out_and_recovers
