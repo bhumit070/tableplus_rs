@@ -13,7 +13,13 @@ Download the file for your platform from the
     brew install --cask bhumit070/tap/tabula
     ```
 
-    `brew upgrade` keeps it up to date. Or download the `.dmg` for your Mac (`macos-apple-silicon` for M-series
+    To update to the latest release:
+
+    ```sh
+    brew update && brew upgrade --cask bhumit070/tap/tabula
+    ```
+
+    Or download the `.dmg` for your Mac (`macos-apple-silicon` for M-series
     chips, `macos-intel` for Intel), open it and drag **Tabula** onto
     **Applications**.
 
@@ -24,6 +30,8 @@ Download the file for your platform from the
     ```sh
     xattr -dr com.apple.quarantine /Applications/Tabula.app
     ```
+
+    Each update is a new download, so macOS asks again after updating.
 
 === "Windows"
 
@@ -46,6 +54,13 @@ Download the file for your platform from the
     echo "deb [arch=amd64 signed-by=/usr/share/keyrings/tabula.gpg] https://bhumit070.github.io/tabula-apt stable main" \
       | sudo tee /etc/apt/sources.list.d/tabula.list
     sudo apt update && sudo apt install tabula
+    ```
+
+    To update to the latest release (a plain `sudo apt upgrade` does it
+    too):
+
+    ```sh
+    sudo apt update && sudo apt install --only-upgrade tabula
     ```
 
     This also installs the Vulkan loader and GNOME Keyring, which Tabula

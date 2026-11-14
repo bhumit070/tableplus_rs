@@ -19,7 +19,13 @@ With [Homebrew](https://brew.sh):
 brew install --cask bhumit070/tap/tabula
 ```
 
-`brew upgrade` keeps it up to date. Or download the `.dmg` for your Mac from
+To update to the latest release:
+
+```sh
+brew update && brew upgrade --cask bhumit070/tap/tabula
+```
+
+Or download the `.dmg` for your Mac from
 the [latest release](https://github.com/bhumit070/tableplus_rs/releases/latest)
 and drag Tabula to Applications.
 
@@ -30,6 +36,8 @@ Security** and click **Open Anyway**. Or clear the quarantine flag yourself:
 ```sh
 xattr -dr com.apple.quarantine /Applications/Tabula.app
 ```
+
+Each update is a new download, so macOS asks again after updating.
 
 ### Debian and Ubuntu (x86_64)
 
@@ -42,6 +50,12 @@ curl -fsSL https://bhumit070.github.io/tabula-apt/tabula.gpg \
 echo "deb [arch=amd64 signed-by=/usr/share/keyrings/tabula.gpg] https://bhumit070.github.io/tabula-apt stable main" \
   | sudo tee /etc/apt/sources.list.d/tabula.list
 sudo apt update && sudo apt install tabula
+```
+
+To update to the latest release (a plain `sudo apt upgrade` does it too):
+
+```sh
+sudo apt update && sudo apt install --only-upgrade tabula
 ```
 
 This also installs the Vulkan loader and GNOME Keyring, which Tabula needs.
