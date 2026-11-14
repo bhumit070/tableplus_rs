@@ -5,6 +5,8 @@
 //!   mssql 51433 (sa/Tabula-test1), redis 56379, mongo 57017.
 
 use super::*;
+use std::env::temp_dir;
+use std::fs::{remove_file, write as write_file};
 use std::sync::Arc;
 use tokio::{join, spawn, time::sleep, time::timeout};
 use uuid::Uuid;
@@ -1889,15 +1891,17 @@ async fn postgres_backup_restore() {
     let r = o.execute("select count(*) from it_backup").await.unwrap();
     assert_eq!(r[0].rows[0][0].as_deref(), Some("2"));
     // A newer pg_dump sets things an older server lacks (pg_dump 17's
-    // transaction_timeout on PostgreSQL 15): skipped, not fatal.
+    // transaction_timeout on PostgreSQL 16): the guarded set_config the
+    // restore writes for them skips a setting the server doesn't have.
+    let future_setting = backup::guarded_set("tabula_setting_from_the_future", "0");
     let newer = text.replacen(
         "SET statement_timeout = 0;",
-        "SET statement_timeout = 0;\nSET tabula_setting_from_the_future = 0;",
+        &format!("SET statement_timeout = 0;\n{future_setting}"),
         1,
     );
     assert_ne!(newer, text, "the dump starts with its settings");
-    let newer_file = std::env::temp_dir().join(format!("tabula-it-{tag}-newer.sql"));
-    std::fs::write(&newer_file, newer).unwrap();
+    let newer_file = temp_dir().join(format!("tabula-it-{tag}-newer.sql"));
+    write_file(&newer_file, newer).unwrap();
     let t3 = backup::Target {
         cfg: at(&older),
         database: older.clone(),
@@ -1913,7 +1917,7 @@ async fn postgres_backup_restore() {
         .unwrap();
     assert_eq!(r[0].rows[0][0].as_deref(), Some("2"));
     restored.close().await;
-    let _ = std::fs::remove_file(newer_file);
+    let _ = remove_file(newer_file);
     c.close().await;
     o.close().await;
     for db in [&src, &dst, &older] {

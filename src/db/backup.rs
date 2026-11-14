@@ -3,12 +3,13 @@
 //! with `VACUUM INTO`. Passwords go through the environment or a private
 //! options file, never the command line.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Output, Stdio};
 
 use anyhow::{Context as _, Result, bail};
 use tokio::fs::File;
-use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, BufWriter};
 use tokio::process::{ChildStdin, Command};
 use tokio::try_join;
 
@@ -159,6 +160,11 @@ async fn run(mut cmd: Command, what: &str) -> Result<()> {
         .output()
         .await
         .with_context(|| format!("couldn't start {what}"))?;
+    check_exit(&out, what)
+}
+
+/// Fails with the tool's own message when it exited with an error.
+fn check_exit(out: &Output, what: &str) -> Result<()> {
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         bail!("{what} failed: {}", err.trim());
@@ -175,95 +181,153 @@ async fn run_with_dump(mut cmd: Command, file: &Path) -> Result<()> {
         .kill_on_drop(true)
         .spawn()
         .context("couldn't start psql")?;
-    let stdin = child.stdin.take().context("psql has no input")?;
-    let feed = async {
-        // psql stopping early (an error) closes its input: its own message
-        // says why, so a broken pipe here isn't the error to show.
-        match feed_dump(file, stdin).await {
-            Err(e) if is_broken_pipe(&e) => Ok(()),
-            other => other,
-        }
-    };
-    let (_, out) = try_join!(feed, async {
+    // Owned out here so that when reading the file fails, psql is killed
+    // (dropping its wait) before its input closes: an early end of input
+    // would let `--single-transaction` commit a partial restore.
+    let mut psql_input = Some(BufWriter::with_capacity(
+        1 << 20,
+        child.stdin.take().context("psql has no input")?,
+    ));
+    let (fed, out) = try_join!(feed_dump(file, &mut psql_input), async {
         child
             .wait_with_output()
             .await
             .context("psql stopped unexpectedly")
     })?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        bail!("psql failed: {}", err.trim());
+    // psql stopping early (an error) closes its input; its message says why.
+    check_exit(&out, "psql")?;
+    if fed == Fed::Stopped {
+        bail!("psql stopped reading the dump before its end");
     }
     Ok(())
 }
 
-fn is_broken_pipe(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<std::io::Error>()
-        .is_some_and(|e| e.kind() == std::io::ErrorKind::BrokenPipe)
+/// Whether psql took the whole dump.
+#[derive(Debug, PartialEq, Eq)]
+enum Fed {
+    Whole,
+    Stopped,
 }
 
-/// Copies a pg_dump file into psql, with its opening `SET` lines made
-/// safe for the server it lands on (see `portable_set`). Everything after
-/// that opening part goes through byte for byte.
-async fn feed_dump(file: &Path, mut stdin: ChildStdin) -> Result<()> {
+/// Copies a pg_dump file into psql, with its version-dependent `SET`
+/// lines made safe for the server it lands on (see `DumpLines`). psql
+/// closing its input early is `Fed::Stopped`, not an error: whatever the
+/// write error's kind, psql's own message is the one to show. The input
+/// is taken (closing the pipe, which `shutdown` doesn't) only once the
+/// whole file is read.
+async fn feed_dump(file: &Path, psql_input: &mut Option<BufWriter<ChildStdin>>) -> Result<Fed> {
+    let Some(input) = psql_input.as_mut() else {
+        return Ok(Fed::Stopped);
+    };
     let source = File::open(file)
         .await
         .with_context(|| format!("couldn't read {}", file.display()))?;
     let mut reader = BufReader::with_capacity(1 << 20, source);
+    let mut dump_lines = DumpLines::default();
     let mut line = Vec::new();
-    let mut opening = true;
     loop {
         line.clear();
-        if reader.read_until(b'\n', &mut line).await? == 0 {
+        let read = reader
+            .read_until(b'\n', &mut line)
+            .await
+            .with_context(|| format!("couldn't read {}", file.display()))?;
+        if read == 0 {
             break;
         }
-        if opening {
-            let text = String::from_utf8_lossy(&line);
-            let trimmed = text.trim();
-            match portable_set(trimmed) {
-                Some(guarded) => {
-                    stdin.write_all(guarded.as_bytes()).await?;
-                    stdin.write_all(b"\n").await?;
-                    continue;
-                }
-                None => {
-                    opening = trimmed.is_empty()
-                        || trimmed.starts_with("--")
-                        || trimmed.starts_with('\\')
-                        || trimmed.starts_with("SELECT pg_catalog.set_config(");
-                }
-            }
+        if input.write_all(&dump_lines.rewrite(&line)).await.is_err() {
+            return Ok(Fed::Stopped);
         }
-        stdin.write_all(&line).await?;
     }
-    stdin.shutdown().await?;
-    Ok(())
+    let flushed = input.flush().await.is_ok();
+    // Dropping it closes the pipe: psql sees the end and commits.
+    drop(psql_input.take());
+    Ok(if flushed { Fed::Whole } else { Fed::Stopped })
 }
 
-/// A newer pg_dump writes settings an older server doesn't have (pg_dump
-/// 17 always writes `SET transaction_timeout = 0;`, which PostgreSQL 16
-/// and older reject, failing the whole restore). `SET name = value;`
-/// becomes the same setting through set_config, applied only when the
-/// server knows it. `None` for any other line.
+/// Settings pg_dump writes that older servers don't have (the version
+/// that added each). pg_dump 17 always writes `SET transaction_timeout =
+/// 0;`, which PostgreSQL 16 and older reject, failing the whole restore.
+/// Any other `SET` goes through unchanged, so a typo or a setting the
+/// user really needs still stops the restore.
+const NEWER_SETTINGS: [&str; 5] = [
+    "lock_timeout",                        // 9.3
+    "row_security",                        // 9.5
+    "idle_in_transaction_session_timeout", // 9.6
+    "default_table_access_method",         // 12
+    "transaction_timeout",                 // 17
+];
+
+/// Walks a dump line by line, rewriting its `NEWER_SETTINGS` lines
+/// wherever they appear (pg_dump also sets `default_table_access_method`
+/// before each table), except inside COPY data.
+#[derive(Default)]
+struct DumpLines {
+    in_copy: bool,
+}
+
+impl DumpLines {
+    fn rewrite<'a>(&mut self, line: &'a [u8]) -> Cow<'a, [u8]> {
+        if self.in_copy {
+            // COPY data ends with a line holding only `\.`.
+            if line.trim_ascii_end() == b"\\." {
+                self.in_copy = false;
+            }
+            return Cow::Borrowed(line);
+        }
+        let Ok(text) = str::from_utf8(line) else {
+            return Cow::Borrowed(line);
+        };
+        // A file saved by some Windows editors starts with a BOM.
+        let statement = text.trim_start_matches('\u{feff}').trim_end();
+        if statement.starts_with("COPY ") && statement.ends_with("FROM stdin;") {
+            self.in_copy = true;
+            return Cow::Borrowed(line);
+        }
+        match portable_set(statement) {
+            Some(guarded) => Cow::Owned(format!("{guarded}\n").into_bytes()),
+            None => Cow::Borrowed(line),
+        }
+    }
+}
+
+/// `SET name = value;` for a `NEWER_SETTINGS` name becomes the same
+/// setting applied only when the server has it. Only lines starting at
+/// column 0, as pg_dump writes them; an indented `SET` is likely inside a
+/// function body, where a SELECT would break it. `None` for anything else.
 fn portable_set(line: &str) -> Option<String> {
     let rest = line.strip_prefix("SET ")?.strip_suffix(';')?;
     let (name, value) = rest.split_once(" = ")?;
-    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+    // Setting names are case-insensitive; pg_settings has them in lowercase.
+    let name = name.to_ascii_lowercase();
+    if !NEWER_SETTINGS.contains(&name.as_str()) {
         return None;
     }
-    let value = value.trim();
-    // One plain statement only.
-    if value.contains(';') {
-        return None;
+    Some(guarded_set(&name, &setting_value(value.trim())?))
+}
+
+/// One setting value: a plain word or number, or one quoted string. Lists
+/// (`'a', 'b'`), `E''` strings and anything else stay as they were.
+fn setting_value(value: &str) -> Option<String> {
+    if let Some(inner) = value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')) {
+        // `''` is an escaped quote; a lone one means more than one string.
+        if inner.replace("''", "").contains('\'') {
+            return None;
+        }
+        return Some(inner.replace("''", "'"));
     }
-    let value = match value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')) {
-        Some(quoted) => quoted.replace("''", "'"),
-        None => value.to_string(),
-    };
-    Some(format!(
+    let plain = !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_.-+".contains(c));
+    plain.then(|| value.to_string())
+}
+
+/// SQL applying setting `name` (lowercase) only if the server has it.
+pub(super) fn guarded_set(name: &str, value: &str) -> String {
+    format!(
         "SELECT pg_catalog.set_config('{name}', '{}', false) FROM pg_catalog.pg_settings WHERE name = '{name}';",
         value.replace('\'', "''")
-    ))
+    )
 }
 
 /// Writes a SQL dump of the database to `file`.
@@ -385,7 +449,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opening_settings_apply_only_where_the_server_has_them() {
+    fn newer_settings_apply_only_where_the_server_has_them() {
         assert_eq!(
             portable_set("SET transaction_timeout = 0;").as_deref(),
             Some(
@@ -393,14 +457,62 @@ mod tests {
                  FROM pg_catalog.pg_settings WHERE name = 'transaction_timeout';"
             )
         );
+        // Names are case-insensitive; pg_settings has them in lowercase.
         assert!(
-            portable_set("SET client_encoding = 'UTF8';")
+            portable_set("SET Lock_Timeout = '5s';")
                 .unwrap()
-                .contains("set_config('client_encoding', 'UTF8', false)")
+                .contains("set_config('lock_timeout', '5s', false) FROM pg_catalog.pg_settings WHERE name = 'lock_timeout'")
         );
         assert!(portable_set("SET default_table_access_method = heap;").is_some());
+        // Every other setting stays a plain SET, so a typo still fails.
+        assert_eq!(portable_set("SET client_encoding = 'UTF8';"), None);
+        assert_eq!(portable_set("SET statment_timeout = 0;"), None);
+        assert_eq!(portable_set("SET role = 'app_owner';"), None);
         assert_eq!(portable_set("CREATE SCHEMA analytics;"), None);
-        assert_eq!(portable_set("SET search_path = a, b; DROP TABLE x;"), None);
+        assert_eq!(portable_set("SET lock_timeout = 0; DROP TABLE x;"), None);
+        // Only one plain value or one quoted string.
+        assert_eq!(portable_set("SET lock_timeout = '1s', '2s';"), None);
+        assert_eq!(portable_set("SET lock_timeout = E'1s';"), None);
+        assert!(
+            portable_set("SET lock_timeout = 'it''s';")
+                .unwrap()
+                .contains("set_config('lock_timeout', 'it''s', false)")
+        );
+    }
+
+    fn rewrite_dump(dump: &str) -> String {
+        let mut dump_lines = DumpLines::default();
+        dump.split_inclusive('\n')
+            .map(|line| {
+                String::from_utf8(dump_lines.rewrite(line.as_bytes()).into_owned()).unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn dump_settings_are_rewritten_everywhere_but_copy_data() {
+        let dump = "\u{feff}SET transaction_timeout = 0;\n\
+                    SET client_encoding = 'UTF8';\n\
+                    CREATE TABLE public.t (note text);\n\
+                    SET default_table_access_method = heap;\n\
+                    COPY public.t (note) FROM stdin;\n\
+                    SET lock_timeout = 0;\n\
+                    \\.\n\
+                    CREATE FUNCTION f() RETURNS void LANGUAGE sql AS $$\n    \
+                    SET lock_timeout = 0;\n\
+                    $$;\n\
+                    SET lock_timeout = 0;\n";
+        let out = rewrite_dump(dump);
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].starts_with("SELECT pg_catalog.set_config('transaction_timeout'"));
+        assert_eq!(lines[1], "SET client_encoding = 'UTF8';");
+        assert!(lines[3].starts_with("SELECT pg_catalog.set_config('default_table_access_method'"));
+        assert_eq!(
+            lines[5], "SET lock_timeout = 0;",
+            "COPY data is copied as is"
+        );
+        assert_eq!(lines[8], "    SET lock_timeout = 0;", "function bodies too");
+        assert!(lines[10].starts_with("SELECT pg_catalog.set_config('lock_timeout'"));
     }
 
     #[test]
