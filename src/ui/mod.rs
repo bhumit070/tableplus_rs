@@ -29,6 +29,7 @@ pub mod structure_editor;
 pub mod table_editor;
 pub mod table_tab;
 pub mod theme;
+pub mod tsql_highlight;
 
 use std::cell::RefCell;
 use std::rc::Rc;

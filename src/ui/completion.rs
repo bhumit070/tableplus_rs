@@ -155,6 +155,166 @@ const SQL_FUNCTIONS: &[&str] = &[
     "STRFTIME",
 ];
 
+/// SQL Server's own words: no LIMIT / ILIKE / RETURNING, which it rejects.
+const TSQL_KEYWORDS: &[&str] = &[
+    "SELECT",
+    "TOP",
+    "FROM",
+    "WHERE",
+    "AND",
+    "OR",
+    "NOT",
+    "IN",
+    "IS",
+    "NULL",
+    "LIKE",
+    "BETWEEN",
+    "EXISTS",
+    "JOIN",
+    "INNER JOIN",
+    "LEFT JOIN",
+    "RIGHT JOIN",
+    "FULL JOIN",
+    "CROSS JOIN",
+    "CROSS APPLY",
+    "OUTER APPLY",
+    "ON",
+    "AS",
+    "DISTINCT",
+    "GROUP BY",
+    "ORDER BY",
+    "HAVING",
+    "OFFSET",
+    "FETCH NEXT",
+    "ROWS ONLY",
+    "ASC",
+    "DESC",
+    "UNION",
+    "UNION ALL",
+    "EXCEPT",
+    "INTERSECT",
+    "INSERT INTO",
+    "VALUES",
+    "UPDATE",
+    "SET",
+    "DELETE FROM",
+    "OUTPUT",
+    "MERGE",
+    "CREATE TABLE",
+    "CREATE INDEX",
+    "CREATE VIEW",
+    "CREATE PROCEDURE",
+    "ALTER TABLE",
+    "ADD",
+    "DROP TABLE",
+    "DROP INDEX",
+    "TRUNCATE TABLE",
+    "PRIMARY KEY",
+    "FOREIGN KEY",
+    "REFERENCES",
+    "DEFAULT",
+    "UNIQUE",
+    "IDENTITY",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "WITH",
+    "NOLOCK",
+    "DECLARE",
+    "EXEC",
+    "IF",
+    "WHILE",
+    "BEGIN",
+    "BEGIN TRANSACTION",
+    "COMMIT",
+    "ROLLBACK",
+    "RETURN",
+    "PRINT",
+    "GO",
+    "USE",
+    "SET NOCOUNT ON",
+    "OVER",
+    "PARTITION BY",
+    "INT",
+    "BIGINT",
+    "BIT",
+    "DECIMAL",
+    "NVARCHAR",
+    "VARCHAR",
+    "DATETIME2",
+    "DATE",
+    "UNIQUEIDENTIFIER",
+];
+
+const TSQL_FUNCTIONS: &[&str] = &[
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "COALESCE",
+    "NULLIF",
+    "ISNULL",
+    "IIF",
+    "LOWER",
+    "UPPER",
+    "TRIM",
+    "LTRIM",
+    "RTRIM",
+    "LEN",
+    "DATALENGTH",
+    "SUBSTRING",
+    "LEFT",
+    "RIGHT",
+    "REPLACE",
+    "CONCAT",
+    "CONCAT_WS",
+    "CHARINDEX",
+    "FORMAT",
+    "ROUND",
+    "ABS",
+    "GETDATE",
+    "GETUTCDATE",
+    "SYSDATETIME",
+    "SYSUTCDATETIME",
+    "DATEADD",
+    "DATEDIFF",
+    "DATEPART",
+    "DATENAME",
+    "EOMONTH",
+    "YEAR",
+    "MONTH",
+    "DAY",
+    "CAST",
+    "CONVERT",
+    "TRY_CAST",
+    "TRY_CONVERT",
+    "NEWID",
+    "ROW_NUMBER",
+    "RANK",
+    "DENSE_RANK",
+    "NTILE",
+    "LAG",
+    "LEAD",
+    "STRING_AGG",
+    "STRING_SPLIT",
+    "JSON_VALUE",
+    "JSON_QUERY",
+    "OPENJSON",
+    "SCOPE_IDENTITY",
+    "OBJECT_ID",
+];
+
+/// The keywords and functions offered for this driver's SQL.
+fn vocabulary(driver: Driver) -> (&'static [&'static str], &'static [&'static str]) {
+    match driver {
+        Driver::Mssql => (TSQL_KEYWORDS, TSQL_FUNCTIONS),
+        _ => (SQL_KEYWORDS, SQL_FUNCTIONS),
+    }
+}
+
 /// Keywords after which the next word is a table name.
 const TABLE_CONTEXT: &[&str] = &[
     "from", "join", "into", "update", "table", "describe", "desc",
@@ -238,17 +398,21 @@ fn word_start(text: &str, offset: usize) -> usize {
 
 /// The identifier right before a `.` that precedes `start`, unquoted.
 fn qualifier(text: &str, start: usize) -> Option<String> {
-    let before = text[..start].strip_suffix('.')?;
+    // `alias.[col` (SQL Server) as well as `alias.col`.
+    let before = text[..start].strip_suffix('[').unwrap_or(&text[..start]);
+    let before = before.strip_suffix('.')?;
     let before = before.trim_end_matches(['"', '`', ']']);
     let s = word_start(before, before.len());
     let q = &before[s..];
     (!q.is_empty()).then(|| q.to_string())
 }
 
-/// Splits into lowercase-preserving word tokens (identifiers and keywords).
-fn tokens(text: &str) -> Vec<&str> {
-    text.split(|c: char| !(is_ident(c) || c == '.'))
-        .filter(|t| !t.is_empty())
+/// Splits into lowercase-preserving word tokens (identifiers and keywords),
+/// SQL Server's `[dbo].[orders]` read as `dbo.orders`.
+fn tokens(text: &str) -> Vec<String> {
+    text.split(|c: char| !(is_ident(c) || matches!(c, '.' | '[' | ']')))
+        .map(|token| token.replace(['[', ']'], ""))
+        .filter(|token| !token.is_empty())
         .collect()
 }
 
@@ -260,7 +424,7 @@ fn statement(text: &str, offset: usize) -> (&str, usize) {
 }
 
 /// alias/table name (lowercase) → real table name, from FROM/JOIN clauses.
-fn aliases(stmt: &str, schema: &Schema) -> BTreeMap<String, String> {
+fn aliases(stmt: &str, schema: &Schema, keywords: &[&str]) -> BTreeMap<String, String> {
     let toks = tokens(stmt);
     let mut out = BTreeMap::new();
     for (i, t) in toks.iter().enumerate() {
@@ -280,7 +444,7 @@ fn aliases(stmt: &str, schema: &Schema) -> BTreeMap<String, String> {
             j += 1;
         }
         if let Some(alias) = toks.get(j) {
-            let reserved = SQL_KEYWORDS
+            let reserved = keywords
                 .iter()
                 .any(|k| k.split(' ').next().unwrap().eq_ignore_ascii_case(alias))
                 || schema.columns.contains_key(&alias.to_lowercase());
@@ -340,14 +504,21 @@ pub fn suggest(
     let items = match driver {
         Driver::Redis => redis(text, start),
         Driver::Mongo => mongo(text, start, schema),
-        _ => sql(text, offset, start, schema),
+        _ => sql(text, offset, start, schema, driver),
     };
     (start, rank(prefix, items, 60))
 }
 
-fn sql(text: &str, offset: usize, start: usize, schema: &Schema) -> Vec<Suggestion> {
+fn sql(
+    text: &str,
+    offset: usize,
+    start: usize,
+    schema: &Schema,
+    driver: Driver,
+) -> Vec<Suggestion> {
+    let (keywords, functions) = vocabulary(driver);
     let (stmt, stmt_start) = statement(text, offset);
-    let aliases = aliases(stmt, schema);
+    let aliases = aliases(stmt, schema, keywords);
     let cols_of = |table: &str| -> Vec<Suggestion> {
         schema
             .columns
@@ -393,8 +564,8 @@ fn sql(text: &str, offset: usize, start: usize, schema: &Schema) -> Vec<Suggesti
         .into_iter()
         .flat_map(|t| cols_of(t))
         .collect();
-    out.extend(SQL_KEYWORDS.iter().map(|k| sugg(*k, Kind::Keyword, None)));
-    out.extend(SQL_FUNCTIONS.iter().map(|f| sugg(*f, Kind::Function, None)));
+    out.extend(keywords.iter().map(|k| sugg(*k, Kind::Keyword, None)));
+    out.extend(functions.iter().map(|f| sugg(*f, Kind::Function, None)));
     out.extend(tables);
     out
 }
@@ -570,6 +741,22 @@ mod tests {
             labels("select * from order_items|", Driver::Postgres)[0],
             "order_items"
         );
+    }
+
+    #[test]
+    fn sql_server_words_and_bracketed_names() {
+        assert_eq!(labels("select to|", Driver::Mssql)[0], "TOP");
+        assert!(labels("select getd|", Driver::Mssql).contains(&"GETDATE".to_string()));
+        assert!(!labels("select * from users lim|", Driver::Mssql).contains(&"LIMIT".to_string()));
+        assert_eq!(
+            labels("select u.[em| from [dbo].[users] u", Driver::Mssql),
+            ["email"]
+        );
+        assert_eq!(
+            labels("select o.to| from [dbo].[orders] as o", Driver::Mssql),
+            ["total"]
+        );
+        assert_eq!(labels("select * from [or|", Driver::Mssql)[0], "orders");
     }
 
     #[test]

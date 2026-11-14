@@ -30,6 +30,7 @@ use super::grid::{Grid, data_table};
 use super::loading;
 use super::row_panel;
 use super::theme::{dp, kbd, tokens};
+use super::tsql_highlight::factory as tsql_highlighter;
 use super::{DisabledWhen as _, QueryHistory, RunQuery, Shared, SwitchDatabase, saved_changed};
 use crate::db::explain::{self, PlanNode};
 use crate::db::format::format_sql;
@@ -198,6 +199,13 @@ impl QueryTab {
         editor.update(cx, |e, _| {
             e.lsp_mut().completion_provider = Some(Rc::new(provider))
         });
+        // tree-sitter's SQL grammar loses the rest of a T-SQL script at its
+        // first `[name]`, `TOP` or `GO`.
+        if shared.cfg.driver == Driver::Mssql {
+            editor.update(cx, |e, cx| {
+                e.set_highlighter_factory(tsql_highlighter(), cx)
+            });
+        }
         let weak = cx.entity().downgrade();
         let mut grid = Grid::default();
         grid.on_menu = Some(Rc::new(move |row, menu, window, cx| {

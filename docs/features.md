@@ -299,6 +299,10 @@ safe mode (confirm modes ask in the Tabula window first). See
   `CREATE PROCEDURE …`), which runs as one batch. A procedure returning
   several result sets gets a tab for each. ⌘. cancels with the protocol's
   own attention signal, so no KILL permission is needed.
+- T-SQL highlighting (`[names]`, `@variables`, `N'…'`, `TOP`, `DECLARE`,
+  `GO`, nested `/* */`) and T-SQL autocomplete: its keywords and functions
+  (`GETDATE`, `ISNULL`, `DATEADD`…), and columns through bracketed names
+  (`u.[em` after `from [dbo].[users] u`).
 - The row **Limit** adds `TOP (n)`; *New Query for This* writes
   `SELECT TOP 100`. Format keeps every `GO` on its own line.
 - Values show as SSMS does: `bit` as 1 / 0 (a checkbox in the grid),

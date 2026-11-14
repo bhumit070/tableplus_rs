@@ -133,8 +133,14 @@ case runs synchronously without a re-entrant update.
 LSP-style API, hence the `lsp-types` dependency). Each session keeps a
 `Schema` of object and column names, refreshed with the sidebar. SQL gets
 tables, columns (also through aliases: `u.` after `from users u`),
-keywords and functions. MongoDB gets collections and methods, Redis gets
-command names.
+keywords and functions (SQL Server gets T-SQL's own). MongoDB gets
+collections and methods, Redis gets command names.
+
+SQL Server editors swap gpui-component's tree-sitter highlighter for
+`ui/tsql_highlight.rs` (an `InputHighlighter` installed with
+`set_highlighter_factory`): the tree-sitter SQL grammar doesn't know
+`[names]`, `TOP` or `GO`, and one of them breaks the parse for the rest of
+the script. The T-SQL lexer re-reads the script on each edit.
 
 ## Session restore
 

@@ -61,7 +61,8 @@ also starts with a `//!` comment saying the same in more detail.
 | `foreign_key_editor.rs` | ~530 | Structure › Foreign Keys: the list with its right-click menu, and the + Foreign key dialog. |
 | `grid.rs` | ~1,620 | `Grid`: the table delegate holding rows and staged edits; delayed placeholder rows while loading and a custom empty view. |
 | `cell_edit.rs` | ~900 | In-place cell editing shared by table and query tabs. |
-| `completion.rs` | ~590 | Autocomplete for SQL, MongoDB and Redis. |
+| `completion.rs` | ~780 | Autocomplete for SQL (T-SQL words for SQL Server), MongoDB and Redis. |
+| `tsql_highlight.rs` | ~490 | T-SQL syntax highlighting for SQL Server editors (a lexer, as the tree-sitter grammar breaks on T-SQL). |
 | `copy.rs` | ~990 | "Copy as …" menu items and the Export dialog: format tiles, row scope, options, preview, destination; streams to a temp file, then renames it, with a progress toast and Cancel. |
 | `csv_import_view.rs` | ~470 | The Import CSV dialog: file summary, options, column mapping with validation. |
 | `dialog.rs` | ~240 | The shared dialog look (surface, title, footer) and its controls: section labels, tiles, radio rows. |

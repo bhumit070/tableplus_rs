@@ -719,6 +719,20 @@ fn mssql_shots(s: &mut Shots) {
         tab.read(cx).loaded_rows(cx) == 3 && !tab.read(cx).is_loading(cx)
     });
     s.snap("25-mssql-table");
+    // T-SQL in the editor: highlighting of TOP, N'' strings, [names], GO.
+    s.in_window(|w, cx| session.update(cx, |s, cx| s.new_query(w, cx)));
+    let query = s.cx.update(|cx| session.read(cx).active_query().unwrap());
+    s.in_window(|w, cx| {
+        query.update(cx, |q, cx| {
+            q.type_and_run(
+                "-- unpaid invoices\nDECLARE @min decimal(10,2) = 40;\nSELECT TOP (1000) [id], [customer], [total], [issued]\nFROM [master].[dbo].[shots_invoices]\nWHERE [paid] = 0 AND [total] > @min AND customer <> N'Ana Souza'\nORDER BY [total] DESC;\nGO\nselect count(*) as n from shots_invoices where issued < getdate();",
+                w,
+                cx,
+            )
+        })
+    });
+    s.wait("t-sql query", |cx| !query.read(cx).running());
+    s.snap("25-mssql-query");
 }
 
 /// 19: a hash with staged edits, and a JSON string with a TTL.
